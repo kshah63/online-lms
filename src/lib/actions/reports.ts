@@ -6,17 +6,28 @@ import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getSessionTranscript } from "@/lib/data/reports";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { draftReport, type ReportDraft } from "@/lib/reports/draft";
 import type { ActionResult } from "@/lib/actions/types";
 
 /** §8 Ask AI for a draft from the teacher's notes + the lesson transcript/metrics. */
 export async function generateReportDraft(sessionId: string, notes: string): Promise<ReportDraft> {
+  const profile = await getCurrentProfile();
   const session = await getSessionById(sessionId);
   const { segments, metrics } = await getSessionTranscript(sessionId);
+
+  // Cap Opus spend per teacher; over the limit we fall back to the notes heuristic.
+  const useAi = await rateLimit(
+    `ai:report_draft:${profile?.id ?? "anon"}`,
+    LIMITS.reportDraft.limit,
+    LIMITS.reportDraft.windowSeconds,
+  );
+
   return draftReport({
     notes,
     segments,
     metrics,
+    useAi,
     ctx: {
       studentName: session?.student.display_name ?? "the student",
       course: session?.course.name ?? "the lesson",

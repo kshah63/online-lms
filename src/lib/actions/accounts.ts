@@ -6,6 +6,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import { requireRole } from "@/lib/data/auth";
+import { rateLimit, getClientIp, LIMITS } from "@/lib/rate-limit";
 import type { Role } from "@/lib/types";
 
 export type ProvisionResult = { ok: boolean; message: string; tempPassword?: string; email?: string };
@@ -40,6 +41,17 @@ export async function submitAccountRequest(formData: FormData): Promise<{ ok: bo
   if (!display_name || !email) return { ok: false, message: "Name and email are required." };
 
   if (isDemoMode) return { ok: true, message: "Thanks! (Demo mode — request not stored.)" };
+
+  // This is the one unauthenticated write we expose — throttle per IP so it
+  // can't be used to flood the admin's review queue.
+  const ok = await rateLimit(
+    `acct_req:${getClientIp()}`,
+    LIMITS.accountRequest.limit,
+    LIMITS.accountRequest.windowSeconds,
+  );
+  if (!ok) {
+    return { ok: false, message: "Too many requests from this network — please try again later." };
+  }
 
   const supabase = createSupabaseServerClient();
   if (!supabase) return { ok: false, message: "Requests aren't available right now." };

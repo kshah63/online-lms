@@ -1,6 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { captureError } from "@/lib/observability";
 import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
 
 // ============================================================================
@@ -75,9 +76,11 @@ export async function draftReport(input: {
   segments: TranscriptSegment[];
   metrics: SessionMetrics | null;
   ctx: { studentName: string; course: string };
+  useAi?: boolean;
 }): Promise<ReportDraft> {
   const { notes, segments, metrics, ctx } = input;
-  if (!aiConfigured) return heuristicDraft(notes, ctx);
+  // No key, or the caller is over their AI rate limit → notes-first heuristic.
+  if (!aiConfigured || input.useAi === false) return heuristicDraft(notes, ctx);
 
   const client = new Anthropic();
   const transcript = segments
@@ -108,7 +111,7 @@ ${metrics ? `Metrics: student talked ${pct(metrics.student_talk_pct)}, ${metrics
       if (parsed.success) return parsed.data;
     }
   } catch (err) {
-    console.error("draftReport failed, using heuristic:", err);
+    captureError(err, { where: "draftReport failed, using heuristic" });
   }
   return heuristicDraft(notes, ctx);
 }

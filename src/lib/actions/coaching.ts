@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
+import { rateLimit, LIMITS } from "@/lib/rate-limit";
 import { computeMetrics, type TranscriptSegment } from "@/lib/coaching/metrics";
 import { analyzeLesson, type TeacherFeedback } from "@/lib/coaching/analyze";
 
@@ -17,12 +18,19 @@ export async function finalizeLesson(
   segments: TranscriptSegment[],
   ctx: { teacherName: string; studentName: string; course: string },
 ): Promise<TeacherFeedback> {
+  const profile = await getCurrentProfile();
   const metrics = computeMetrics(segments);
-  const feedback = await analyzeLesson(segments, metrics, ctx);
+
+  // Cap Opus spend per teacher; over the limit we still return a (heuristic) report.
+  const useAi = await rateLimit(
+    `ai:finalize:${profile?.id ?? "anon"}`,
+    LIMITS.finalizeLesson.limit,
+    LIMITS.finalizeLesson.windowSeconds,
+  );
+  const feedback = await analyzeLesson(segments, metrics, ctx, { useAi });
 
   if (isDemoMode) return feedback;
 
-  const profile = await getCurrentProfile();
   const supabase = createSupabaseServerClient()!;
 
   await supabase.from("transcripts").upsert({ session_id: sessionId, segments });

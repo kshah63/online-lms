@@ -1,6 +1,7 @@
 import "server-only";
 import Anthropic from "@anthropic-ai/sdk";
 import { z } from "zod";
+import { captureError } from "@/lib/observability";
 import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
 
 // ============================================================================
@@ -69,8 +70,10 @@ export async function analyzeLesson(
   segments: TranscriptSegment[],
   metrics: SessionMetrics,
   ctx: { teacherName: string; studentName: string; course: string },
+  opts: { useAi?: boolean } = {},
 ): Promise<TeacherFeedback> {
-  if (!aiConfigured) return heuristicFeedback(metrics);
+  // No key, or the caller is over their AI rate limit → deterministic heuristic.
+  if (!aiConfigured || opts.useAi === false) return heuristicFeedback(metrics);
 
   const client = new Anthropic();
   const transcript = segments
@@ -104,7 +107,7 @@ ${transcript}`;
       if (parsed.success) return parsed.data;
     }
   } catch (err) {
-    console.error("analyzeLesson failed, using heuristic:", err);
+    captureError(err, { where: "analyzeLesson failed, using heuristic" });
   }
   return heuristicFeedback(metrics);
 }
