@@ -2,9 +2,9 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Lessons — 1-1 Online Tutoring",
+  title: "MathVision Global — 1-1 Online Tutoring",
   description:
-    "Live one-to-one online tutoring: scheduling, video, a collaborative notebook, AI coaching, and parent reports.",
+    "MathVision Global: live one-to-one online tutoring — scheduling, video, a collaborative notebook, AI coaching, and parent reports.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

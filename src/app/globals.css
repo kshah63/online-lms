@@ -4,27 +4,31 @@
 
 @layer base {
   :root {
-    /* Clean, modern ed-tech palette — calm neutrals + one indigo accent. */
-    --background: 220 33% 99%;
-    --foreground: 222 33% 12%;
+    /* MathVision brand — orange #F05A29 primary, indigo #2D3092 accent. */
+    --background: 24 33% 99%;
+    --foreground: 222 40% 13%;
 
     --card: 0 0% 100%;
-    --card-foreground: 222 33% 12%;
+    --card-foreground: 222 40% 13%;
 
     --popover: 0 0% 100%;
-    --popover-foreground: 222 33% 12%;
+    --popover-foreground: 222 40% 13%;
 
-    --primary: 243 75% 59%;
+    --primary: 15 86% 55%;
     --primary-foreground: 0 0% 100%;
 
-    --secondary: 220 18% 96%;
+    --secondary: 24 20% 96%;
     --secondary-foreground: 222 25% 20%;
 
-    --muted: 220 18% 96%;
+    --muted: 24 20% 96%;
     --muted-foreground: 220 12% 46%;
 
-    --accent: 243 80% 96%;
-    --accent-foreground: 243 60% 38%;
+    --accent: 16 100% 95%;
+    --accent-foreground: 15 78% 42%;
+
+    /* MathVision indigo — used for brand moments + the "Vision" accent. */
+    --indigo: 238 53% 37%;
+    --indigo-foreground: 0 0% 100%;
 
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
@@ -35,9 +39,9 @@
     --warning: 38 92% 50%;
     --warning-foreground: 38 60% 18%;
 
-    --border: 220 16% 90%;
-    --input: 220 16% 90%;
-    --ring: 243 75% 59%;
+    --border: 24 16% 90%;
+    --input: 24 16% 90%;
+    --ring: 15 86% 55%;
 
     --radius: 0.7rem;
 
@@ -52,14 +56,16 @@
     --card-foreground: 220 20% 96%;
     --popover: 222 28% 11%;
     --popover-foreground: 220 20% 96%;
-    --primary: 243 75% 66%;
-    --primary-foreground: 222 30% 8%;
+    --primary: 15 86% 58%;
+    --primary-foreground: 0 0% 100%;
     --secondary: 222 20% 16%;
     --secondary-foreground: 220 20% 96%;
     --muted: 222 20% 16%;
     --muted-foreground: 220 12% 62%;
-    --accent: 243 40% 22%;
-    --accent-foreground: 243 80% 88%;
+    --accent: 15 45% 22%;
+    --accent-foreground: 16 90% 88%;
+    --indigo: 238 60% 67%;
+    --indigo-foreground: 222 30% 8%;
     --destructive: 0 62% 50%;
     --destructive-foreground: 0 0% 100%;
     --success: 158 60% 45%;
@@ -68,7 +74,7 @@
     --warning-foreground: 38 60% 12%;
     --border: 222 18% 20%;
     --input: 222 18% 22%;
-    --ring: 243 75% 66%;
+    --ring: 15 86% 58%;
   }
 }
 

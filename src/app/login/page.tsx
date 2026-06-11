@@ -1,8 +1,8 @@
-import { GraduationCap } from "lucide-react";
 import { isDemoMode } from "@/lib/env";
 import { demoProfiles } from "@/lib/demo/data";
 import { setDemoPersona } from "@/lib/actions/auth";
 import { SignInForm } from "@/components/auth/sign-in-form";
+import { BrandMark, BrandWordmark } from "@/components/brand";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 
@@ -17,25 +17,28 @@ export default function LoginPage() {
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
       {/* Brand / pitch */}
-      <div className="relative hidden flex-col justify-between overflow-hidden bg-primary p-10 text-primary-foreground lg:flex">
+      <div
+        className="relative hidden flex-col justify-between overflow-hidden p-10 text-white lg:flex"
+        style={{ background: "linear-gradient(150deg, #2D3092 0%, #3a2f8a 38%, #F05A29 100%)" }}
+      >
         <div className="flex items-center gap-2.5">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-white/15">
-            <GraduationCap className="h-5 w-5" />
+          <span className="flex h-11 w-11 items-center justify-center rounded-xl bg-white">
+            <BrandMark size={30} />
           </span>
-          <span className="text-lg font-semibold">Lessons</span>
+          <span className="text-lg font-semibold tracking-tight">
+            Math<span className="text-[#F05A29]">Vision</span>
+          </span>
         </div>
         <div className="max-w-md">
           <h1 className="text-3xl font-semibold leading-tight">
-            Live 1-1 tutoring, built for students learning across timezones.
+            Live 1-1 tutoring, built for students learning across the world.
           </h1>
-          <p className="mt-4 text-primary-foreground/80">
+          <p className="mt-4 text-white/85">
             Scheduling, embedded video, a shared notebook the student works in, AI coaching for teachers,
             and clear reports for parents — one platform.
           </p>
         </div>
-        <div className="text-sm text-primary-foreground/70">
-          Every time is shown in your own timezone.
-        </div>
+        <div className="text-sm text-white/70">MathVision Global · every time shown in your own timezone.</div>
         <div
           className="pointer-events-none absolute -right-24 -top-24 h-72 w-72 rounded-full bg-white/10 blur-2xl"
           aria-hidden
@@ -49,11 +52,8 @@ export default function LoginPage() {
       {/* Auth panel */}
       <div className="flex items-center justify-center p-6">
         <div className="w-full max-w-md">
-          <div className="mb-6 flex items-center gap-2.5 lg:hidden">
-            <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <GraduationCap className="h-5 w-5" />
-            </span>
-            <span className="text-lg font-semibold">Lessons</span>
+          <div className="mb-6 lg:hidden">
+            <BrandWordmark size={32} textClassName="text-lg" />
           </div>
 
           {isDemoMode ? <PersonaPicker /> : <SignInForm />}

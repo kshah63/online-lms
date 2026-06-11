@@ -12,7 +12,6 @@ import {
   ClipboardList,
   Clock,
   FileText,
-  GraduationCap,
   LayoutDashboard,
   ListChecks,
   LogOut,
@@ -32,6 +31,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/actions/auth";
 import { TimezoneSync } from "@/components/timezone-sync";
+import { BrandMark, BrandWordmark } from "@/components/brand";
 import { cn } from "@/lib/utils";
 import type { Profile, Role } from "@/lib/types";
 
@@ -89,11 +89,8 @@ export function AppShell({
       <TimezoneSync currentTz={profile.timezone} enabled={!demoMode} />
       {/* Sidebar */}
       <aside className="hidden w-64 shrink-0 flex-col border-r bg-card/60 px-4 py-5 md:flex">
-        <Link href="/" className="mb-7 flex items-center gap-2.5 px-2">
-          <span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-            <GraduationCap className="h-5 w-5" />
-          </span>
-          <span className="text-[15px] font-semibold tracking-tight">Lessons</span>
+        <Link href="/" className="mb-7 flex items-center px-1">
+          <BrandWordmark size={30} textClassName="text-[15px]" />
         </Link>
 
         <nav className="flex flex-1 flex-col gap-1">
@@ -132,10 +129,8 @@ export function AppShell({
       <div className="flex min-w-0 flex-1 flex-col">
         <header className="sticky top-0 z-30 flex h-14 items-center gap-3 border-b bg-background/80 px-4 backdrop-blur md:px-6">
           {/* mobile brand */}
-          <Link href="/" className="flex items-center gap-2 md:hidden">
-            <span className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-              <GraduationCap className="h-4 w-4" />
-            </span>
+          <Link href="/" className="flex items-center md:hidden">
+            <BrandMark size={28} />
           </Link>
 
           <Clock12 tz={profile.timezone} />
