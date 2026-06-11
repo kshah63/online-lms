@@ -1,0 +1,27 @@
+{
+  "expo": {
+    "name": "MathVision Global",
+    "slug": "mathvision-mobile",
+    "scheme": "mathvision",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "newArchEnabled": true,
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.mathvision.app"
+    },
+    "android": {
+      "package": "com.mathvision.app"
+    },
+    "plugins": ["expo-router", "expo-notifications"],
+    "experiments": {
+      "typedRoutes": false
+    },
+    "extra": {
+      "eas": {
+        "projectId": ""
+      }
+    }
+  }
+}

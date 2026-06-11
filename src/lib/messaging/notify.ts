@@ -5,6 +5,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import { captureError } from "@/lib/observability";
 import { sendWhatsApp, sendWhatsAppTemplate } from "./whatsapp";
+import { sendExpoPush } from "./push";
 
 // ============================================================================
 // Automated WhatsApp notifications (§11). Event helpers below resolve who to
@@ -105,6 +106,18 @@ async function notify(input: NotifyInput): Promise<void> {
         .from("outbound_messages")
         .update({ status: result.status, provider_ref: result.ref })
         .eq("id", claimed.id);
+
+      // Also push to this recipient's mobile devices (best effort).
+      const { data: tokens } = await admin
+        .from("push_tokens")
+        .select("token")
+        .eq("profile_id", r.id);
+      await sendExpoPush(
+        (tokens ?? []).map((t) => t.token as string),
+        "MathVision Global",
+        body,
+        { kind: input.kind, sessionId: input.sessionId ?? null },
+      );
     }
   } catch (err) {
     captureError(err, { where: "notify", kind: input.kind });
