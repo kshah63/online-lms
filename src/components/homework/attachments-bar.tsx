@@ -2,7 +2,19 @@
 
 import { useRef, useState } from "react";
 import { FileText, ImageIcon, Loader2, Paperclip, Upload } from "lucide-react";
+import { createSupabaseBrowserClient } from "@/lib/supabase/client";
 import type { HomeworkAttachment } from "@/lib/types";
+
+/** Reads a response as JSON, but degrades gracefully when the body isn't JSON
+ * (e.g. a Vercel "Request Entity Too Large" plain-text error). */
+async function readJson(res: Response): Promise<Record<string, unknown>> {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { error: text.slice(0, 140) || `Request failed (${res.status})` };
+  }
+}
 
 export function AttachmentsBar({
   homeworkId,
@@ -25,12 +37,34 @@ export function AttachmentsBar({
     setBusy(true);
     setError(null);
     try {
-      const fd = new FormData();
-      fd.append("file", file);
-      const res = await fetch(`/api/homework/${homeworkId}/files`, { method: "POST", body: fd });
-      const data = await res.json();
-      if (!res.ok) throw new Error(data.error ?? "Upload failed");
-      setFiles(data.attachments ?? []);
+      // 1) Get a one-time signed Storage upload URL.
+      const r1 = await fetch(`/api/homework/${homeworkId}/upload-url`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, type: file.type, size: file.size }),
+      });
+      const d1 = await readJson(r1);
+      if (!r1.ok) throw new Error((d1.error as string) ?? "Could not start upload");
+
+      // 2) Upload the file DIRECTLY to Supabase Storage (no function size limit).
+      const supabase = createSupabaseBrowserClient();
+      if (!supabase) throw new Error("Uploads need a connected Supabase project.");
+      const { error: upErr } = await supabase.storage
+        .from("homework")
+        .uploadToSignedUrl(d1.path as string, d1.token as string, file, {
+          contentType: file.type || "application/octet-stream",
+        });
+      if (upErr) throw new Error(upErr.message);
+
+      // 3) Record the attachment on the homework.
+      const r2 = await fetch(`/api/homework/${homeworkId}/files`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ name: file.name, path: d1.path, size: file.size }),
+      });
+      const d2 = await readJson(r2);
+      if (!r2.ok) throw new Error((d2.error as string) ?? "Could not save attachment");
+      setFiles((d2.attachments as HomeworkAttachment[]) ?? []);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Upload failed");
     } finally {
