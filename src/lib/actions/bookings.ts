@@ -7,6 +7,11 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getChildren, getEnrolledCourses } from "@/lib/data/people";
+import {
+  notifyBookingConfirmed,
+  notifyBookingChanged,
+  notifyBookingCancelled,
+} from "@/lib/messaging/notify";
 import type { ActionResult } from "@/lib/actions/types";
 
 const EDITABLE = ["scheduled", "confirmed"];
@@ -63,16 +68,37 @@ export async function bookLesson(formData: FormData): Promise<ActionResult> {
   const supabase = createSupabaseAdminClient();
   if (!supabase) return { ok: false, message: "Booking isn't available — server not configured." };
 
-  const { error } = await supabase.from("sessions").insert({
-    course_id,
-    student_id,
-    teacher_id: null,
-    scheduled_start: start.toUTC().toISO(),
-    scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
-    status: "scheduled",
-    agenda,
-  });
+  const { data: created, error } = await supabase
+    .from("sessions")
+    .insert({
+      course_id,
+      student_id,
+      teacher_id: null,
+      scheduled_start: start.toUTC().toISO(),
+      scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
+      status: "scheduled",
+      agenda,
+    })
+    .select("id")
+    .maybeSingle();
   if (error) return { ok: false, message: error.message };
+
+  // Confirm to the family by WhatsApp (no-op without opt-in/provider).
+  if (created?.id) {
+    const course = enrolled.find((c) => c.id === course_id);
+    const { data: student } = await supabase
+      .from("profiles")
+      .select("display_name")
+      .eq("id", student_id)
+      .maybeSingle();
+    await notifyBookingConfirmed({
+      studentId: student_id,
+      studentName: student?.display_name ?? "your child",
+      course: course?.name ?? "the lesson",
+      sessionId: created.id,
+      startISO: start.toUTC().toISO()!,
+    });
+  }
 
   revalidateBookings();
   return { ok: true, message: "Lesson requested — an admin will assign a teacher." };
@@ -113,14 +139,24 @@ export async function rescheduleSession(formData: FormData): Promise<ActionResul
   const supabase = createSupabaseAdminClient();
   if (!supabase) return { ok: false, message: "Rescheduling isn't available — server not configured." };
 
+  const newStartISO = start.toUTC().toISO()!;
   const { error } = await supabase
     .from("sessions")
     .update({
-      scheduled_start: start.toUTC().toISO(),
+      scheduled_start: newStartISO,
       scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
     })
     .eq("id", session_id);
   if (error) return { ok: false, message: error.message };
+
+  await notifyBookingChanged({
+    studentId: session.student_id,
+    studentName: session.student.display_name,
+    course: session.course.name,
+    sessionId: session_id,
+    startISO: newStartISO,
+    changeId: newStartISO, // unique per reschedule target
+  });
 
   revalidateBookings();
   return { ok: true, message: "Lesson rescheduled." };
@@ -153,6 +189,13 @@ export async function cancelBooking(formData: FormData): Promise<ActionResult> {
     .update({ status: "cancelled", cancel_reason: reason })
     .eq("id", session_id);
   if (error) return { ok: false, message: error.message };
+
+  await notifyBookingCancelled({
+    studentId: session.student_id,
+    studentName: session.student.display_name,
+    course: session.course.name,
+    sessionId: session_id,
+  });
 
   revalidateBookings();
   return { ok: true, message: "Lesson cancelled." };

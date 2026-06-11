@@ -7,6 +7,7 @@ import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getSessionTranscript } from "@/lib/data/reports";
 import { rateLimit, LIMITS } from "@/lib/rate-limit";
+import { notifyReportPublished } from "@/lib/messaging/notify";
 import { draftReport, type ReportDraft } from "@/lib/reports/draft";
 import type { ActionResult } from "@/lib/actions/types";
 
@@ -110,6 +111,14 @@ export async function saveReport(
         reason: `Low lesson rating (${input.rating}/5) in ${session.course.name}.`,
       });
     }
+
+    // Tell the family their report is ready (no-op without opt-in/provider).
+    await notifyReportPublished({
+      studentId: session.student_id,
+      studentName: session.student.display_name,
+      course: session.course.name,
+      sessionId,
+    });
   }
 
   revalidatePath("/teacher/reports");
