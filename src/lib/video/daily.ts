@@ -49,7 +49,8 @@ export async function ensureRoom(sessionId: string): Promise<string> {
       name,
       privacy: "private",
       properties: {
-        enable_recording: "cloud",
+        // Recording intentionally disabled — we only use transcription for AI
+        // feedback, which avoids storing video of minors.
         enable_transcription: true,
         enable_prejoin_ui: false,
         exp: Math.floor(Date.now() / 1000) + 60 * 60 * 6, // 6h

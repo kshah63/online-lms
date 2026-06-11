@@ -55,7 +55,6 @@ export function LessonRoom({
   selfId,
   selfName,
   peerName,
-  recordingAllowed,
   isTeacher,
   initialSnapshot,
   actualStartISO,
@@ -70,7 +69,6 @@ export function LessonRoom({
   selfId: string;
   selfName: string;
   peerName: string;
-  recordingAllowed: boolean;
   isTeacher: boolean;
   initialSnapshot: unknown | null;
   actualStartISO: string | null;
@@ -149,7 +147,6 @@ export function LessonRoom({
       sessionId={sessionId}
       selfName={selfName}
       peerName={peerName}
-      recordingAllowed={recordingAllowed}
       isTeacher={isTeacher}
       onTranscript={coach.ingest}
       onPeerPresent={handlePeerPresent}

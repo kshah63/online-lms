@@ -1,7 +1,8 @@
-import { isDemoMode } from "@/lib/env";
+import { isDemoMode, isMisconfigured } from "@/lib/env";
 import { demoProfiles } from "@/lib/demo/data";
 import { setDemoPersona } from "@/lib/actions/auth";
 import { SignInForm } from "@/components/auth/sign-in-form";
+import { NotConfigured } from "@/components/not-configured";
 import { BrandMark, BrandWordmark } from "@/components/brand";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -14,6 +15,7 @@ const ROLE_BLURB: Record<string, string> = {
 };
 
 export default function LoginPage() {
+  if (isMisconfigured) return <NotConfigured />;
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
       {/* Brand / pitch */}

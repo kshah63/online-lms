@@ -5,7 +5,7 @@ import { LessonRoom } from "@/components/lesson/lesson-room";
 import { Button } from "@/components/ui/button";
 import { requireProfile, homePathForRole } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
-import { getChildren, getConsents } from "@/lib/data/people";
+import { getChildren } from "@/lib/data/people";
 import { loadNotebookSnapshot } from "@/lib/actions/notebook";
 import { isDemoMode } from "@/lib/env";
 
@@ -28,10 +28,6 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
     return <AccessDenied isTeacher={isTeacher} backHref={homePathForRole(profile.role)} />;
   }
 
-  // ----- Recording consent gate (§9) ---------------------------------------
-  const consents = await getConsents(session.student_id);
-  const recordingAllowed = consents.some((c) => c.type === "recording");
-
   // The "other" participant.
   const peerName = isTeacher
     ? session.student.display_name
@@ -51,7 +47,6 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
       selfId={profile.id}
       selfName={profile.display_name}
       peerName={peerName}
-      recordingAllowed={recordingAllowed}
       isTeacher={isTeacher}
       initialSnapshot={initialSnapshot}
       actualStartISO={session.actual_start}

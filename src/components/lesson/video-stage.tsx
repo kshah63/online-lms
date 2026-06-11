@@ -17,7 +17,6 @@ export function VideoStage({
   sessionId,
   selfName,
   peerName,
-  recordingAllowed,
   isTeacher,
   onTranscript,
   onPeerPresent,
@@ -25,7 +24,6 @@ export function VideoStage({
   sessionId: string;
   selfName: string;
   peerName: string;
-  recordingAllowed: boolean;
   isTeacher: boolean;
   onTranscript?: (seg: TranscriptSegment) => void;
   onPeerPresent?: () => void;
@@ -64,7 +62,6 @@ export function VideoStage({
         roomUrl={config.roomUrl}
         token={config.token}
         isOwner={Boolean(config.isOwner)}
-        recordingAllowed={recordingAllowed}
         isTeacher={isTeacher}
         selfName={selfName}
         peerName={peerName}
@@ -74,12 +71,5 @@ export function VideoStage({
     );
   }
 
-  return (
-    <MockVideoPanel
-      selfName={selfName}
-      peerName={peerName}
-      recordingAllowed={recordingAllowed}
-      isTeacher={isTeacher}
-    />
-  );
+  return <MockVideoPanel selfName={selfName} peerName={peerName} />;
 }

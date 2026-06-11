@@ -11,7 +11,7 @@ import {
   useLocalSessionId,
   useParticipantIds,
 } from "@daily-co/daily-react";
-import { Circle, FileText, Mic, MicOff, ShieldAlert, Video as VideoIcon, VideoOff, Wifi } from "lucide-react";
+import { FileText, Mic, MicOff, Video as VideoIcon, VideoOff, Wifi } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import type { TranscriptSegment } from "@/lib/coaching/metrics";
@@ -20,7 +20,6 @@ interface RoomProps {
   roomUrl: string;
   token: string;
   isOwner: boolean;
-  recordingAllowed: boolean;
   isTeacher: boolean;
   selfName: string;
   peerName: string;
@@ -54,7 +53,7 @@ export function DailyRoom(props: RoomProps) {
   );
 }
 
-function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, onTranscript, onPeerPresent }: RoomProps) {
+function RoomInner({ isOwner, isTeacher, selfName, peerName, onTranscript, onPeerPresent }: RoomProps) {
   const daily = useDaily();
   const localId = useLocalSessionId();
   const remoteIds = useParticipantIds({ filter: "remote" });
@@ -62,7 +61,6 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
 
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
-  const [recording, setRecording] = useState(false);
   const [transcription, setTranscription] = useState<"idle" | "on" | "error">("idle");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
 
@@ -139,12 +137,6 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
     setCam(next);
     daily?.setLocalVideo(next);
   }
-  function toggleRecording() {
-    if (!recordingAllowed || !isOwner) return;
-    if (recording) daily?.stopRecording();
-    else daily?.startRecording();
-    setRecording((v) => !v);
-  }
 
   return (
     <div className="flex h-full flex-col bg-slate-950 text-white">
@@ -160,11 +152,6 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
           </div>
         )}
 
-        {recording && (
-          <div className="absolute left-3 top-3 flex items-center gap-1.5 rounded-full bg-black/50 px-2.5 py-1 text-xs font-medium">
-            <Circle className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" /> REC
-          </div>
-        )}
         <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
           <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px] text-white/70">
             <Wifi className="h-3 w-3 text-emerald-400" /> Live
@@ -204,28 +191,12 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
         <button onClick={toggleCam} className={ctrl(cam)} aria-label="Camera">
           {cam ? <VideoIcon className="h-4 w-4" /> : <VideoOff className="h-4 w-4" />}
         </button>
-        {isOwner && (
-          <button
-            onClick={toggleRecording}
-            disabled={!recordingAllowed}
-            title={recordingAllowed ? "Toggle recording" : "Consent required before recording"}
-            className={cn(
-              "ml-1 flex items-center gap-1.5 rounded-full px-3 py-2 text-xs font-medium transition-colors",
-              !recordingAllowed && "cursor-not-allowed bg-white/5 text-white/40",
-              recordingAllowed && recording && "bg-red-500/90 text-white hover:bg-red-500",
-              recordingAllowed && !recording && "bg-white/10 text-white hover:bg-white/20",
-            )}
-          >
-            {recordingAllowed ? <Circle className={cn("h-3 w-3", recording && "fill-current")} /> : <ShieldAlert className="h-3.5 w-3.5" />}
-            {recording ? "Stop" : "Record"}
-          </button>
-        )}
       </div>
 
       {isOwner && transcription === "error" && (
         <div className="border-t border-white/10 bg-amber-500/15 px-3 py-1.5 text-[11px] leading-snug text-amber-200">
-          AI transcription isn&rsquo;t running{transcriptionError ? `: ${transcriptionError}` : "."} Recording &amp; feedback still
-          work; coaching uses metrics until transcription is enabled in Daily.
+          AI transcription isn&rsquo;t running{transcriptionError ? `: ${transcriptionError}` : "."} The lesson still works;
+          coaching uses metrics until transcription is enabled in Daily.
         </div>
       )}
     </div>
