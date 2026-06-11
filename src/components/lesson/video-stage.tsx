@@ -20,6 +20,7 @@ export function VideoStage({
   recordingAllowed,
   isTeacher,
   onTranscript,
+  onPeerPresent,
 }: {
   sessionId: string;
   selfName: string;
@@ -27,6 +28,7 @@ export function VideoStage({
   recordingAllowed: boolean;
   isTeacher: boolean;
   onTranscript?: (seg: TranscriptSegment) => void;
+  onPeerPresent?: () => void;
 }) {
   const [config, setConfig] = useState<Config | null>(null);
 
@@ -40,6 +42,13 @@ export function VideoStage({
       cancelled = true;
     };
   }, [sessionId]);
+
+  // Mock panel can't detect a real peer — start the clock on mount so the
+  // flow is testable without a video provider configured.
+  const usingMock = Boolean(config && !(config.configured && config.roomUrl && config.token));
+  useEffect(() => {
+    if (usingMock) onPeerPresent?.();
+  }, [usingMock, onPeerPresent]);
 
   if (!config) {
     return (
@@ -60,6 +69,7 @@ export function VideoStage({
         selfName={selfName}
         peerName={peerName}
         onTranscript={onTranscript}
+        onPeerPresent={onPeerPresent}
       />
     );
   }

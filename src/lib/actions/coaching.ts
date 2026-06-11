@@ -37,7 +37,10 @@ export async function finalizeLesson(
     suggestions: feedback.suggestions,
     dimension_scores: feedback.dimension_scores,
   });
-  await supabase.from("sessions").update({ status: "completed" }).eq("id", sessionId);
+  await supabase
+    .from("sessions")
+    .update({ status: "completed", actual_end: new Date().toISOString() })
+    .eq("id", sessionId);
 
   revalidatePath("/teacher/coaching");
   revalidatePath("/admin/coaching");

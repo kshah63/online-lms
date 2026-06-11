@@ -1,23 +1,33 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import dynamic from "next/dynamic";
-import { BellOff, Loader2, NotebookPen, Sparkles, SquareCheckBig, Video, X } from "lucide-react";
+import Link from "next/link";
+import {
+  BellOff,
+  ChevronLeft,
+  Clock,
+  Loader2,
+  NotebookPen,
+  Sparkles,
+  SquareCheckBig,
+  Video,
+  X,
+} from "lucide-react";
 import { VideoStage } from "@/components/lesson/video-stage";
 import { MaterialsPanel } from "@/components/lesson/materials-panel";
+import { ProviderBadge } from "@/components/lesson/video-panel";
+import { StatusBadge } from "@/components/status-badge";
+import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScoreBars } from "@/components/coaching/score-bars";
 import { useLiveCoach } from "@/lib/coaching/use-live-coach";
 import { DEMO_LESSON_TRANSCRIPT } from "@/lib/coaching/demo-transcript";
 import { finalizeLesson } from "@/lib/actions/coaching";
+import { startSessionClock } from "@/lib/actions/sessions";
 import type { TeacherFeedback } from "@/lib/coaching/analyze";
+import type { SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // tldraw is browser-only.
@@ -40,28 +50,49 @@ export function LessonRoom({
   notebookId,
   materialsCourseId,
   courseName,
+  status,
+  backHref,
   selfId,
   selfName,
   peerName,
   recordingAllowed,
   isTeacher,
   initialSnapshot,
+  actualStartISO,
   demoCoaching,
 }: {
   sessionId: string;
   notebookId: string;
   materialsCourseId: string | null;
   courseName: string;
+  status: SessionStatus;
+  backHref: string;
   selfId: string;
   selfName: string;
   peerName: string;
   recordingAllowed: boolean;
   isTeacher: boolean;
   initialSnapshot: unknown | null;
+  actualStartISO: string | null;
   demoCoaching: boolean;
 }) {
   const [tab, setTab] = useState<Tab>("notebook");
   const coach = useLiveCoach(sessionId, isTeacher);
+
+  // The lesson clock runs from when BOTH join (actual_start), not booking time.
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(
+    actualStartISO ? Date.parse(actualStartISO) : null,
+  );
+  const [endedAtMs, setEndedAtMs] = useState<number | null>(null);
+  const startedRef = useRef<boolean>(Boolean(actualStartISO));
+
+  const handlePeerPresent = useCallback(() => {
+    if (startedRef.current) return;
+    startedRef.current = true;
+    startSessionClock(sessionId)
+      .then((r) => setStartedAtMs(Date.parse(r.actual_start)))
+      .catch(() => setStartedAtMs(Date.now()));
+  }, [sessionId]);
 
   // Demo: drive the live coach from a scripted transcript (no live audio).
   useEffect(() => {
@@ -91,70 +122,116 @@ export function LessonRoom({
       recordingAllowed={recordingAllowed}
       isTeacher={isTeacher}
       onTranscript={coach.ingest}
+      onPeerPresent={handlePeerPresent}
     />
   );
 
+  const liveStatus: SessionStatus = endedAtMs ? "completed" : startedAtMs ? "in_progress" : status;
+
   return (
-    <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-      {/* Mobile tab switcher */}
-      <div className="flex border-b lg:hidden">
-        <TabButton active={tab === "notebook"} onClick={() => setTab("notebook")} icon={<NotebookPen className="h-4 w-4" />} label="Notebook" />
-        <TabButton active={tab === "video"} onClick={() => setTab("video")} icon={<Video className="h-4 w-4" />} label="Video" />
-        <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
-      </div>
-
-      {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
-      {isDesktop === true && (
-        <aside className="flex w-80 shrink-0 flex-col border-r xl:w-96">
-          <div className="h-[46%] min-h-[240px] border-b">{videoStage}</div>
-          <div className="min-h-0 flex-1">
-            <MaterialsPanel materialsCourseId={materialsCourseId} />
+    <div className="flex h-screen flex-col overflow-hidden bg-background">
+      {/* Header — Leave, lesson info, live clock, and (teacher) End button. */}
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 md:px-4">
+        <Button asChild variant="ghost" size="sm">
+          <Link href={backHref}>
+            <ChevronLeft className="h-4 w-4" /> Leave
+          </Link>
+        </Button>
+        <div className="hidden h-6 w-px bg-border sm:block" />
+        <div className="min-w-0">
+          <div className="flex items-center gap-2">
+            <span className="truncate text-sm font-semibold">{courseName}</span>
+            <StatusBadge status={liveStatus} />
           </div>
-        </aside>
-      )}
+          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Avatar name={peerName} size={16} />
+            <span className="truncate">with {peerName}</span>
+          </div>
+        </div>
 
-      {/* Notebook (centerpiece) */}
-      <main className={cn("relative min-h-[60vh] flex-1 bg-muted/30 lg:block", tab === "notebook" ? "block" : "hidden")}>
-        <NotebookPanel notebookId={notebookId} userId={selfId} userName={selfName} initialSnapshot={initialSnapshot} />
-
-        {isTeacher && (
-          <>
+        <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} />
+          <ProviderBadge />
+          {isTeacher && (
             <EndLessonButton
               sessionId={sessionId}
               courseName={courseName}
               selfName={selfName}
               peerName={peerName}
               getSegments={coach.getSegments}
+              ended={Boolean(endedAtMs)}
+              onEnded={() => setEndedAtMs(Date.now())}
             />
-            <CoachChip coach={coach} />
+          )}
+        </div>
+      </header>
+
+      <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
+        {/* Mobile tab switcher */}
+        <div className="flex border-b lg:hidden">
+          <TabButton active={tab === "notebook"} onClick={() => setTab("notebook")} icon={<NotebookPen className="h-4 w-4" />} label="Notebook" />
+          <TabButton active={tab === "video"} onClick={() => setTab("video")} icon={<Video className="h-4 w-4" />} label="Video" />
+          <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
+        </div>
+
+        {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
+        {isDesktop === true && (
+          <aside className="flex w-80 shrink-0 flex-col border-r xl:w-96">
+            <div className="h-[46%] min-h-[240px] border-b">{videoStage}</div>
+            <div className="min-h-0 flex-1">
+              <MaterialsPanel materialsCourseId={materialsCourseId} />
+            </div>
+          </aside>
+        )}
+
+        {/* Notebook (centerpiece) */}
+        <main className={cn("relative min-h-[60vh] flex-1 bg-muted/30 lg:block", tab === "notebook" ? "block" : "hidden")}>
+          <NotebookPanel notebookId={notebookId} userId={selfId} userName={selfName} initialSnapshot={initialSnapshot} />
+          {isTeacher && <CoachChip coach={coach} />}
+        </main>
+
+        {/* Mobile panels — video stays mounted across tab switches, just hidden */}
+        {isDesktop === false && (
+          <>
+            <div className={cn("min-h-[60vh]", tab === "video" ? "block" : "hidden")}>{videoStage}</div>
+            <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
+              <MaterialsPanel materialsCourseId={materialsCourseId} />
+            </div>
           </>
         )}
-      </main>
-
-      {/* Mobile panels — video stays mounted across tab switches, just hidden */}
-      {isDesktop === false && (
-        <>
-          <div className={cn("min-h-[60vh]", tab === "video" ? "block" : "hidden")}>{videoStage}</div>
-          <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
-            <MaterialsPanel materialsCourseId={materialsCourseId} />
-          </div>
-        </>
-      )}
+      </div>
     </div>
   );
 }
 
-/** Tracks the lg (1024px) breakpoint; null until first client measurement. */
-function useIsDesktop(): boolean | null {
-  const [isDesktop, setIsDesktop] = useState<boolean | null>(null);
+/** Live elapsed time since both joined (or final duration once ended). */
+function Elapsed({ startedAtMs, endedAtMs }: { startedAtMs: number | null; endedAtMs: number | null }) {
+  const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const update = () => setIsDesktop(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return isDesktop;
+    if (endedAtMs) return;
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [endedAtMs]);
+
+  if (!startedAtMs) {
+    return (
+      <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
+        <Clock className="h-4 w-4" /> Waiting to start
+      </span>
+    );
+  }
+  const elapsed = Math.max(0, Math.floor(((endedAtMs ?? now) - startedAtMs) / 1000));
+  const h = Math.floor(elapsed / 3600);
+  const m = Math.floor((elapsed % 3600) / 60);
+  const s = elapsed % 60;
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const label = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
+  return (
+    <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
+      <Clock className="h-4 w-4" />
+      <span className="tabular-nums">{label}</span>
+    </span>
+  );
 }
 
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
@@ -170,6 +247,19 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
       {label}
     </button>
   );
+}
+
+/** Tracks the lg (1024px) breakpoint; null until first client measurement. */
+function useIsDesktop(): boolean | null {
+  const [isDesktop, setIsDesktop] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return isDesktop;
 }
 
 /** §7.2 The live coach nudge — teacher-only, glanceable, mutable, dismissible. */
@@ -215,12 +305,16 @@ function EndLessonButton({
   selfName,
   peerName,
   getSegments,
+  ended,
+  onEnded,
 }: {
   sessionId: string;
   courseName: string;
   selfName: string;
   peerName: string;
   getSegments: () => { speaker: "teacher" | "student"; text: string; start_ms: number; end_ms: number }[];
+  ended: boolean;
+  onEnded: () => void;
 }) {
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<TeacherFeedback | null>(null);
@@ -233,6 +327,7 @@ function EndLessonButton({
         studentName: peerName,
         course: courseName,
       });
+      onEnded();
       setFeedback(fb);
     } finally {
       setLoading(false);
@@ -241,15 +336,10 @@ function EndLessonButton({
 
   return (
     <>
-      <Button
-        onClick={end}
-        disabled={loading}
-        size="sm"
-        variant="outline"
-        className="absolute right-4 top-4 z-10 bg-card/90 shadow backdrop-blur"
-      >
+      <Button onClick={end} disabled={loading} size="sm" variant={ended ? "outline" : "default"}>
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareCheckBig className="h-4 w-4" />}
-        End &amp; get feedback
+        <span className="hidden sm:inline">{ended ? "View feedback" : "End & get feedback"}</span>
+        <span className="sm:hidden">{ended ? "Feedback" : "End"}</span>
       </Button>
 
       <Dialog open={!!feedback} onOpenChange={(o) => !o && setFeedback(null)}>

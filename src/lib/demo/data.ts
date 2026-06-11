@@ -184,6 +184,8 @@ function sv(
     teacher_id: teacher?.id ?? null,
     scheduled_start: start,
     scheduled_end: end,
+    actual_start: null,
+    actual_end: null,
     status,
     video_room_id: room,
     recording_url: null,

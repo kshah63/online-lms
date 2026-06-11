@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Daily from "@daily-co/daily-js";
 import {
   DailyAudio,
@@ -25,6 +25,7 @@ interface RoomProps {
   selfName: string;
   peerName: string;
   onTranscript?: (seg: TranscriptSegment) => void;
+  onPeerPresent?: () => void;
 }
 
 export function DailyRoom(props: RoomProps) {
@@ -53,7 +54,7 @@ export function DailyRoom(props: RoomProps) {
   );
 }
 
-function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, onTranscript }: RoomProps) {
+function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, onTranscript, onPeerPresent }: RoomProps) {
   const daily = useDaily();
   const localId = useLocalSessionId();
   const remoteIds = useParticipantIds({ filter: "remote" });
@@ -62,6 +63,15 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
   const [recording, setRecording] = useState(false);
+
+  // Both participants are in the room — start the real session clock (once).
+  const announcedRef = useRef(false);
+  useEffect(() => {
+    if (peerId && !announcedRef.current) {
+      announcedRef.current = true;
+      onPeerPresent?.();
+    }
+  }, [peerId, onPeerPresent]);
 
   // Owner starts transcription so §7's coaching pipeline has a feed.
   useEffect(() => {

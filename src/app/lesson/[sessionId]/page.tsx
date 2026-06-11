@@ -1,11 +1,7 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { ChevronLeft, Clock, ShieldX, Timer } from "lucide-react";
+import { Clock, ShieldX } from "lucide-react";
 import { LessonRoom } from "@/components/lesson/lesson-room";
-import { LessonTimer } from "@/components/lesson/lesson-timer";
-import { ProviderBadge } from "@/components/lesson/video-panel";
-import { StatusBadge } from "@/components/status-badge";
-import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { requireProfile, homePathForRole } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
@@ -45,52 +41,22 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
   const initialSnapshot = await loadNotebookSnapshot(notebookId);
 
   return (
-    <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* Header */}
-      <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 md:px-4">
-        <Button asChild variant="ghost" size="sm">
-          <Link href={homePathForRole(profile.role)}>
-            <ChevronLeft className="h-4 w-4" /> Leave
-          </Link>
-        </Button>
-
-        <div className="hidden h-6 w-px bg-border sm:block" />
-
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            <span className="truncate text-sm font-semibold">{session.course.name}</span>
-            <StatusBadge status={session.status} />
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Avatar name={peerName} size={16} />
-            <span className="truncate">with {peerName}</span>
-          </div>
-        </div>
-
-        <div className="ml-auto flex items-center gap-3">
-          <div className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
-            <Timer className="h-4 w-4" />
-            <LessonTimer startISO={session.scheduled_start} />
-          </div>
-          <ProviderBadge />
-        </div>
-      </header>
-
-      {/* Three-panel body */}
-      <LessonRoom
-        sessionId={session.id}
-        notebookId={notebookId}
-        materialsCourseId={session.course.materials_course_id}
-        courseName={session.course.name}
-        selfId={profile.id}
-        selfName={profile.display_name}
-        peerName={peerName}
-        recordingAllowed={recordingAllowed}
-        isTeacher={isTeacher}
-        initialSnapshot={initialSnapshot}
-        demoCoaching={isDemoMode}
-      />
-    </div>
+    <LessonRoom
+      sessionId={session.id}
+      notebookId={notebookId}
+      materialsCourseId={session.course.materials_course_id}
+      courseName={session.course.name}
+      status={session.status}
+      backHref={homePathForRole(profile.role)}
+      selfId={profile.id}
+      selfName={profile.display_name}
+      peerName={peerName}
+      recordingAllowed={recordingAllowed}
+      isTeacher={isTeacher}
+      initialSnapshot={initialSnapshot}
+      actualStartISO={session.actual_start}
+      demoCoaching={isDemoMode}
+    />
   );
 }
 

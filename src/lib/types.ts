@@ -40,6 +40,8 @@ export interface Session {
   teacher_id: string | null;
   scheduled_start: string; // UTC ISO
   scheduled_end: string; // UTC ISO
+  actual_start: string | null; // set when both join (UTC ISO)
+  actual_end: string | null; // set when the lesson is ended
   status: SessionStatus;
   video_room_id: string | null;
   recording_url: string | null;

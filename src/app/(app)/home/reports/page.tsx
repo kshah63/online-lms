@@ -15,6 +15,8 @@ import { getReportForSession } from "@/lib/data/people";
 export default async function ReportsPage() {
   const profile = await requireRole("student", "parent");
   const tz = profile.timezone;
+  // Parents don't see the individual teacher's name on reports.
+  const showTeacher = profile.role !== "parent";
 
   const past = await getPastForProfile(profile, 30);
   const withReports = (
@@ -45,7 +47,7 @@ export default async function ReportsPage() {
                       <span>
                         {DateTime.fromISO(session.scheduled_start, { zone: "utc" }).setZone(tz).toFormat("cccc, d LLL yyyy")}
                       </span>
-                      {session.teacher && (
+                      {showTeacher && session.teacher && (
                         <span className="flex items-center gap-1.5">
                           <Avatar name={session.teacher.display_name} size={18} /> {session.teacher.display_name}
                         </span>

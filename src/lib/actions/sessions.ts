@@ -58,6 +58,36 @@ export async function scheduleSession(formData: FormData): Promise<ActionResult>
   return { ok: true, message: weeks > 1 ? `Scheduled ${weeks} weekly sessions.` : "Session scheduled." };
 }
 
+/**
+ * Start the real session clock when teacher + student are both in the room.
+ * Idempotent — only sets actual_start the first time. Returns the start ISO so
+ * the client timer counts from the same instant on every device.
+ */
+export async function startSessionClock(sessionId: string): Promise<{ actual_start: string }> {
+  const now = new Date().toISOString();
+  if (isDemoMode) return { actual_start: now };
+
+  const supabase = createSupabaseServerClient()!;
+  // Set only if not already started; mark the lesson in progress.
+  const { data } = await supabase
+    .from("sessions")
+    .update({ actual_start: now, status: "in_progress" })
+    .eq("id", sessionId)
+    .is("actual_start", null)
+    .select("actual_start")
+    .maybeSingle();
+
+  if (data?.actual_start) return { actual_start: data.actual_start };
+
+  // Already started — return the existing value.
+  const { data: existing } = await supabase
+    .from("sessions")
+    .select("actual_start")
+    .eq("id", sessionId)
+    .maybeSingle();
+  return { actual_start: existing?.actual_start ?? now };
+}
+
 /** Admin: assign (or reassign) a teacher to a session. Bound directly to a form. */
 export async function assignTeacher(formData: FormData): Promise<void> {
   const session_id = String(formData.get("session_id") ?? "");
