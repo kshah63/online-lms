@@ -67,7 +67,7 @@ export async function getOpenFollowups(): Promise<FollowupView[]> {
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("followups")
-    .select(`*, student:profiles!student_id(id,display_name,timezone,avatar_url,phone)`)
+    .select(`*, student:profiles!followups_student_id_fkey(id,display_name,timezone,avatar_url,phone)`)
     .in("status", ["open", "snoozed"])
     .order("priority")
     .order("created_at", { ascending: false });
@@ -79,7 +79,7 @@ export async function getOpenFollowups(): Promise<FollowupView[]> {
   if (studentIds.length) {
     const { data: links } = await supabase
       .from("parent_student")
-      .select(`student_id, parent:profiles!parent_id(id,display_name,phone)`)
+      .select(`student_id, parent:profiles!parent_student_parent_id_fkey(id,display_name,phone)`)
       .in("student_id", studentIds);
     const byStudent = new Map<string, FollowupView["parent"]>();
     // eslint-disable-next-line @typescript-eslint/no-explicit-any

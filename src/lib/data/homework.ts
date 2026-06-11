@@ -92,7 +92,7 @@ function mapRow(r: any): HomeworkView {
   return { ...r, course_name: r.course?.name ?? "", student_name: r.student?.display_name ?? "" };
 }
 
-const SELECT = `*, course:courses(name), student:profiles!student_id(display_name)`;
+const SELECT = `*, course:courses(name), student:profiles!homework_student_id_fkey(display_name)`;
 
 /** Homework for a student (own) or parent (children). */
 export async function getHomeworkForProfile(profile: Profile): Promise<HomeworkView[]> {

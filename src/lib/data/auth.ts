@@ -23,12 +23,17 @@ export async function getCurrentProfile(): Promise<Profile | null> {
   } = await supabase.auth.getUser();
   if (!user) return null;
 
-  const { data } = await supabase
+  const { data, error } = await supabase
     .from("profiles")
     .select("*")
     .eq("id", user.id)
-    .single();
+    .maybeSingle();
 
+  if (error) {
+    // Surfaces in server logs (e.g. RLS/migration issues) without 500-ing.
+    console.error("getCurrentProfile failed:", error.message);
+    return null;
+  }
   return (data as Profile) ?? null;
 }
 

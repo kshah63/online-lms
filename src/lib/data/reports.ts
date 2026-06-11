@@ -8,8 +8,8 @@ import type { Profile, Report, SessionView } from "@/lib/types";
 const SELECT = `
   *,
   course:courses(id,name,subject,materials_course_id),
-  student:profiles!student_id(id,display_name,timezone,avatar_url),
-  teacher:profiles!teacher_id(id,display_name,timezone,avatar_url)
+  student:profiles!sessions_student_id_fkey(id,display_name,timezone,avatar_url),
+  teacher:profiles!sessions_teacher_id_fkey(id,display_name,timezone,avatar_url)
 `;
 
 export async function getReport(sessionId: string): Promise<Report | null> {

@@ -18,7 +18,7 @@ async function parentForStudent(studentId: string): Promise<{ id: string; phone:
   const supabase = createSupabaseServerClient()!;
   const { data } = await supabase
     .from("parent_student")
-    .select(`parent:profiles!parent_id(id,phone)`)
+    .select(`parent:profiles!parent_student_parent_id_fkey(id,phone)`)
     .eq("student_id", studentId)
     .maybeSingle();
   // eslint-disable-next-line @typescript-eslint/no-explicit-any

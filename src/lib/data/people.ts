@@ -54,7 +54,7 @@ export async function teachersForCourse(courseId: string): Promise<Profile[]> {
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("teacher_course")
-    .select("teacher:profiles!teacher_id(*)")
+    .select("teacher:profiles!teacher_course_teacher_id_fkey(*)")
     .eq("course_id", courseId);
   if (error) throw error;
   return ((data ?? []) as unknown as { teacher: Profile }[]).map((r) => r.teacher);
@@ -72,7 +72,7 @@ export async function getChildren(profile: Profile): Promise<Profile[]> {
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("parent_student")
-    .select("student:profiles!student_id(*)")
+    .select("student:profiles!parent_student_student_id_fkey(*)")
     .eq("parent_id", profile.id);
   if (error) throw error;
   return ((data ?? []) as unknown as { student: Profile }[]).map((r) => r.student);

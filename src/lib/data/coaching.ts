@@ -105,8 +105,8 @@ export async function getFeedbackHistory(teacherId: string): Promise<FeedbackVie
     .from("teacher_feedback")
     .select(
       `session_id, teacher_id, summary, strengths, suggestions, dimension_scores, created_at,
-       session:sessions!session_id(course:courses(name), student:profiles!student_id(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_id(display_name)`,
+       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
+       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
     )
     .eq("teacher_id", teacherId)
     .order("created_at", { ascending: false });
@@ -136,8 +136,8 @@ export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
     .from("teacher_feedback")
     .select(
       `session_id, teacher_id, summary, strengths, suggestions, dimension_scores, created_at,
-       session:sessions!session_id(course:courses(name), student:profiles!student_id(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_id(display_name)`,
+       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
+       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
     )
     .order("created_at", { ascending: false });
   if (error) throw error;
