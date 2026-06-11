@@ -31,6 +31,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/actions/auth";
+import { TimezoneSync } from "@/components/timezone-sync";
 import { cn } from "@/lib/utils";
 import type { Profile, Role } from "@/lib/types";
 
@@ -85,6 +86,7 @@ export function AppShell({
 
   return (
     <div className="flex min-h-screen bg-background">
+      <TimezoneSync currentTz={profile.timezone} enabled={!demoMode} />
       {/* Sidebar */}
       <aside className="hidden w-64 shrink-0 flex-col border-r bg-card/60 px-4 py-5 md:flex">
         <Link href="/" className="mb-7 flex items-center gap-2.5 px-2">

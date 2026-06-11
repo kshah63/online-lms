@@ -8,15 +8,18 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { AddCourseDialog } from "@/components/admin/add-course-dialog";
 import { EnrollControl } from "@/components/admin/enroll-control";
 import { requireRole } from "@/lib/data/auth";
-import { listCourses, listEnrollments, listStudents } from "@/lib/data/people";
+import { getPendingEnrollmentRequests, listCourses, listEnrollments, listStudents } from "@/lib/data/people";
 import { unenrollStudent } from "@/lib/actions/courses";
+import { decideEnrollment } from "@/lib/actions/enrollment";
+import { Check } from "lucide-react";
 
 export default async function AdminCoursesPage() {
   await requireRole("admin");
-  const [courses, students, enrollments] = await Promise.all([
+  const [courses, students, enrollments, requests] = await Promise.all([
     listCourses(),
     listStudents(),
     listEnrollments(),
+    getPendingEnrollmentRequests(),
   ]);
 
   // Group enrolled students by course.
@@ -34,6 +37,42 @@ export default async function AdminCoursesPage() {
         description="Create courses and manage who's enrolled. Students can only book lessons for courses they're enrolled in."
         actions={<AddCourseDialog />}
       />
+
+      {requests.length > 0 && (
+        <Card className="mb-6 border-primary/30 bg-accent/30">
+          <CardHeader className="pb-3">
+            <CardTitle className="flex items-center gap-2 text-base">
+              <GraduationCap className="h-4 w-4 text-primary" /> Enrollment requests ({requests.length})
+            </CardTitle>
+          </CardHeader>
+          <CardContent className="divide-y">
+            {requests.map((r) => (
+              <div key={r.id} className="flex flex-wrap items-center gap-3 py-2.5">
+                <Avatar name={r.student.display_name} size={28} />
+                <span className="text-sm font-medium">{r.student.display_name}</span>
+                <span className="text-sm text-muted-foreground">wants</span>
+                <Badge variant="secondary">{r.course.name}</Badge>
+                <div className="ml-auto flex items-center gap-2">
+                  <form action={decideEnrollment}>
+                    <input type="hidden" name="id" value={r.id} />
+                    <input type="hidden" name="decision" value="approved" />
+                    <Button type="submit" size="sm" variant="success">
+                      <Check className="h-4 w-4" /> Approve
+                    </Button>
+                  </form>
+                  <form action={decideEnrollment}>
+                    <input type="hidden" name="id" value={r.id} />
+                    <input type="hidden" name="decision" value="denied" />
+                    <Button type="submit" size="sm" variant="ghost" className="text-muted-foreground hover:text-destructive">
+                      <X className="h-4 w-4" /> Deny
+                    </Button>
+                  </form>
+                </div>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      )}
 
       {courses.length === 0 ? (
         <EmptyState

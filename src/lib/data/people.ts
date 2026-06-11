@@ -64,6 +64,39 @@ export async function listEnrollments(): Promise<{ course_id: string; student: P
   return (data ?? []).map((r: any) => ({ course_id: r.course_id, student: r.student }));
 }
 
+export interface EnrollmentRequestView {
+  id: string;
+  created_at: string;
+  student: { id: string; display_name: string };
+  course: { id: string; name: string };
+}
+
+/** Pending enrollment requests for the admin to approve/deny. */
+export async function getPendingEnrollmentRequests(): Promise<EnrollmentRequestView[]> {
+  if (isDemoMode) {
+    // One illustrative pending request: Lena → SAT Math Prep.
+    return [
+      {
+        id: "er-demo-1",
+        created_at: new Date().toISOString(),
+        student: { id: "00000000-0000-0000-0000-0000000000b3", display_name: "Lena Park" },
+        course: { id: "10000000-0000-0000-0000-000000000002", name: "SAT Math Prep" },
+      },
+    ];
+  }
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("enrollment_requests")
+    .select(
+      "id, created_at, student:profiles!enrollment_requests_student_id_fkey(id,display_name), course:courses(id,name)",
+    )
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (data ?? []).map((r: any) => ({ id: r.id, created_at: r.created_at, student: r.student, course: r.course }));
+}
+
 /** Courses a student is enrolled in (what they can book a lesson for). */
 export async function getEnrolledCourses(studentId: string): Promise<Course[]> {
   if (isDemoMode) {

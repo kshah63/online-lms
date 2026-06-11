@@ -10,11 +10,18 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireRole } from "@/lib/data/auth";
 import { getPastForProfile, getUpcomingForProfile } from "@/lib/data/sessions";
-import { getBalance, getChildren, getEnrolledCourses, getReportForSession } from "@/lib/data/people";
+import {
+  getBalance,
+  getChildren,
+  getEnrolledCourses,
+  getReportForSession,
+  listCourses,
+} from "@/lib/data/people";
 import { getHomeworkForProfile } from "@/lib/data/homework";
 import { BookingDialog } from "@/components/booking-dialog";
 import { BookingActions } from "@/components/booking-actions";
-import { formatRange, dayLabel } from "@/lib/time";
+import { RequestCourseDialog } from "@/components/request-course-dialog";
+import { formatRange, dayLabel, withinJoinWindow } from "@/lib/time";
 
 export default async function HomePage() {
   const profile = await requireRole("student", "parent");
@@ -42,6 +49,16 @@ export default async function HomePage() {
       courses: (await getEnrolledCourses(c.id)).map((co) => ({ id: co.id, name: co.name })),
     })),
   );
+  // Requestable combos: courses each student is NOT yet enrolled in.
+  const allCourses = await listCourses();
+  const requestOptions = bookOptions.map((o) => {
+    const enrolledIds = new Set(o.courses.map((c) => c.id));
+    return {
+      studentId: o.studentId,
+      studentName: o.studentName,
+      courses: allCourses.filter((c) => !enrolledIds.has(c.id)).map((c) => ({ id: c.id, name: c.name })),
+    };
+  });
 
   // Most recent published report among past sessions.
   let latest: { session: (typeof past)[number]; report: NonNullable<Awaited<ReturnType<typeof getReportForSession>>> } | null = null;
@@ -66,9 +83,12 @@ export default async function HomePage() {
             : "Your upcoming lessons, reports and lesson recordings."
         }
         actions={
-          bookOptions.some((o) => o.courses.length > 0) ? (
-            <BookingDialog mode="create" options={bookOptions} defaultTz={tz} />
-          ) : undefined
+          <div className="flex items-center gap-2">
+            {requestOptions.some((o) => o.courses.length > 0) && <RequestCourseDialog options={requestOptions} />}
+            {bookOptions.some((o) => o.courses.length > 0) && (
+              <BookingDialog mode="create" options={bookOptions} defaultTz={tz} />
+            )}
+          </div>
         }
       />
 
@@ -125,7 +145,9 @@ export default async function HomePage() {
           ) : (
             <div className="space-y-3">
               {upcoming.map((s) => {
+                const live = s.status === "in_progress";
                 const editable = s.status === "scheduled" || s.status === "confirmed";
+                const joinNow = live || (editable && withinJoinWindow(s.scheduled_start, s.scheduled_end));
                 return (
                   <SessionCard
                     key={s.id}
@@ -134,20 +156,25 @@ export default async function HomePage() {
                     perspective={profile.role as "student" | "parent"}
                     showDay
                     action={
-                      s.status === "in_progress"
-                        ? undefined
-                        : editable
-                          ? (
-                              <BookingActions
-                                sessionId={s.id}
-                                startISO={s.scheduled_start}
-                                endISO={s.scheduled_end}
-                                studentName={s.student.display_name}
-                                courseName={s.course.name}
-                                viewerTz={tz}
-                              />
-                            )
-                          : undefined
+                      <div className="flex items-center gap-2">
+                        {joinNow && (
+                          <Button asChild size="sm" variant={live ? "success" : "default"}>
+                            <Link href={`/lesson/${s.id}`}>
+                              <Video className="h-4 w-4" /> {live ? "Join" : "Join early"}
+                            </Link>
+                          </Button>
+                        )}
+                        {editable && (
+                          <BookingActions
+                            sessionId={s.id}
+                            startISO={s.scheduled_start}
+                            endISO={s.scheduled_end}
+                            studentName={s.student.display_name}
+                            courseName={s.course.name}
+                            viewerTz={tz}
+                          />
+                        )}
+                      </div>
                     }
                   />
                 );
