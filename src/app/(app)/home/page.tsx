@@ -10,8 +10,10 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireRole } from "@/lib/data/auth";
 import { getPastForProfile, getUpcomingForProfile } from "@/lib/data/sessions";
-import { getBalance, getChildren, getReportForSession } from "@/lib/data/people";
+import { getBalance, getChildren, getEnrolledCourses, getReportForSession } from "@/lib/data/people";
 import { getHomeworkForProfile } from "@/lib/data/homework";
+import { BookingDialog } from "@/components/booking-dialog";
+import { BookingActions } from "@/components/booking-actions";
 import { formatRange, dayLabel } from "@/lib/time";
 
 export default async function HomePage() {
@@ -31,6 +33,15 @@ export default async function HomePage() {
     children.map(async (c) => ({ child: c, balance: await getBalance(c.id) })),
   );
   const totalCredits = balances.reduce((sum, b) => sum + b.balance, 0);
+
+  // Bookable combos: each student (self or child) + the courses they're enrolled in.
+  const bookOptions = await Promise.all(
+    children.map(async (c) => ({
+      studentId: c.id,
+      studentName: c.display_name,
+      courses: (await getEnrolledCourses(c.id)).map((co) => ({ id: co.id, name: co.name })),
+    })),
+  );
 
   // Most recent published report among past sessions.
   let latest: { session: (typeof past)[number]; report: NonNullable<Awaited<ReturnType<typeof getReportForSession>>> } | null = null;
@@ -53,6 +64,11 @@ export default async function HomePage() {
           profile.role === "parent"
             ? "Your children's upcoming lessons and latest reports."
             : "Your upcoming lessons, reports and lesson recordings."
+        }
+        actions={
+          bookOptions.some((o) => o.courses.length > 0) ? (
+            <BookingDialog mode="create" options={bookOptions} defaultTz={tz} />
+          ) : undefined
         }
       />
 
@@ -108,9 +124,34 @@ export default async function HomePage() {
             <EmptyState icon={<CalendarDays className="h-5 w-5" />} title="No upcoming lessons" description="New lessons will appear here once scheduled." />
           ) : (
             <div className="space-y-3">
-              {upcoming.map((s) => (
-                <SessionCard key={s.id} session={s} viewerTz={tz} perspective={profile.role as "student" | "parent"} showDay />
-              ))}
+              {upcoming.map((s) => {
+                const editable = s.status === "scheduled" || s.status === "confirmed";
+                return (
+                  <SessionCard
+                    key={s.id}
+                    session={s}
+                    viewerTz={tz}
+                    perspective={profile.role as "student" | "parent"}
+                    showDay
+                    action={
+                      s.status === "in_progress"
+                        ? undefined
+                        : editable
+                          ? (
+                              <BookingActions
+                                sessionId={s.id}
+                                startISO={s.scheduled_start}
+                                endISO={s.scheduled_end}
+                                studentName={s.student.display_name}
+                                courseName={s.course.name}
+                                viewerTz={tz}
+                              />
+                            )
+                          : undefined
+                    }
+                  />
+                );
+              })}
             </div>
           )}
         </div>

@@ -4,6 +4,7 @@ import { SessionCard } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
 import { ScheduleDialog } from "@/components/admin/schedule-dialog";
 import { AssignControl } from "@/components/admin/assign-control";
+import { BookingActions } from "@/components/booking-actions";
 import { requireRole } from "@/lib/data/auth";
 import { getUpcomingForProfile } from "@/lib/data/sessions";
 import { listCourses, listStudents, listTeachers } from "@/lib/data/people";
@@ -44,7 +45,17 @@ export default async function AdminSessionsPage() {
               perspective="admin"
               showDay
               action={
-                <AssignControl sessionId={s.id} teachers={teachers} currentTeacherId={s.teacher_id} />
+                <div className="flex flex-col items-end gap-2">
+                  <AssignControl sessionId={s.id} teachers={teachers} currentTeacherId={s.teacher_id} />
+                  <BookingActions
+                    sessionId={s.id}
+                    startISO={s.scheduled_start}
+                    endISO={s.scheduled_end}
+                    studentName={s.student.display_name}
+                    courseName={s.course.name}
+                    viewerTz={admin.timezone}
+                  />
+                </div>
               }
             />
           ))}

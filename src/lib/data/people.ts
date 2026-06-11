@@ -4,6 +4,7 @@ import {
   demoBalances,
   demoConsents,
   demoCourses,
+  demoEnrollments,
   demoParentStudent,
   demoProfiles,
   demoReports,
@@ -41,6 +42,21 @@ export async function listCourses(): Promise<Course[]> {
   const { data, error } = await supabase.from("courses").select("*").order("name");
   if (error) throw error;
   return (data ?? []) as Course[];
+}
+
+/** Courses a student is enrolled in (what they can book a lesson for). */
+export async function getEnrolledCourses(studentId: string): Promise<Course[]> {
+  if (isDemoMode) {
+    const ids = (demoEnrollments[studentId] ?? []);
+    return demoCourses.filter((c) => ids.includes(c.id));
+  }
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("enrollments")
+    .select("course:courses(*)")
+    .eq("student_id", studentId);
+  if (error) throw error;
+  return ((data ?? []) as unknown as { course: Course }[]).map((r) => r.course).filter(Boolean);
 }
 
 /** Teachers eligible for a course (teacher_course mapping). */
