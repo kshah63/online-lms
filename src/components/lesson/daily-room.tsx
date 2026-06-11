@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import Daily from "@daily-co/daily-js";
 import {
   DailyAudio,
@@ -75,16 +75,25 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
     }
   }, [peerId, onPeerPresent]);
 
-  // Owner starts transcription so §7's coaching pipeline has a feed.
-  useEffect(() => {
+  // Owner starts transcription so §7's coaching pipeline has a feed — but only
+  // AFTER joining (Daily rejects startTranscription() before the join completes).
+  const startTx = useCallback(() => {
     if (!daily || !isOwner) return;
     try {
       daily.startTranscription();
     } catch (e) {
       console.error("Daily startTranscription threw:", e);
+      setTranscriptionError(e instanceof Error ? e.message : String(e));
       setTranscription("error");
     }
   }, [daily, isOwner]);
+
+  useDailyEvent("joined-meeting", startTx);
+
+  // If we mounted after the join already happened, start now.
+  useEffect(() => {
+    if (daily?.meetingState?.() === "joined-meeting") startTx();
+  }, [daily, startTx]);
 
   // Surface whether transcription actually started (the real signal — it
   // arrives as an event, not a throw, when the plan/room doesn't allow it).
