@@ -64,6 +64,7 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
   const [cam, setCam] = useState(true);
   const [recording, setRecording] = useState(false);
   const [transcription, setTranscription] = useState<"idle" | "on" | "error">("idle");
+  const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
 
   // Both participants are in the room — start the real session clock (once).
   const announcedRef = useRef(false);
@@ -93,7 +94,9 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
     "transcription-error",
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     (ev: any) => {
-      console.error("Daily transcription-error:", ev?.errorMsg ?? ev);
+      const msg = ev?.errorMsg ?? ev?.error ?? "Transcription isn't enabled on this Daily account/plan.";
+      console.error("Daily transcription-error:", msg);
+      setTranscriptionError(typeof msg === "string" ? msg : JSON.stringify(msg));
       setTranscription("error");
     },
   );
@@ -160,7 +163,10 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
           {/* Transcription status — visible to the owner (teacher) so you can
               tell at a glance whether the AI-coaching feed is running. */}
           {isOwner && transcription !== "idle" && (
-            <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px]">
+            <div
+              className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px]"
+              title={transcription === "error" ? transcriptionError ?? "Transcription unavailable" : "Live transcription is running"}
+            >
               <FileText className={cn("h-3 w-3", transcription === "on" ? "text-emerald-400" : "text-amber-400")} />
               <span className="text-white/70">
                 {transcription === "on" ? "Transcribing" : "Transcription off"}
@@ -206,6 +212,13 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
           </button>
         )}
       </div>
+
+      {isOwner && transcription === "error" && (
+        <div className="border-t border-white/10 bg-amber-500/15 px-3 py-1.5 text-[11px] leading-snug text-amber-200">
+          AI transcription isn&rsquo;t running{transcriptionError ? `: ${transcriptionError}` : "."} Recording &amp; feedback still
+          work; coaching uses metrics until transcription is enabled in Daily.
+        </div>
+      )}
     </div>
   );
 }
