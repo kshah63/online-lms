@@ -8,22 +8,30 @@ export async function updateSession(request: NextRequest) {
 
   if (!isSupabaseConfigured) return response;
 
-  const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
-    cookies: {
-      getAll() {
-        return request.cookies.getAll();
+  try {
+    const supabase = createServerClient(SUPABASE_URL, SUPABASE_ANON_KEY, {
+      cookies: {
+        getAll() {
+          return request.cookies.getAll();
+        },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        setAll(cookiesToSet: { name: string; value: string; options?: any }[]) {
+          cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
+          response = NextResponse.next({ request });
+          cookiesToSet.forEach(({ name, value, options }) =>
+            response.cookies.set(name, value, options),
+          );
+        },
       },
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      setAll(cookiesToSet: { name: string; value: string; options?: any }[]) {
-        cookiesToSet.forEach(({ name, value }) => request.cookies.set(name, value));
-        response = NextResponse.next({ request });
-        cookiesToSet.forEach(({ name, value, options }) =>
-          response.cookies.set(name, value, options),
-        );
-      },
-    },
-  });
+    });
 
-  await supabase.auth.getUser();
+    await supabase.auth.getUser();
+  } catch (err) {
+    // Never let an auth-refresh failure 500 the whole site — pages do their own
+    // auth checks. Most often a misconfigured NEXT_PUBLIC_SUPABASE_URL/key.
+    console.error("Supabase middleware refresh failed:", err);
+    return NextResponse.next({ request });
+  }
+
   return response;
 }
