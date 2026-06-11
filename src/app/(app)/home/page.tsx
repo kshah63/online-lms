@@ -22,7 +22,8 @@ export default async function HomePage() {
     getUpcomingForProfile(profile, 6),
     getPastForProfile(profile, 8),
     getChildren(profile),
-    getHomeworkForProfile(profile),
+    // Homework is a secondary card — don't let it take down the dashboard.
+    getHomeworkForProfile(profile).catch(() => []),
   ]);
   const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
 
