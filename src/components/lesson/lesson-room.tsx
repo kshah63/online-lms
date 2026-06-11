@@ -78,6 +78,22 @@ export function LessonRoom({
     return () => clearInterval(id);
   }, [demoCoaching, isTeacher, coach]);
 
+  // The video stage must mount EXACTLY ONCE — the Daily SDK allows a single
+  // call object per page, so rendering it in both the desktop rail and the
+  // (CSS-hidden) mobile panel crashes the room. Pick the slot via media query.
+  const isDesktop = useIsDesktop();
+
+  const videoStage = (
+    <VideoStage
+      sessionId={sessionId}
+      selfName={selfName}
+      peerName={peerName}
+      recordingAllowed={recordingAllowed}
+      isTeacher={isTeacher}
+      onTranscript={coach.ingest}
+    />
+  );
+
   return (
     <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
       {/* Mobile tab switcher */}
@@ -87,22 +103,15 @@ export function LessonRoom({
         <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
       </div>
 
-      {/* Left rail: video + materials (desktop) */}
-      <aside className="hidden w-80 shrink-0 flex-col border-r lg:flex xl:w-96">
-        <div className="h-[46%] min-h-[240px] border-b">
-          <VideoStage
-            sessionId={sessionId}
-            selfName={selfName}
-            peerName={peerName}
-            recordingAllowed={recordingAllowed}
-            isTeacher={isTeacher}
-            onTranscript={coach.ingest}
-          />
-        </div>
-        <div className="min-h-0 flex-1">
-          <MaterialsPanel materialsCourseId={materialsCourseId} />
-        </div>
-      </aside>
+      {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
+      {isDesktop === true && (
+        <aside className="flex w-80 shrink-0 flex-col border-r xl:w-96">
+          <div className="h-[46%] min-h-[240px] border-b">{videoStage}</div>
+          <div className="min-h-0 flex-1">
+            <MaterialsPanel materialsCourseId={materialsCourseId} />
+          </div>
+        </aside>
+      )}
 
       {/* Notebook (centerpiece) */}
       <main className={cn("relative min-h-[60vh] flex-1 bg-muted/30 lg:block", tab === "notebook" ? "block" : "hidden")}>
@@ -122,22 +131,30 @@ export function LessonRoom({
         )}
       </main>
 
-      {/* Mobile panels */}
-      <div className={cn("min-h-[60vh] lg:hidden", tab === "video" ? "block" : "hidden")}>
-        <VideoStage
-          sessionId={sessionId}
-          selfName={selfName}
-          peerName={peerName}
-          recordingAllowed={recordingAllowed}
-          isTeacher={isTeacher}
-          onTranscript={coach.ingest}
-        />
-      </div>
-      <div className={cn("min-h-[60vh] lg:hidden", tab === "materials" ? "block" : "hidden")}>
-        <MaterialsPanel materialsCourseId={materialsCourseId} />
-      </div>
+      {/* Mobile panels — video stays mounted across tab switches, just hidden */}
+      {isDesktop === false && (
+        <>
+          <div className={cn("min-h-[60vh]", tab === "video" ? "block" : "hidden")}>{videoStage}</div>
+          <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
+            <MaterialsPanel materialsCourseId={materialsCourseId} />
+          </div>
+        </>
+      )}
     </div>
   );
+}
+
+/** Tracks the lg (1024px) breakpoint; null until first client measurement. */
+function useIsDesktop(): boolean | null {
+  const [isDesktop, setIsDesktop] = useState<boolean | null>(null);
+  useEffect(() => {
+    const mq = window.matchMedia("(min-width: 1024px)");
+    const update = () => setIsDesktop(mq.matches);
+    update();
+    mq.addEventListener("change", update);
+    return () => mq.removeEventListener("change", update);
+  }, []);
+  return isDesktop;
 }
 
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {

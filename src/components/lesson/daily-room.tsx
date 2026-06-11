@@ -28,13 +28,20 @@ interface RoomProps {
 }
 
 export function DailyRoom(props: RoomProps) {
-  const [call] = useState(() => Daily.createCallObject());
+  // Daily allows only ONE call object per page — reuse an existing instance
+  // if something already created one (a duplicate would throw and crash the
+  // whole lesson room).
+  const [call] = useState(() => Daily.getCallInstance() ?? Daily.createCallObject());
 
   useEffect(() => {
     call.join({ url: props.roomUrl, token: props.token }).catch((e) => console.error("join failed", e));
     return () => {
-      call.leave();
-      call.destroy();
+      void call.leave().catch(() => {});
+      try {
+        call.destroy();
+      } catch {
+        /* already destroyed */
+      }
     };
   }, [call, props.roomUrl, props.token]);
 
