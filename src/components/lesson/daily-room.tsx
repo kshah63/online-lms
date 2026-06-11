@@ -11,7 +11,7 @@ import {
   useLocalSessionId,
   useParticipantIds,
 } from "@daily-co/daily-react";
-import { Circle, Mic, MicOff, ShieldAlert, Video as VideoIcon, VideoOff, Wifi } from "lucide-react";
+import { Circle, FileText, Mic, MicOff, ShieldAlert, Video as VideoIcon, VideoOff, Wifi } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { cn } from "@/lib/utils";
 import type { TranscriptSegment } from "@/lib/coaching/metrics";
@@ -63,6 +63,7 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
   const [mic, setMic] = useState(true);
   const [cam, setCam] = useState(true);
   const [recording, setRecording] = useState(false);
+  const [transcription, setTranscription] = useState<"idle" | "on" | "error">("idle");
 
   // Both participants are in the room — start the real session clock (once).
   const announcedRef = useRef(false);
@@ -78,10 +79,24 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
     if (!daily || !isOwner) return;
     try {
       daily.startTranscription();
-    } catch {
-      /* transcription not enabled on this room/plan */
+    } catch (e) {
+      console.error("Daily startTranscription threw:", e);
+      setTranscription("error");
     }
   }, [daily, isOwner]);
+
+  // Surface whether transcription actually started (the real signal — it
+  // arrives as an event, not a throw, when the plan/room doesn't allow it).
+  useDailyEvent("transcription-started", () => setTranscription("on"));
+  useDailyEvent("transcription-stopped", () => setTranscription("idle"));
+  useDailyEvent(
+    "transcription-error",
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    (ev: any) => {
+      console.error("Daily transcription-error:", ev?.errorMsg ?? ev);
+      setTranscription("error");
+    },
+  );
 
   // Map transcription messages to teacher/student segments.
   useDailyEvent(
@@ -138,8 +153,20 @@ function RoomInner({ isOwner, recordingAllowed, isTeacher, selfName, peerName, o
             <Circle className="h-2.5 w-2.5 animate-pulse fill-red-500 text-red-500" /> REC
           </div>
         )}
-        <div className="absolute right-3 top-3 flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px] text-white/70">
-          <Wifi className="h-3 w-3 text-emerald-400" /> Live
+        <div className="absolute right-3 top-3 flex flex-col items-end gap-1.5">
+          <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px] text-white/70">
+            <Wifi className="h-3 w-3 text-emerald-400" /> Live
+          </div>
+          {/* Transcription status — visible to the owner (teacher) so you can
+              tell at a glance whether the AI-coaching feed is running. */}
+          {isOwner && transcription !== "idle" && (
+            <div className="flex items-center gap-1.5 rounded-full bg-black/40 px-2 py-1 text-[11px]">
+              <FileText className={cn("h-3 w-3", transcription === "on" ? "text-emerald-400" : "text-amber-400")} />
+              <span className="text-white/70">
+                {transcription === "on" ? "Transcribing" : "Transcription off"}
+              </span>
+            </div>
+          )}
         </div>
 
         {/* self thumbnail */}
