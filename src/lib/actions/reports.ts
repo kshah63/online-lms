@@ -79,6 +79,7 @@ export async function saveReport(
         course_id: session.course_id,
         description: input.homework.trim(),
         due_at: input.homework_due,
+        notebook_id: session.notebook_id, // do it on the same running notebook
       });
     }
     if (input.needs_followup) {

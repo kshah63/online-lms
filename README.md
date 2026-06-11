@@ -128,10 +128,14 @@ Demo personas:
   teacher edits every field and **publishes** to the parent/student. On publish it can also assign
   homework and raise a follow-up.
 
-**Homework tracking**
+**Homework — done & verified on the notebook** (`/hw/[id]`)
 
-- Publishing a report with homework creates a `homework` item with a due date. Students/parents tick
-  it off from their dashboard or `/home/homework`; overdue items surface to admin and feed follow-ups.
+- Publishing a report with homework creates a `homework` item with a due date, linked to the student's
+  **running notebook**. The student opens it (`/hw/[id]`) on a dedicated **page inside that same tldraw
+  notebook** — drawing their working, typing, or **dragging a photo of their paper onto the canvas** —
+  then **submits**. The teacher opens the submitted page from their review queue (`/teacher/homework`)
+  and **verifies completion** or sends it back to redo. Completion is evidenced by real work, not an
+  honour-system checkbox. Overdue (not-yet-submitted) items feed the admin follow-up dashboard.
 
 **Follow-up dashboard** (`/admin/followups`)
 

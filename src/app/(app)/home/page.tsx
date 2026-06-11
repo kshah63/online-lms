@@ -123,7 +123,7 @@ export default async function HomePage() {
                   View all
                 </Link>
               </div>
-              <HomeworkList items={openHomework} viewerTz={tz} canMark showStudent={profile.role === "parent"} />
+              <HomeworkList items={openHomework} viewerTz={tz} showStudent={profile.role === "parent"} />
             </div>
           )}
 

@@ -82,7 +82,7 @@ export interface Report {
   published_at: string | null;
 }
 
-export type HomeworkStatus = "assigned" | "completed" | "incomplete";
+export type HomeworkStatus = "assigned" | "submitted" | "completed" | "incomplete";
 
 export interface Homework {
   id: string;
@@ -95,6 +95,12 @@ export interface Homework {
   status: HomeworkStatus;
   completed_at: string | null;
   marked_by: string | null;
+  notebook_id: string | null;
+  notebook_page_id: string | null;
+  submitted_at: string | null;
+  verified_by: string | null;
+  verified_at: string | null;
+  review_note: string | null;
   updated_at: string;
 }
 

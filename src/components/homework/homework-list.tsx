@@ -1,10 +1,8 @@
-"use client";
-
-import { useTransition } from "react";
-import { CheckCircle2, Circle, Clock } from "lucide-react";
+import Link from "next/link";
+import { Clock, PenLine } from "lucide-react";
 import { DateTime } from "luxon";
 import { Badge } from "@/components/ui/badge";
-import { setHomeworkStatus } from "@/lib/actions/homework";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import type { HomeworkStatus } from "@/lib/types";
 
@@ -17,80 +15,63 @@ export interface HomeworkItem {
   student_name?: string;
 }
 
+const STATUS: Record<HomeworkStatus, { label: string; variant: React.ComponentProps<typeof Badge>["variant"] }> = {
+  assigned: { label: "To do", variant: "secondary" },
+  submitted: { label: "Submitted", variant: "default" },
+  completed: { label: "Verified", variant: "success" },
+  incomplete: { label: "Redo", variant: "warning" },
+};
+
 export function HomeworkList({
   items,
   viewerTz,
-  canMark,
+  canOpen = true,
   showStudent = false,
 }: {
   items: HomeworkItem[];
   viewerTz: string;
-  canMark: boolean;
+  canOpen?: boolean;
   showStudent?: boolean;
 }) {
   return (
     <div className="space-y-2.5">
-      {items.map((hw) => (
-        <HomeworkRow key={hw.id} hw={hw} viewerTz={viewerTz} canMark={canMark} showStudent={showStudent} />
-      ))}
-    </div>
-  );
-}
+      {items.map((hw) => {
+        const done = hw.status === "completed";
+        const submitted = hw.status === "submitted";
+        const overdue =
+          !done && !submitted && hw.due_at != null && hw.due_at < new Date().toISOString();
+        const badge = overdue ? { label: "Overdue", variant: "warning" as const } : STATUS[hw.status];
 
-function HomeworkRow({
-  hw,
-  viewerTz,
-  canMark,
-  showStudent,
-}: {
-  hw: HomeworkItem;
-  viewerTz: string;
-  canMark: boolean;
-  showStudent: boolean;
-}) {
-  const [pending, start] = useTransition();
-  const done = hw.status === "completed";
-  const overdue = !done && hw.due_at != null && hw.due_at < new Date().toISOString();
-
-  function toggle() {
-    if (!canMark) return;
-    start(() => setHomeworkStatus(hw.id, done ? "assigned" : "completed"));
-  }
-
-  return (
-    <div className={cn("flex items-start gap-3 rounded-xl border bg-card p-3 shadow-sm", done && "opacity-70")}>
-      <button
-        onClick={toggle}
-        disabled={!canMark || pending}
-        className={cn("mt-0.5 shrink-0", canMark ? "cursor-pointer" : "cursor-default")}
-        aria-label={done ? "Mark not done" : "Mark done"}
-      >
-        {done ? (
-          <CheckCircle2 className="h-5 w-5 text-success" />
-        ) : (
-          <Circle className={cn("h-5 w-5", overdue ? "text-warning-foreground" : "text-muted-foreground")} />
-        )}
-      </button>
-      <div className="min-w-0 flex-1">
-        <div className={cn("text-sm font-medium", done && "line-through")}>{hw.description}</div>
-        <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-          <span>{hw.course_name}</span>
-          {showStudent && hw.student_name && <span>· {hw.student_name}</span>}
-          {hw.due_at && (
-            <span className={cn("flex items-center gap-1", overdue && "font-medium text-warning-foreground")}>
-              <Clock className="h-3 w-3" />
-              due {DateTime.fromISO(hw.due_at, { zone: "utc" }).setZone(viewerTz).toFormat("d LLL")}
-            </span>
-          )}
-        </div>
-      </div>
-      {done ? (
-        <Badge variant="success">Done</Badge>
-      ) : overdue ? (
-        <Badge variant="warning">Overdue</Badge>
-      ) : (
-        <Badge variant="secondary">To do</Badge>
-      )}
+        return (
+          <div
+            key={hw.id}
+            className={cn("flex items-start gap-3 rounded-xl border bg-card p-3 shadow-sm", done && "opacity-70")}
+          >
+            <div className="min-w-0 flex-1">
+              <div className={cn("text-sm font-medium", done && "line-through")}>{hw.description}</div>
+              <div className="mt-0.5 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                <span>{hw.course_name}</span>
+                {showStudent && hw.student_name && <span>· {hw.student_name}</span>}
+                {hw.due_at && (
+                  <span className={cn("flex items-center gap-1", overdue && "font-medium text-warning-foreground")}>
+                    <Clock className="h-3 w-3" />
+                    due {DateTime.fromISO(hw.due_at, { zone: "utc" }).setZone(viewerTz).toFormat("d LLL")}
+                  </span>
+                )}
+              </div>
+            </div>
+            <Badge variant={badge.variant}>{badge.label}</Badge>
+            {canOpen && (
+              <Button asChild size="sm" variant={done || submitted ? "outline" : "default"}>
+                <Link href={`/hw/${hw.id}`}>
+                  <PenLine className="h-4 w-4" />
+                  {done || submitted ? "View" : "Open"}
+                </Link>
+              </Button>
+            )}
+          </div>
+        );
+      })}
     </div>
   );
 }

@@ -4,25 +4,45 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
-import type { HomeworkStatus } from "@/lib/types";
 
-/** Student/parent marks homework done (or teacher records it incomplete). */
-export async function setHomeworkStatus(id: string, status: HomeworkStatus): Promise<void> {
-  if (isDemoMode) {
-    revalidatePath("/home/homework");
-    revalidatePath("/home");
-    return;
-  }
-  const profile = await getCurrentProfile();
+/** Persist the tldraw page created for this homework the first time it's opened. */
+export async function setHomeworkPage(id: string, pageId: string): Promise<void> {
+  if (isDemoMode) return;
   const supabase = createSupabaseServerClient()!;
-  await supabase
-    .from("homework")
-    .update({
-      status,
-      completed_at: status === "completed" ? new Date().toISOString() : null,
-      marked_by: profile?.id ?? null,
-    })
-    .eq("id", id);
+  await supabase.from("homework").update({ notebook_page_id: pageId }).eq("id", id).is("notebook_page_id", null);
+}
+
+/** Student submits their work on the notebook for review. */
+export async function submitHomework(id: string): Promise<void> {
+  if (!isDemoMode) {
+    const supabase = createSupabaseServerClient()!;
+    await supabase
+      .from("homework")
+      .update({ status: "submitted", submitted_at: new Date().toISOString() })
+      .eq("id", id);
+  }
   revalidatePath("/home/homework");
   revalidatePath("/home");
+  revalidatePath(`/home/homework/${id}`);
+}
+
+/** Teacher verifies the submitted notebook work (completed) or sends it back. */
+export async function verifyHomework(id: string, verified: boolean, note: string | null): Promise<void> {
+  if (!isDemoMode) {
+    const profile = await getCurrentProfile();
+    const supabase = createSupabaseServerClient()!;
+    await supabase
+      .from("homework")
+      .update({
+        status: verified ? "completed" : "incomplete",
+        verified_by: profile?.id ?? null,
+        verified_at: new Date().toISOString(),
+        completed_at: verified ? new Date().toISOString() : null,
+        review_note: note,
+      })
+      .eq("id", id);
+  }
+  revalidatePath("/teacher/homework");
+  revalidatePath(`/teacher/homework/${id}`);
+  revalidatePath("/home/homework");
 }
