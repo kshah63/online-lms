@@ -1,3 +1,5 @@
+import { cn } from "@/lib/utils";
+
 export function PageHeader({
   title,
   description,
@@ -24,12 +26,14 @@ export function StatCard({
   hint,
   tone = "default",
   icon,
+  className,
 }: {
   label: string;
   value: React.ReactNode;
   hint?: string;
   tone?: "default" | "success" | "warning" | "primary";
   icon?: React.ReactNode;
+  className?: string;
 }) {
   const toneClass = {
     default: "text-foreground",
@@ -39,7 +43,7 @@ export function StatCard({
   }[tone];
 
   return (
-    <div className="rounded-xl border bg-card p-4 shadow-sm">
+    <div className={cn("rounded-xl border bg-card p-4 shadow-sm", className)}>
       <div className="flex items-center justify-between">
         <span className="text-xs font-medium uppercase tracking-wide text-muted-foreground">{label}</span>
         {icon && <span className="text-muted-foreground">{icon}</span>}

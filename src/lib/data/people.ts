@@ -90,7 +90,12 @@ export async function getConsents(studentId: string): Promise<Consent[]> {
   if (isDemoMode) return demoConsents.filter((c) => c.profile_id === studentId);
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase.from("consents").select("*").eq("profile_id", studentId);
-  if (error) throw error;
+  if (error) {
+    // Fail closed (no consents → recording stays disabled) rather than
+    // crashing the lesson page.
+    console.error("getConsents failed:", error.message);
+    return [];
+  }
   return (data ?? []) as Consent[];
 }
 

@@ -18,7 +18,12 @@ export async function loadNotebookSnapshot(notebookId: string): Promise<unknown 
     .select("tldraw_snapshot")
     .eq("id", notebookId)
     .maybeSingle();
-  if (error) throw error;
+  if (error) {
+    // A snapshot-load failure must never take down the lesson room — the
+    // canvas just starts empty. Surface the cause in server logs.
+    console.error("loadNotebookSnapshot failed:", error.message);
+    return null;
+  }
   return data?.tldraw_snapshot ?? null;
 }
 
