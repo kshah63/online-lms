@@ -1,26 +1,30 @@
 import Link from "next/link";
-import { CalendarDays, Coins, FileText, Video } from "lucide-react";
+import { CalendarDays, ClipboardCheck, Coins, FileText, Video } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { SessionCard } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
+import { HomeworkList } from "@/components/homework/homework-list";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireRole } from "@/lib/data/auth";
 import { getPastForProfile, getUpcomingForProfile } from "@/lib/data/sessions";
 import { getBalance, getChildren, getReportForSession } from "@/lib/data/people";
+import { getHomeworkForProfile } from "@/lib/data/homework";
 import { formatRange, dayLabel } from "@/lib/time";
 
 export default async function HomePage() {
   const profile = await requireRole("student", "parent");
   const tz = profile.timezone;
 
-  const [upcoming, past, children] = await Promise.all([
+  const [upcoming, past, children, homework] = await Promise.all([
     getUpcomingForProfile(profile, 6),
     getPastForProfile(profile, 8),
     getChildren(profile),
+    getHomeworkForProfile(profile),
   ]);
+  const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
 
   const balances = await Promise.all(
     children.map(async (c) => ({ child: c, balance: await getBalance(c.id) })),
@@ -110,7 +114,20 @@ export default async function HomePage() {
           )}
         </div>
 
-        <div>
+        <div className="space-y-6">
+          {openHomework.length > 0 && (
+            <div>
+              <div className="mb-3 flex items-center justify-between">
+                <h2 className="text-sm font-semibold text-muted-foreground">Homework</h2>
+                <Link href="/home/homework" className="text-xs text-primary hover:underline">
+                  View all
+                </Link>
+              </div>
+              <HomeworkList items={openHomework} viewerTz={tz} canMark showStudent={profile.role === "parent"} />
+            </div>
+          )}
+
+          <div>
           <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Latest report</h2>
           {latest ? (
             <Card>
@@ -132,6 +149,7 @@ export default async function HomePage() {
           ) : (
             <EmptyState icon={<FileText className="h-5 w-5" />} title="No reports yet" description="Reports appear after lessons are completed." />
           )}
+          </div>
         </div>
       </div>
     </div>

@@ -22,8 +22,8 @@ export const demoProfiles: Profile[] = [
   p("00000000-0000-0000-0000-0000000000b1", "student", "Aarav Sharma", "aarav@lessons.dev", "Asia/Singapore"),
   p("00000000-0000-0000-0000-0000000000b2", "student", "Sofia Rossi", "sofia@lessons.dev", "America/New_York"),
   p("00000000-0000-0000-0000-0000000000b3", "student", "Lena Park", "lena@lessons.dev", "Asia/Seoul"),
-  p("00000000-0000-0000-0000-0000000000c1", "parent", "Priya Sharma", "priya@lessons.dev", "Asia/Singapore"),
-  p("00000000-0000-0000-0000-0000000000c2", "parent", "Marco Rossi", "marco@lessons.dev", "America/New_York"),
+  p("00000000-0000-0000-0000-0000000000c1", "parent", "Priya Sharma", "priya@lessons.dev", "Asia/Singapore", "+6591234567"),
+  p("00000000-0000-0000-0000-0000000000c2", "parent", "Marco Rossi", "marco@lessons.dev", "America/New_York", "+13475550123"),
 ];
 
 export const demoParentStudent: Record<string, string[]> = {
@@ -97,6 +97,11 @@ export function buildDemoSessions(): SessionView[] {
     sv("20000000-0000-0000-0000-000000000010", 1, 1, "b2", "a1",
        now.plus({ days: 7 }).toISO()!, now.plus({ days: 7, hours: 1 }).toISO()!,
        "scheduled", null, "SAT Math — weekly slot", "30000000-0000-0000-0000-000000000001"),
+    // A completed lesson yesterday with no report yet — so the teacher's report
+    // queue has something to write.
+    sv("20000000-0000-0000-0000-000000000006", 0, 0, "b1", "a1",
+       now.minus({ days: 1, hours: 2 }).toISO()!, now.minus({ days: 1, hours: 1 }).toISO()!,
+       "completed", "room-aarav-006", "Quadratics — the quadratic formula"),
   ];
 }
 
@@ -110,6 +115,10 @@ export const demoReports: Report[] = [
     areas_to_work: "Sign errors when the coefficient of x² is not 1 — worth more practice.",
     homework: "Exercise 4B questions 1–8.",
     rating: 4,
+    teacher_notes: "Worked through 6 problems; strong on the algebra, careless with signs.",
+    ai_drafted: true,
+    needs_followup: false,
+    followup_reason: null,
     published_at: DateTime.utc().minus({ hours: 1 }).toISO(),
   },
 ];
@@ -120,8 +129,15 @@ function nowISO() {
   return DateTime.utc().toISO()!;
 }
 
-function p(id: string, role: Profile["role"], name: string, email: string, tz: string): Profile {
-  return { id, role, display_name: name, email, avatar_url: null, timezone: tz, created_at: nowISO() };
+function p(
+  id: string,
+  role: Profile["role"],
+  name: string,
+  email: string,
+  tz: string,
+  phone: string | null = null,
+): Profile {
+  return { id, role, display_name: name, email, phone, avatar_url: null, timezone: tz, created_at: nowISO() };
 }
 
 function c(id: string, name: string, subject: string, materials: string): Course {

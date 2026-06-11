@@ -7,10 +7,13 @@ import {
   Bell,
   CalendarClock,
   CalendarDays,
+  ClipboardCheck,
+  ClipboardList,
   Clock,
   FileText,
   GraduationCap,
   LayoutDashboard,
+  ListChecks,
   LogOut,
   Sparkles,
   Users,
@@ -35,20 +38,24 @@ const NAV: Record<Role, NavItem[]> = {
   admin: [
     { href: "/admin", label: "Schedule board", icon: LayoutDashboard },
     { href: "/admin/sessions", label: "Sessions", icon: CalendarClock },
+    { href: "/admin/followups", label: "Follow-ups", icon: ListChecks },
     { href: "/admin/people", label: "People", icon: Users },
     { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
   ],
   teacher: [
     { href: "/teacher", label: "Today", icon: LayoutDashboard },
+    { href: "/teacher/reports", label: "Reports", icon: ClipboardList },
     { href: "/teacher/coaching", label: "Coaching", icon: Sparkles },
     { href: "/teacher/availability", label: "Availability", icon: Clock },
   ],
   student: [
     { href: "/home", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
     { href: "/home/reports", label: "Reports", icon: FileText },
   ],
   parent: [
     { href: "/home", label: "Dashboard", icon: LayoutDashboard },
+    { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
     { href: "/home/reports", label: "Reports", icon: FileText },
   ],
 };

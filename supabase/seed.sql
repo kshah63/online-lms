@@ -140,6 +140,24 @@ insert into public.teacher_feedback (session_id, teacher_id, summary, strengths,
    '{"engagement":5,"questioning":4,"clarity":3,"rapport":4}'::jsonb)
 on conflict (session_id) do nothing;
 
+-- Parent phone numbers (for WhatsApp follow-ups).
+update public.profiles set phone = '+6591234567'  where id = '00000000-0000-0000-0000-0000000000c1';
+update public.profiles set phone = '+13475550123' where id = '00000000-0000-0000-0000-0000000000c2';
+
+-- Homework: one completed, one overdue.
+insert into public.homework (id, session_id, student_id, course_id, description, due_at, status, completed_at) values
+  ('40000000-0000-0000-0000-000000000001','20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000b1','10000000-0000-0000-0000-000000000001',
+   'Exercise 4B questions 1–8 (completing the square).', now() - interval '1 day', 'completed', now() - interval '6 hours'),
+  ('40000000-0000-0000-0000-000000000002',null,'00000000-0000-0000-0000-0000000000b2','10000000-0000-0000-0000-000000000002',
+   'Function transformations practice set.', now() - interval '2 days', 'assigned', null)
+on conflict (id) do nothing;
+
+-- A couple of open follow-ups for the admin dashboard.
+insert into public.followups (student_id, session_id, type, priority, reason) values
+  ('00000000-0000-0000-0000-0000000000b1','20000000-0000-0000-0000-000000000005','no_show','high','Missed the Trigonometry lesson — hasn''t rebooked.'),
+  ('00000000-0000-0000-0000-0000000000b2',null,'homework_overdue','normal','Function transformations homework is 2 days overdue.')
+on conflict do nothing;
+
 -- One published report on the completed morning lesson.
 insert into public.reports (session_id, teacher_id, topics_covered, how_student_did, strengths, areas_to_work, homework, rating, published_at) values
   ('20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000a1',

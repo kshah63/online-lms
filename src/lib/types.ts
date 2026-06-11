@@ -19,6 +19,7 @@ export interface Profile {
   role: Role;
   display_name: string;
   email: string | null;
+  phone: string | null;
   avatar_url: string | null;
   timezone: string;
   created_at: string;
@@ -74,8 +75,81 @@ export interface Report {
   areas_to_work: string | null;
   homework: string | null;
   rating: number | null;
+  teacher_notes: string | null;
+  ai_drafted: boolean;
+  needs_followup: boolean;
+  followup_reason: string | null;
   published_at: string | null;
 }
+
+export type HomeworkStatus = "assigned" | "completed" | "incomplete";
+
+export interface Homework {
+  id: string;
+  session_id: string | null;
+  student_id: string;
+  course_id: string | null;
+  description: string;
+  assigned_at: string;
+  due_at: string | null;
+  status: HomeworkStatus;
+  completed_at: string | null;
+  marked_by: string | null;
+  updated_at: string;
+}
+
+export type FollowupType =
+  | "attendance_gap"
+  | "no_show"
+  | "report_flag"
+  | "low_rating"
+  | "homework_overdue";
+
+export type FollowupStatus = "open" | "snoozed" | "done";
+export type FollowupPriority = "low" | "normal" | "high";
+
+export interface Followup {
+  id: string;
+  student_id: string;
+  session_id: string | null;
+  type: FollowupType;
+  priority: FollowupPriority;
+  reason: string | null;
+  status: FollowupStatus;
+  due_at: string | null;
+  snoozed_until: string | null;
+  resolved_by: string | null;
+  resolved_at: string | null;
+  resolution_note: string | null;
+  created_at: string;
+}
+
+/** A follow-up joined with the student (and parent) it concerns. */
+export interface FollowupView extends Followup {
+  student: Pick<Profile, "id" | "display_name" | "timezone" | "avatar_url" | "phone">;
+  parent: Pick<Profile, "id" | "display_name" | "phone"> | null;
+}
+
+export interface OutboundMessage {
+  id: string;
+  channel: "whatsapp" | "email";
+  to_profile: string | null;
+  to_phone: string | null;
+  body: string;
+  status: "queued" | "sent" | "failed" | "simulated";
+  provider_ref: string | null;
+  followup_id: string | null;
+  sent_by: string | null;
+  created_at: string;
+}
+
+export const FOLLOWUP_LABEL: Record<FollowupType, string> = {
+  attendance_gap: "Attendance gap",
+  no_show: "No-show",
+  report_flag: "Report flagged",
+  low_rating: "Low rating",
+  homework_overdue: "Homework overdue",
+};
 
 export interface Consent {
   profile_id: string;

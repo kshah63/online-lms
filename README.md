@@ -121,6 +121,31 @@ Demo personas:
 - **Dashboards** (§7.4): teacher coaching view (latest feedback, trends, dimension scores) and an
   admin QA view flagging low-engagement lessons.
 
+**Reports — AI + teacher (§8)** (`/teacher/reports`)
+
+- The teacher jots **quick notes**; AI drafts a parent-facing report from the notes + the lesson
+  transcript + metrics (`src/lib/reports/draft.ts`, `claude-opus-4-8`, heuristic fallback). The
+  teacher edits every field and **publishes** to the parent/student. On publish it can also assign
+  homework and raise a follow-up.
+
+**Homework tracking**
+
+- Publishing a report with homework creates a `homework` item with a due date. Students/parents tick
+  it off from their dashboard or `/home/homework`; overdue items surface to admin and feed follow-ups.
+
+**Follow-up dashboard** (`/admin/followups`)
+
+- Surfaces action items: **attendance gaps** (no completed lesson in 3 weeks, nothing booked),
+  **no-shows**, **overdue homework**, and **teacher-flagged / low-rating reports**. A "Scan now"
+  action regenerates the live ones. Each item can be resolved, snoozed, or actioned by **messaging the
+  parent over WhatsApp**.
+
+**WhatsApp (§11)** (`src/lib/messaging/whatsapp.ts`)
+
+- Parent outreach via the **Meta WhatsApp Cloud API**, with a templated message per follow-up type.
+  Set `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` to deliver; otherwise sends are **simulated** and logged
+  to `outbound_messages`.
+
 ---
 
 ## What's stubbed for later build steps
@@ -129,8 +154,10 @@ These are deliberately scaffolded, not faked — the schema and seams exist so t
 
 - **Streaming STT** — Daily's built-in transcription feeds the coach when configured; a dedicated
   Deepgram/AssemblyAI path is the alternative if you move off Daily.
-- **Reports drafting (§8)**, **billing/Stripe (§10)**, **notifications (§11)** — tables + balances
-  modelled; UI/automation are later steps.
+- **Billing/Stripe (§10)** — credit balances model exists and decrements on completion; checkout/top-up
+  is the remaining piece.
+- **Scheduled notifications (§11)** — WhatsApp parent outreach is built for follow-ups; timed reminders
+  (1h-before, reschedules) still need a scheduler/cron.
 
 ---
 
