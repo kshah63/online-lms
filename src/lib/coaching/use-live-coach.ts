@@ -37,6 +37,18 @@ export function useLiveCoach(sessionId: string, active: boolean) {
     [active, sessionId],
   );
 
+  /** Surface a nudge from an external source (the periodic LLM pass). */
+  const pushExternalNudge = useCallback(
+    (message: string) => {
+      if (!message || !active || mutedRef.current) return;
+      const n = { type: "ai" as const, message, at_ms: Date.now() };
+      setNudge(n);
+      setCount((c) => c + 1);
+      void logLiveEvent(sessionId, "ai", { message }).catch(() => {});
+    },
+    [active, sessionId],
+  );
+
   const dismiss = useCallback(() => setNudge(null), []);
 
   useEffect(() => {
@@ -47,5 +59,5 @@ export function useLiveCoach(sessionId: string, active: boolean) {
 
   const getSegments = useCallback(() => segmentsRef.current, []);
 
-  return { ingest, nudge, dismiss, muted, setMuted, count, getSegments };
+  return { ingest, pushExternalNudge, nudge, dismiss, muted, setMuted, count, getSegments };
 }

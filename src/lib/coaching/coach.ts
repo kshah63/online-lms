@@ -11,7 +11,8 @@ export type NudgeType =
   | "teacher_monologue"
   | "student_quiet"
   | "teacher_leading"
-  | "low_questions";
+  | "low_questions"
+  | "ai"; // periodic LLM cue (§7.2 optional pass)
 
 export interface Nudge {
   type: NudgeType;

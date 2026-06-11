@@ -94,6 +94,28 @@ export function LessonRoom({
       .catch(() => setStartedAtMs(Date.now()));
   }, [sessionId]);
 
+  // §7.2 periodic AI live-coaching pass: every ~2.5 min, send the recent
+  // transcript to Claude for a subtler nudge than the threshold rules.
+  useEffect(() => {
+    if (!isTeacher) return;
+    const id = setInterval(async () => {
+      const segs = coach.getSegments();
+      if (segs.length < 4) return;
+      try {
+        const res = await fetch("/api/coach/live", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ segments: segs.slice(-24) }),
+        });
+        const data = await res.json();
+        if (data?.nudge) coach.pushExternalNudge(data.nudge);
+      } catch {
+        /* ignore — rule-based nudges still run */
+      }
+    }, 150_000);
+    return () => clearInterval(id);
+  }, [isTeacher, coach]);
+
   // Demo: drive the live coach from a scripted transcript (no live audio).
   useEffect(() => {
     if (!demoCoaching || !isTeacher) return;
