@@ -44,6 +44,26 @@ export async function listCourses(): Promise<Course[]> {
   return (data ?? []) as Course[];
 }
 
+/** All enrollments as (course_id, student) pairs — for the admin courses page. */
+export async function listEnrollments(): Promise<{ course_id: string; student: Pick<Profile, "id" | "display_name"> }[]> {
+  if (isDemoMode) {
+    const out: { course_id: string; student: Pick<Profile, "id" | "display_name"> }[] = [];
+    for (const [studentId, courseIds] of Object.entries(demoEnrollments)) {
+      const s = demoProfiles.find((p) => p.id === studentId);
+      if (!s) continue;
+      for (const course_id of courseIds) out.push({ course_id, student: { id: s.id, display_name: s.display_name } });
+    }
+    return out;
+  }
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("enrollments")
+    .select("course_id, student:profiles!enrollments_student_id_fkey(id,display_name)");
+  if (error) throw error;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (data ?? []).map((r: any) => ({ course_id: r.course_id, student: r.student }));
+}
+
 /** Courses a student is enrolled in (what they can book a lesson for). */
 export async function getEnrolledCourses(studentId: string): Promise<Course[]> {
   if (isDemoMode) {

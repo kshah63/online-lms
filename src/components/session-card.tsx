@@ -4,7 +4,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
-import { formatRange, tzAbbrev, dayLabel } from "@/lib/time";
+import { formatRange, tzAbbrev, dayLabel, withinJoinWindow } from "@/lib/time";
 import { cn } from "@/lib/utils";
 import type { SessionView } from "@/lib/types";
 
@@ -26,6 +26,12 @@ export function SessionCard({
   const unassigned = !session.teacher;
   const live = session.status === "in_progress";
   const joinable = live || session.status === "confirmed" || session.status === "scheduled";
+  // Students/parents can enter from ~10 min before start (waiting room) so they
+  // don't depend on the teacher having flipped the lesson "live".
+  const studentCanJoin =
+    live ||
+    ((session.status === "scheduled" || session.status === "confirmed") &&
+      withinJoinWindow(session.scheduled_start, session.scheduled_end));
 
   return (
     <div
@@ -89,10 +95,10 @@ export function SessionCard({
                 {live ? "Join now" : "Open room"}
               </Link>
             </Button>
-          ) : live && (perspective === "student" || perspective === "parent") ? (
-            <Button asChild size="sm" variant="success">
+          ) : studentCanJoin && (perspective === "student" || perspective === "parent") ? (
+            <Button asChild size="sm" variant={live ? "success" : "default"}>
               <Link href={`/lesson/${session.id}`}>
-                <Video className="h-4 w-4" /> Join
+                <Video className="h-4 w-4" /> {live ? "Join" : "Join early"}
               </Link>
             </Button>
           ) : null)}

@@ -74,6 +74,18 @@ export function minutesUntil(utcISO: string): number {
   return Math.round(DateTime.fromISO(utcISO, { zone: "utc" }).diff(DateTime.utc(), "minutes").minutes);
 }
 
+/**
+ * Whether a lesson can be joined now: from `leadMin` minutes before the start
+ * until the scheduled end. Lets a student enter the (waiting) room around the
+ * scheduled time without depending on the teacher having flipped it "live".
+ */
+export function withinJoinWindow(startISO: string, endISO: string, leadMin = 10): boolean {
+  const now = DateTime.utc();
+  const open = DateTime.fromISO(startISO, { zone: "utc" }).minus({ minutes: leadMin });
+  const close = DateTime.fromISO(endISO, { zone: "utc" });
+  return now >= open && now <= close;
+}
+
 /** A curated set of common IANA timezones for pickers. */
 export const COMMON_TIMEZONES: string[] = [
   "Pacific/Auckland",

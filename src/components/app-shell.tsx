@@ -5,6 +5,7 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   Bell,
+  BookOpen,
   CalendarClock,
   CalendarDays,
   ClipboardCheck,
@@ -40,6 +41,7 @@ const NAV: Record<Role, NavItem[]> = {
     { href: "/admin", label: "Schedule board", icon: LayoutDashboard },
     { href: "/admin/sessions", label: "Sessions", icon: CalendarClock },
     { href: "/admin/followups", label: "Follow-ups", icon: ListChecks },
+    { href: "/admin/courses", label: "Courses", icon: BookOpen },
     { href: "/admin/people", label: "People", icon: Users },
     { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
   ],
