@@ -29,6 +29,31 @@ values
   ('00000000-0000-0000-0000-0000000000c2','00000000-0000-0000-0000-000000000000','authenticated','authenticated','marco@lessons.dev',   crypt('password123', gen_salt('bf')), now(), now(), now(), '{"provider":"email","providers":["email"]}', '{}')
 on conflict (id) do nothing;
 
+-- GoTrue (Supabase Auth) requires these token columns to be non-NULL strings
+-- and one auth.identities row per user. Manual inserts into auth.users leave
+-- them NULL/missing, which breaks login with "Database error querying schema".
+update auth.users set
+  confirmation_token         = coalesce(confirmation_token, ''),
+  recovery_token             = coalesce(recovery_token, ''),
+  email_change               = coalesce(email_change, ''),
+  email_change_token_new     = coalesce(email_change_token_new, ''),
+  email_change_token_current = coalesce(email_change_token_current, ''),
+  phone_change               = coalesce(phone_change, ''),
+  phone_change_token         = coalesce(phone_change_token, ''),
+  reauthentication_token     = coalesce(reauthentication_token, '')
+where email like '%@lessons.dev';
+
+insert into auth.identities (id, user_id, identity_data, provider, provider_id, last_sign_in_at, created_at, updated_at)
+select gen_random_uuid(), u.id,
+       jsonb_build_object('sub', u.id::text, 'email', u.email, 'email_verified', true),
+       'email', u.id::text, now(), now(), now()
+from auth.users u
+where u.email like '%@lessons.dev'
+  and not exists (select 1 from auth.identities i where i.user_id = u.id and i.provider = 'email');
+
+-- The on-signup trigger (handle_new_user) fires during the auth.users insert
+-- above and creates each profile as a default 'student' first — so this must
+-- UPDATE on conflict, not skip, or every seeded account ends up a student.
 insert into public.profiles (id, role, display_name, email, timezone) values
   ('00000000-0000-0000-0000-000000000001','admin',  'Admin Office',  'admin@lessons.dev',  'Asia/Singapore'),
   ('00000000-0000-0000-0000-0000000000a1','teacher','Maya Chen',     'maya@lessons.dev',   'Asia/Singapore'),
@@ -38,7 +63,11 @@ insert into public.profiles (id, role, display_name, email, timezone) values
   ('00000000-0000-0000-0000-0000000000b3','student','Lena Park',     'lena@lessons.dev',   'Asia/Seoul'),
   ('00000000-0000-0000-0000-0000000000c1','parent', 'Priya Sharma',  'priya@lessons.dev',  'Asia/Singapore'),
   ('00000000-0000-0000-0000-0000000000c2','parent', 'Marco Rossi',   'marco@lessons.dev',  'America/New_York')
-on conflict (id) do nothing;
+on conflict (id) do update
+  set role = excluded.role,
+      display_name = excluded.display_name,
+      email = excluded.email,
+      timezone = excluded.timezone;
 
 insert into public.parent_student (parent_id, student_id) values
   ('00000000-0000-0000-0000-0000000000c1','00000000-0000-0000-0000-0000000000b1'),

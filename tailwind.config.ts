@@ -6,6 +6,9 @@ const config: Config = {
     "./src/pages/**/*.{ts,tsx}",
     "./src/components/**/*.{ts,tsx}",
     "./src/app/**/*.{ts,tsx}",
+    // avatarColor() palette lives here — without this the bg-* classes are
+    // purged and avatars render white-on-white (invisible).
+    "./src/lib/**/*.{ts,tsx}",
   ],
   theme: {
     container: {

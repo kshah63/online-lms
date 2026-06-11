@@ -29,6 +29,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { signOut } from "@/lib/actions/auth";
 import { cn } from "@/lib/utils";
 import type { Profile, Role } from "@/lib/types";
 
@@ -158,11 +159,16 @@ export function AppShell({
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
-                <DropdownMenuItem asChild>
-                  <Link href="/login">
-                    <LogOut className="h-4 w-4" />
-                    {demoMode ? "Switch persona" : "Sign out"}
-                  </Link>
+                <DropdownMenuItem
+                  className="cursor-pointer"
+                  onSelect={() => {
+                    // Server action: clears the Supabase session (or the demo
+                    // persona cookie) and redirects to /login.
+                    void signOut();
+                  }}
+                >
+                  <LogOut className="h-4 w-4" />
+                  {demoMode ? "Switch persona" : "Sign out"}
                 </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
