@@ -64,6 +64,43 @@ export async function listEnrollments(): Promise<{ course_id: string; student: P
   return (data ?? []).map((r: any) => ({ course_id: r.course_id, student: r.student }));
 }
 
+export interface AccountRequest {
+  id: string;
+  role: "teacher" | "student" | "parent";
+  display_name: string;
+  email: string;
+  phone: string | null;
+  timezone: string;
+  message: string | null;
+  created_at: string;
+}
+
+/** Pending account requests for the admin to approve/reject. */
+export async function getPendingAccountRequests(): Promise<AccountRequest[]> {
+  if (isDemoMode) {
+    return [
+      {
+        id: "ar-demo-1",
+        role: "student",
+        display_name: "Noah Williams",
+        email: "noah@example.com",
+        phone: "+447700900111",
+        timezone: "Europe/London",
+        message: "Looking for weekly A-Level Physics help.",
+        created_at: new Date().toISOString(),
+      },
+    ];
+  }
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("account_requests")
+    .select("id, role, display_name, email, phone, timezone, message, created_at")
+    .eq("status", "pending")
+    .order("created_at", { ascending: false });
+  if (error) throw error;
+  return (data ?? []) as AccountRequest[];
+}
+
 export interface EnrollmentRequestView {
   id: string;
   created_at: string;

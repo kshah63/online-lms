@@ -4,15 +4,29 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { AddPersonDialog } from "@/components/admin/add-person-dialog";
+import { AccountRequests } from "@/components/admin/account-requests";
 import { requireRole } from "@/lib/data/auth";
-import { getBalance, getConsents, listParents, listStudents, listTeachers } from "@/lib/data/people";
+import {
+  getBalance,
+  getConsents,
+  getPendingAccountRequests,
+  listParents,
+  listStudents,
+  listTeachers,
+} from "@/lib/data/people";
 import type { ConsentType, Profile } from "@/lib/types";
 
 const REQUIRED_STUDENT_CONSENTS: ConsentType[] = ["recording", "ai_analysis"];
 
 export default async function AdminPeoplePage() {
   await requireRole("admin");
-  const [teachers, students, parents] = await Promise.all([listTeachers(), listStudents(), listParents()]);
+  const [teachers, students, parents, accountRequests] = await Promise.all([
+    listTeachers(),
+    listStudents(),
+    listParents(),
+    getPendingAccountRequests(),
+  ]);
 
   const studentRows = await Promise.all(
     students.map(async (s) => {
@@ -26,7 +40,13 @@ export default async function AdminPeoplePage() {
 
   return (
     <div>
-      <PageHeader title="People" description="Teachers, students and parents — with consent and billing status." />
+      <PageHeader
+        title="People"
+        description="Teachers, students and parents — with consent and billing status."
+        actions={<AddPersonDialog parents={parents.map((p) => ({ id: p.id, display_name: p.display_name }))} />}
+      />
+
+      <AccountRequests requests={accountRequests} />
 
       <Tabs defaultValue="students">
         <TabsList>

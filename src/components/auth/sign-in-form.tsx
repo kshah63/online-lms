@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useFormState, useFormStatus } from "react-dom";
 import { Loader2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -33,7 +34,10 @@ export function SignInForm() {
         <SubmitButton />
       </form>
       <p className="mt-4 text-center text-xs text-muted-foreground">
-        Accounts are provisioned by your school administrator.
+        No account yet?{" "}
+        <Link href="/request-access" className="text-primary hover:underline">
+          Request access
+        </Link>
       </p>
     </div>
   );
