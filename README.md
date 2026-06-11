@@ -85,13 +85,41 @@ Demo personas:
 
 **Step 2 — The live lesson** (`/lesson/[sessionId]`)
 
-- Three-panel room: **Video** + **collaborative notebook (tldraw)** + **Materials**.
+- Three-panel room: **Video** + **real-time collaborative notebook (tldraw)** + **Materials**.
 - **Assigned-teacher-only join is enforced server-side** (the spec's hard requirement): a teacher can
-  only enter a session where `teacher_id = caller`; others get an explicit access-denied screen.
+  only enter a session where `teacher_id = caller`; others get an explicit access-denied screen. The
+  rule is re-checked when minting the video token, so the join-token endpoint is gated too.
 - **Materials Portal integration** over the API boundary (§6): a server-side proxy holds the service
   credential and passes the caller's effective course role so the portal gates teacher-only files.
 - **Consent-gated recording** (§9): the record control is disabled unless the student's `recording`
   consent is on file.
+
+**Video SDK — Daily** (`src/lib/video/daily.ts`, `src/components/lesson/daily-room.tsx`)
+
+- Rooms are created per session; meeting tokens are minted server-side, the assigned teacher joining
+  as **owner** (record/transcribe rights). Set `DAILY_API_KEY` to go live; without it the room falls
+  back to the built-in mock panel. *(LiveKit is the alternative if you want a server-side agent tapping
+  live audio; Daily is chosen for the fastest clean embed + built-in transcription that feeds §7.)*
+
+**Real-time notebook sync** (`src/lib/notebook/use-notebook-sync.ts`)
+
+- tldraw's store is wired to a **Supabase Realtime** channel: document edits broadcast both ways and
+  merge as remote changes, live **cursors/presence** render for each participant, and the running
+  document is persisted to `notebooks.tldraw_snapshot` (debounced). Falls back to local IndexedDB when
+  Supabase isn't configured.
+
+**AI teacher coaching — live + post-session (§7)**
+
+- **Metrics** (`src/lib/coaching/metrics.ts`): talk-time ratio, question frequency + open/closed mix,
+  wait-time, student turns, praise — computed from a diarized transcript.
+- **Live coaching** (`src/lib/coaching/coach.ts`): a rolling per-session state emits subtle,
+  teacher-only, **rate-limited** nudges (mutable, dismissible). Fed by Daily transcription live, or by
+  a scripted transcript in demo mode so the nudges are visible without audio.
+- **Post-session analysis** (`src/lib/coaching/analyze.ts`): the transcript + final metrics go to
+  **Claude (`claude-opus-4-8`, structured output)** for strengths-first coaching; saved to
+  `teacher_feedback`. Without `ANTHROPIC_API_KEY` it falls back to a metrics-derived heuristic.
+- **Dashboards** (§7.4): teacher coaching view (latest feedback, trends, dimension scores) and an
+  admin QA view flagging low-engagement lessons.
 
 ---
 
@@ -99,13 +127,8 @@ Demo personas:
 
 These are deliberately scaffolded, not faked — the schema and seams exist so the later steps drop in:
 
-- **Video SDK** — the room is a clean mock; swap in Daily / LiveKit / Agora behind `VideoPanel`
-  + a join-token endpoint (the `teacher_id = caller` check already lives server-side).
-- **Notebook sync** — tldraw persists locally (IndexedDB) per notebook today; real-time Supabase
-  sync of `notebooks.tldraw_snapshot` is the next increment.
-- **AI coaching (§7)** — `transcripts`, `session_metrics`, `live_events`, `teacher_feedback` tables
-  exist. The live coach chip is a labelled design preview; the transcript→metrics→nudge pipeline and
-  the post-session Claude analysis are steps 4–6.
+- **Streaming STT** — Daily's built-in transcription feeds the coach when configured; a dedicated
+  Deepgram/AssemblyAI path is the alternative if you move off Daily.
 - **Reports drafting (§8)**, **billing/Stripe (§10)**, **notifications (§11)** — tables + balances
   modelled; UI/automation are later steps.
 

@@ -10,6 +10,8 @@ import { Button } from "@/components/ui/button";
 import { requireProfile, homePathForRole } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getChildren, getConsents } from "@/lib/data/people";
+import { loadNotebookSnapshot } from "@/lib/actions/notebook";
+import { isDemoMode } from "@/lib/env";
 
 export default async function LessonPage({ params }: { params: { sessionId: string } }) {
   const profile = await requireProfile();
@@ -38,6 +40,9 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
   const peerName = isTeacher
     ? session.student.display_name
     : session.teacher?.display_name ?? "Teacher (unassigned)";
+
+  const notebookId = session.notebook_id ?? session.id;
+  const initialSnapshot = await loadNotebookSnapshot(notebookId);
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
@@ -73,12 +78,17 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
 
       {/* Three-panel body */}
       <LessonRoom
-        notebookId={session.notebook_id ?? session.id}
+        sessionId={session.id}
+        notebookId={notebookId}
         materialsCourseId={session.course.materials_course_id}
+        courseName={session.course.name}
+        selfId={profile.id}
         selfName={profile.display_name}
         peerName={peerName}
         recordingAllowed={recordingAllowed}
         isTeacher={isTeacher}
+        initialSnapshot={initialSnapshot}
+        demoCoaching={isDemoMode}
       />
     </div>
   );

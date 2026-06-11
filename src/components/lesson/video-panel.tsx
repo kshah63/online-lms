@@ -14,7 +14,8 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 
-export function VideoPanel({
+/** Built-in mock room shown when no video SDK (Daily) is configured. */
+export function MockVideoPanel({
   selfName,
   peerName,
   recordingAllowed,

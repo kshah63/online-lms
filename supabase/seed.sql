@@ -115,6 +115,31 @@ insert into public.credit_balances (student_id, balance) values
   ('00000000-0000-0000-0000-0000000000b3', 12)
 on conflict (student_id) do nothing;
 
+-- §7 Coaching data for the completed morning lesson (so the dashboards aren't
+-- empty on a fresh real database; the demo dataset synthesizes a richer history).
+insert into public.transcripts (session_id, segments) values
+  ('20000000-0000-0000-0000-000000000001',
+   '[{"speaker":"teacher","text":"Today we are completing the square. Let me show you the method.","start_ms":0,"end_ms":42000},
+     {"speaker":"student","text":"Okay, so we halve the middle coefficient?","start_ms":42000,"end_ms":48000},
+     {"speaker":"teacher","text":"Exactly, well spotted. Why do we square it afterwards?","start_ms":48000,"end_ms":56000},
+     {"speaker":"student","text":"To make a perfect square trinomial we can factor.","start_ms":56000,"end_ms":64000},
+     {"speaker":"teacher","text":"Great thinking. Try the next one yourself.","start_ms":64000,"end_ms":70000},
+     {"speaker":"student","text":"So x minus five squared minus seventeen.","start_ms":71000,"end_ms":82000}]'::jsonb)
+on conflict (session_id) do nothing;
+
+insert into public.session_metrics
+  (session_id, teacher_talk_pct, student_talk_pct, question_count, open_question_pct, avg_wait_ms, student_turns, avg_student_turn_ms, praise_count, computed_at) values
+  ('20000000-0000-0000-0000-000000000001', 0.55, 0.45, 2, 0.5, 1000, 3, 8333, 2, now())
+on conflict (session_id) do nothing;
+
+insert into public.teacher_feedback (session_id, teacher_id, summary, strengths, suggestions, dimension_scores) values
+  ('20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000a1',
+   'A balanced lesson — the student talked 45% of the time across 3 turns and reasoned through the method.',
+   '["Strong student voice — they did a healthy share of the talking and thinking.","Good use of open questions to draw out the student''s reasoning."]'::jsonb,
+   '["Extend your wait-time after a question to ~3 seconds before stepping in.","Name specific things the student did well to build their confidence."]'::jsonb,
+   '{"engagement":5,"questioning":4,"clarity":3,"rapport":4}'::jsonb)
+on conflict (session_id) do nothing;
+
 -- One published report on the completed morning lesson.
 insert into public.reports (session_id, teacher_id, topics_covered, how_student_did, strengths, areas_to_work, homework, rating, published_at) values
   ('20000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000a1',

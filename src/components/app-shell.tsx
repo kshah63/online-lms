@@ -12,6 +12,7 @@ import {
   GraduationCap,
   LayoutDashboard,
   LogOut,
+  Sparkles,
   Users,
 } from "lucide-react";
 import { DateTime } from "luxon";
@@ -35,9 +36,11 @@ const NAV: Record<Role, NavItem[]> = {
     { href: "/admin", label: "Schedule board", icon: LayoutDashboard },
     { href: "/admin/sessions", label: "Sessions", icon: CalendarClock },
     { href: "/admin/people", label: "People", icon: Users },
+    { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
   ],
   teacher: [
     { href: "/teacher", label: "Today", icon: LayoutDashboard },
+    { href: "/teacher/coaching", label: "Coaching", icon: Sparkles },
     { href: "/teacher/availability", label: "Availability", icon: Clock },
   ],
   student: [
@@ -82,7 +85,10 @@ export function AppShell({
 
         <nav className="flex flex-1 flex-col gap-1">
           {nav.map((item) => {
-            const active = pathname === item.href || (item.href !== "/admin" && item.href !== "/home" && pathname.startsWith(item.href));
+            const indexRoutes = ["/admin", "/teacher", "/home"];
+            const active =
+              pathname === item.href ||
+              (!indexRoutes.includes(item.href) && pathname.startsWith(item.href));
             return (
               <Link
                 key={item.href}
