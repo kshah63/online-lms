@@ -116,6 +116,14 @@ export function LessonRoom({
     return () => clearInterval(id);
   }, [isTeacher, coach]);
 
+  // Time-based cues (silence, praise drought) need a tick, not just segments.
+  // Real-time only — demo uses the scripted transcript on its own clock.
+  useEffect(() => {
+    if (!isTeacher || demoCoaching) return;
+    const id = setInterval(() => coach.tick(), 15_000);
+    return () => clearInterval(id);
+  }, [isTeacher, demoCoaching, coach]);
+
   // Demo: drive the live coach from a scripted transcript (no live audio).
   useEffect(() => {
     if (!demoCoaching || !isTeacher) return;

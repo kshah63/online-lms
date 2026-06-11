@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { createCoachState, ingestSegment, type Nudge } from "@/lib/coaching/coach";
+import { createCoachState, evaluateTick, ingestSegment, type Nudge } from "@/lib/coaching/coach";
 import type { TranscriptSegment } from "@/lib/coaching/metrics";
 import { logLiveEvent } from "@/lib/actions/coaching";
 
@@ -37,6 +37,17 @@ export function useLiveCoach(sessionId: string, active: boolean) {
     [active, sessionId],
   );
 
+  /** Periodic time-based evaluation (silence, praise drought) using real time. */
+  const tick = useCallback(() => {
+    const nudges = evaluateTick(stateRef.current, Date.now());
+    if (nudges.length && active && !mutedRef.current) {
+      const latest = nudges[nudges.length - 1];
+      setNudge(latest);
+      setCount((c) => c + 1);
+      void logLiveEvent(sessionId, latest.type, { message: latest.message }).catch(() => {});
+    }
+  }, [active, sessionId]);
+
   /** Surface a nudge from an external source (the periodic LLM pass). */
   const pushExternalNudge = useCallback(
     (message: string) => {
@@ -59,5 +70,5 @@ export function useLiveCoach(sessionId: string, active: boolean) {
 
   const getSegments = useCallback(() => segmentsRef.current, []);
 
-  return { ingest, pushExternalNudge, nudge, dismiss, muted, setMuted, count, getSegments };
+  return { ingest, tick, pushExternalNudge, nudge, dismiss, muted, setMuted, count, getSegments };
 }
