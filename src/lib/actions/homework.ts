@@ -26,23 +26,38 @@ export async function submitHomework(id: string): Promise<void> {
   revalidatePath(`/home/homework/${id}`);
 }
 
-/** Teacher verifies the submitted notebook work (completed) or sends it back. */
-export async function verifyHomework(id: string, verified: boolean, note: string | null): Promise<void> {
+export interface HomeworkGrade {
+  verified: boolean;
+  correct?: number | null;
+  incorrect?: number | null;
+  notDone?: number | null;
+  feedback?: string | null;
+}
+
+/** Teacher grades the submitted work: marks (quantifiable) + comment, and
+ * verifies complete or sends it back. */
+export async function gradeHomework(id: string, grade: HomeworkGrade): Promise<void> {
   if (!isDemoMode) {
     const profile = await getCurrentProfile();
     const supabase = createSupabaseServerClient()!;
+    const now = new Date().toISOString();
     await supabase
       .from("homework")
       .update({
-        status: verified ? "completed" : "incomplete",
+        status: grade.verified ? "completed" : "incomplete",
         verified_by: profile?.id ?? null,
-        verified_at: new Date().toISOString(),
-        completed_at: verified ? new Date().toISOString() : null,
-        review_note: note,
+        verified_at: now,
+        completed_at: grade.verified ? now : null,
+        mark_correct: grade.correct ?? null,
+        mark_incorrect: grade.incorrect ?? null,
+        mark_not_done: grade.notDone ?? null,
+        feedback: grade.feedback ?? null,
+        review_note: grade.verified ? null : grade.feedback ?? null,
       })
       .eq("id", id);
   }
   revalidatePath("/teacher/homework");
-  revalidatePath(`/teacher/homework/${id}`);
+  revalidatePath(`/hw/${id}`);
   revalidatePath("/home/homework");
+  revalidatePath("/home");
 }

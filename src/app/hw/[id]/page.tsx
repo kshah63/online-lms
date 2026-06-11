@@ -53,6 +53,13 @@ export default async function HomeworkCanvasPage({ params }: { params: { id: str
       initialSnapshot={initialSnapshot}
       mode={mode}
       backHref={backHref}
+      attachments={hw.attachments ?? []}
+      marks={{
+        correct: hw.mark_correct,
+        incorrect: hw.mark_incorrect,
+        notDone: hw.mark_not_done,
+        feedback: hw.feedback,
+      }}
     />
   );
 }

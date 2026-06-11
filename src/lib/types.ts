@@ -103,7 +103,18 @@ export interface Homework {
   verified_by: string | null;
   verified_at: string | null;
   review_note: string | null;
+  mark_correct: number | null;
+  mark_incorrect: number | null;
+  mark_not_done: number | null;
+  feedback: string | null;
+  attachments: HomeworkAttachment[];
   updated_at: string;
+}
+
+export interface HomeworkAttachment {
+  name: string;
+  path: string;
+  size: number;
 }
 
 export type FollowupType =

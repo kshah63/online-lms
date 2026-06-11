@@ -3,6 +3,7 @@ import { Clock, PenLine } from "lucide-react";
 import { DateTime } from "luxon";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { HomeworkMarks } from "@/components/homework/homework-marks";
 import { cn } from "@/lib/utils";
 import type { HomeworkStatus } from "@/lib/types";
 
@@ -13,6 +14,10 @@ export interface HomeworkItem {
   due_at: string | null;
   status: HomeworkStatus;
   student_name?: string;
+  mark_correct?: number | null;
+  mark_incorrect?: number | null;
+  mark_not_done?: number | null;
+  feedback?: string | null;
 }
 
 const STATUS: Record<HomeworkStatus, { label: string; variant: React.ComponentProps<typeof Badge>["variant"] }> = {
@@ -59,6 +64,19 @@ export function HomeworkList({
                   </span>
                 )}
               </div>
+              {(done || hw.status === "incomplete") &&
+                (hw.mark_correct != null || hw.mark_incorrect != null || hw.mark_not_done != null) && (
+                  <div className="mt-1.5">
+                    <HomeworkMarks
+                      correct={hw.mark_correct ?? null}
+                      incorrect={hw.mark_incorrect ?? null}
+                      notDone={hw.mark_not_done ?? null}
+                    />
+                  </div>
+                )}
+              {hw.feedback && (done || hw.status === "incomplete") && (
+                <p className="mt-1 text-xs text-muted-foreground">“{hw.feedback}”</p>
+              )}
             </div>
             <Badge variant={badge.variant}>{badge.label}</Badge>
             {canOpen && (

@@ -11,15 +11,17 @@ import {
   type TLPageId,
 } from "tldraw";
 import "tldraw/tldraw.css";
-import { CheckCircle2, ChevronLeft, Loader2, RotateCcw, Send, Sparkles } from "lucide-react";
+import { CheckCircle2, ChevronLeft, Loader2, Send, Sparkles } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import { AttachmentsBar } from "@/components/homework/attachments-bar";
+import { GradeDialog } from "@/components/homework/grade-dialog";
+import { HomeworkMarks } from "@/components/homework/homework-marks";
 import { useNotebookSync } from "@/lib/notebook/use-notebook-sync";
 import { saveNotebookSnapshot } from "@/lib/actions/notebook";
-import { setHomeworkPage, submitHomework, verifyHomework } from "@/lib/actions/homework";
-import type { HomeworkStatus } from "@/lib/types";
+import { setHomeworkPage, submitHomework } from "@/lib/actions/homework";
+import type { HomeworkAttachment, HomeworkStatus } from "@/lib/types";
 
 interface CanvasProps {
   homeworkId: string;
@@ -35,6 +37,8 @@ interface CanvasProps {
   initialSnapshot: unknown | null;
   mode: "student" | "review" | "view";
   backHref: string;
+  attachments: HomeworkAttachment[];
+  marks: { correct: number | null; incorrect: number | null; notDone: number | null; feedback: string | null };
 }
 
 const STATUS: Record<HomeworkStatus, { label: string; variant: React.ComponentProps<typeof Badge>["variant"] }> = {
@@ -111,8 +115,10 @@ export function HomeworkCanvas(props: CanvasProps) {
 
       <div className="border-b bg-accent/30 px-4 py-1.5 text-center text-xs text-muted-foreground">
         <Sparkles className="mr-1 inline h-3 w-3" />
-        Do the work on this page — draw your working, type, or <strong>drag a photo of your paper</strong> onto the canvas.
+        Do the work on this page — draw your working, type, <strong>drag a photo onto the canvas</strong>, or attach a PDF below.
       </div>
+
+      <AttachmentsBar homeworkId={props.homeworkId} initial={props.attachments} canUpload={props.mode !== "review"} />
 
       <div className="relative flex-1">
         <div className="absolute inset-0">
@@ -120,27 +126,36 @@ export function HomeworkCanvas(props: CanvasProps) {
         </div>
       </div>
 
-      {props.reviewNote && props.status === "incomplete" && (
-        <div className="border-t bg-warning/10 px-4 py-2 text-sm text-warning-foreground">
-          <strong>Teacher note:</strong> {props.reviewNote}
-        </div>
-      )}
+      {/* Graded result — visible to student/parent and the teacher. */}
+      {(props.status === "completed" || props.status === "incomplete") &&
+        (props.marks.correct != null ||
+          props.marks.incorrect != null ||
+          props.marks.notDone != null ||
+          props.marks.feedback) && (
+          <div className="flex flex-wrap items-center gap-x-4 gap-y-1 border-t bg-card px-4 py-2 text-sm">
+            <HomeworkMarks
+              correct={props.marks.correct}
+              incorrect={props.marks.incorrect}
+              notDone={props.marks.notDone}
+            />
+            {props.marks.feedback && <span className="text-muted-foreground">“{props.marks.feedback}”</span>}
+          </div>
+        )}
     </div>
   );
 }
 
+/** Student submits; teacher grades. */
 function Actions({
   mode,
   status,
   homeworkId,
+  backHref,
   flush,
   onDone,
 }: CanvasProps & { flush: () => Promise<void>; onDone: () => void }) {
   const [pending, start] = useTransition();
-  const [sendingBack, setSendingBack] = useState(false);
-  const [note, setNote] = useState("");
 
-  // Student: submit their work.
   if (mode === "student") {
     if (status === "assigned" || status === "incomplete") {
       return (
@@ -163,45 +178,8 @@ function Actions({
     return null;
   }
 
-  // Teacher: verify the submitted work.
   if (mode === "review" && status === "submitted") {
-    if (sendingBack) {
-      return (
-        <div className="flex items-center gap-2">
-          <Textarea
-            rows={1}
-            placeholder="What to fix…"
-            value={note}
-            onChange={(e) => setNote(e.target.value)}
-            className="h-9 w-44 resize-none py-1.5"
-          />
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={pending}
-            onClick={() => start(async () => { await verifyHomework(homeworkId, false, note || null); onDone(); })}
-          >
-            Send back
-          </Button>
-        </div>
-      );
-    }
-    return (
-      <div className="flex items-center gap-2">
-        <Button size="sm" variant="ghost" onClick={() => setSendingBack(true)}>
-          <RotateCcw className="h-4 w-4" /> Send back
-        </Button>
-        <Button
-          size="sm"
-          variant="success"
-          disabled={pending}
-          onClick={() => start(async () => { await verifyHomework(homeworkId, true, null); onDone(); })}
-        >
-          {pending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CheckCircle2 className="h-4 w-4" />}
-          Verify complete
-        </Button>
-      </div>
-    );
+    return <GradeDialog homeworkId={homeworkId} backHref={backHref} />;
   }
 
   return null;
