@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* Clean, modern ed-tech palette — calm neutrals + one indigo accent. */
+    --background: 220 33% 99%;
+    --foreground: 222 33% 12%;
+
+    --card: 0 0% 100%;
+    --card-foreground: 222 33% 12%;
+
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 33% 12%;
+
+    --primary: 243 75% 59%;
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 18% 96%;
+    --secondary-foreground: 222 25% 20%;
+
+    --muted: 220 18% 96%;
+    --muted-foreground: 220 12% 46%;
+
+    --accent: 243 80% 96%;
+    --accent-foreground: 243 60% 38%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+
+    --success: 158 64% 40%;
+    --success-foreground: 0 0% 100%;
+
+    --warning: 38 92% 50%;
+    --warning-foreground: 38 60% 18%;
+
+    --border: 220 16% 90%;
+    --input: 220 16% 90%;
+    --ring: 243 75% 59%;
+
+    --radius: 0.7rem;
+
+    --font-sans: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto,
+      "Helvetica Neue", Arial, "Noto Sans", sans-serif;
+  }
+
+  .dark {
+    --background: 222 30% 8%;
+    --foreground: 220 20% 96%;
+    --card: 222 28% 11%;
+    --card-foreground: 220 20% 96%;
+    --popover: 222 28% 11%;
+    --popover-foreground: 220 20% 96%;
+    --primary: 243 75% 66%;
+    --primary-foreground: 222 30% 8%;
+    --secondary: 222 20% 16%;
+    --secondary-foreground: 220 20% 96%;
+    --muted: 222 20% 16%;
+    --muted-foreground: 220 12% 62%;
+    --accent: 243 40% 22%;
+    --accent-foreground: 243 80% 88%;
+    --destructive: 0 62% 50%;
+    --destructive-foreground: 0 0% 100%;
+    --success: 158 60% 45%;
+    --success-foreground: 0 0% 100%;
+    --warning: 38 92% 55%;
+    --warning-foreground: 38 60% 12%;
+    --border: 222 18% 20%;
+    --input: 222 18% 22%;
+    --ring: 243 75% 66%;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-foreground;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+/* Subtle dotted texture for empty/canvas surfaces. */
+.bg-dotted {
+  background-image: radial-gradient(hsl(var(--border)) 1px, transparent 1px);
+  background-size: 16px 16px;
+}
