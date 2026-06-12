@@ -1,4 +1,4 @@
-import { CheckCircle2, CircleAlert, Coins, GraduationCap, Users } from "lucide-react";
+import { CheckCircle2, CircleAlert, GraduationCap, Users } from "lucide-react";
 import { PageHeader } from "@/components/page-header";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -8,7 +8,6 @@ import { AddPersonDialog } from "@/components/admin/add-person-dialog";
 import { AccountRequests } from "@/components/admin/account-requests";
 import { requireRole } from "@/lib/data/auth";
 import {
-  getBalance,
   getConsents,
   getPendingAccountRequests,
   listParents,
@@ -33,8 +32,7 @@ export default async function AdminPeoplePage() {
       const consents = await getConsents(s.id);
       const granted = new Set(consents.map((c) => c.type));
       const missing = REQUIRED_STUDENT_CONSENTS.filter((t) => !granted.has(t));
-      const balance = await getBalance(s.id);
-      return { student: s, missing, balance };
+      return { student: s, missing };
     }),
   );
 
@@ -42,7 +40,7 @@ export default async function AdminPeoplePage() {
     <div>
       <PageHeader
         title="People"
-        description="Teachers, students and parents — with consent and billing status."
+        description="Teachers, students and parents — with consent status."
         actions={<AddPersonDialog parents={parents.map((p) => ({ id: p.id, display_name: p.display_name }))} />}
       />
 
@@ -63,16 +61,13 @@ export default async function AdminPeoplePage() {
               </CardTitle>
             </CardHeader>
             <CardContent className="divide-y">
-              {studentRows.map(({ student, missing, balance }) => (
+              {studentRows.map(({ student, missing }) => (
                 <div key={student.id} className="flex flex-wrap items-center gap-3 py-3">
                   <Avatar name={student.display_name} size={36} />
                   <div className="min-w-0 flex-1">
                     <div className="font-medium">{student.display_name}</div>
                     <div className="text-xs text-muted-foreground">{student.timezone.replace(/_/g, " ")}</div>
                   </div>
-                  <Badge variant="secondary" className="gap-1">
-                    <Coins className="h-3 w-3" /> {balance} credits
-                  </Badge>
                   {missing.length === 0 ? (
                     <Badge variant="success" className="gap-1">
                       <CheckCircle2 className="h-3 w-3" /> Consent complete

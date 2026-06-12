@@ -2,7 +2,6 @@ import { DateTime } from "luxon";
 import type {
   Consent,
   Course,
-  CreditBalance,
   Profile,
   Report,
   SessionView,
@@ -73,12 +72,6 @@ export const demoConsents: Consent[] = [
   { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "ai_analysis", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
   { profile_id: "00000000-0000-0000-0000-0000000000b2", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c2", granted_at: nowISO() },
   { profile_id: "00000000-0000-0000-0000-0000000000a1", type: "teacher_eval", granted_by: "00000000-0000-0000-0000-0000000000a1", granted_at: nowISO() },
-];
-
-export const demoBalances: CreditBalance[] = [
-  { student_id: "00000000-0000-0000-0000-0000000000b1", balance: 8, updated_at: nowISO() },
-  { student_id: "00000000-0000-0000-0000-0000000000b2", balance: 2, updated_at: nowISO() },
-  { student_id: "00000000-0000-0000-0000-0000000000b3", balance: 12, updated_at: nowISO() },
 ];
 
 /** Sessions are rebuilt on each read so they stay anchored to the current day. */

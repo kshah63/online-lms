@@ -10,10 +10,19 @@ import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
 // metrics-derived heuristic when ANTHROPIC_API_KEY isn't configured.
 // ============================================================================
 
+/** A specific, timestamped moment in the lesson worth learning from. */
+export interface FeedbackMoment {
+  at: string; // "mm:ss" matching the transcript markers
+  kind: "strength" | "improvement";
+  quote: string; // short verbatim excerpt
+  comment: string; // why it worked / what to try instead
+}
+
 export interface TeacherFeedback {
   summary: string;
   strengths: string[];
   suggestions: string[];
+  moments: FeedbackMoment[];
   dimension_scores: {
     engagement: number;
     questioning: number;
@@ -26,6 +35,14 @@ const FeedbackSchema = z.object({
   summary: z.string(),
   strengths: z.array(z.string()),
   suggestions: z.array(z.string()),
+  moments: z.array(
+    z.object({
+      at: z.string(),
+      kind: z.enum(["strength", "improvement"]),
+      quote: z.string(),
+      comment: z.string(),
+    }),
+  ),
   dimension_scores: z.object({
     engagement: z.number(),
     questioning: z.number(),
@@ -44,6 +61,20 @@ const FEEDBACK_FORMAT = {
       summary: { type: "string" },
       strengths: { type: "array", items: { type: "string" } },
       suggestions: { type: "array", items: { type: "string" } },
+      moments: {
+        type: "array",
+        items: {
+          type: "object",
+          additionalProperties: false,
+          properties: {
+            at: { type: "string" },
+            kind: { type: "string", enum: ["strength", "improvement"] },
+            quote: { type: "string" },
+            comment: { type: "string" },
+          },
+          required: ["at", "kind", "quote", "comment"],
+        },
+      },
       dimension_scores: {
         type: "object",
         additionalProperties: false,
@@ -56,13 +87,21 @@ const FEEDBACK_FORMAT = {
         required: ["engagement", "questioning", "clarity", "rapport"],
       },
     },
-    required: ["summary", "strengths", "suggestions", "dimension_scores"],
+    required: ["summary", "strengths", "suggestions", "moments", "dimension_scores"],
   },
 };
 
 const SYSTEM = `You are a supportive tutoring coach reviewing a 1-1 lesson transcript and metrics.
 Lead with strengths. Be specific and actionable, grounded in the transcript and the numbers.
-Keep each strength and suggestion to one sentence. Score each dimension 1-5 (integers).`;
+Keep each strength and suggestion to one sentence. Score each dimension 1-5 (integers).
+
+Also extract 3-6 KEY MOMENTS from the transcript — the specific situations most worth learning
+from, balanced between what worked ("strength") and what could have gone better ("improvement").
+For each moment: "at" is the [mm:ss] timestamp of the line it refers to (copy it from the
+transcript), "quote" is a short verbatim excerpt (max ~20 words), and "comment" explains —
+for a strength, exactly what was effective; for an improvement, what to do instead, phrased as
+a concrete alternative the teacher could have said or done in that situation. Only reference
+things actually present in the transcript; if it is too short for meaningful moments, return fewer.`;
 
 export const aiConfigured = Boolean(process.env.ANTHROPIC_API_KEY);
 
@@ -154,6 +193,7 @@ export function heuristicFeedback(m: SessionMetrics): TeacherFeedback {
     }`,
     strengths,
     suggestions,
+    moments: [], // transcript-specific moments need the AI pass
     dimension_scores: {
       engagement: clamp(score(m.student_talk_pct >= 0.4, m.student_talk_pct >= 0.3)),
       questioning: clamp(score(m.open_question_pct >= 0.4 && m.question_count >= 5, m.question_count >= 3)),

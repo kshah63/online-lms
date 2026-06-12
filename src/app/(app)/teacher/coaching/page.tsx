@@ -1,11 +1,12 @@
-import { Lightbulb, MessageCircleQuestion, Sparkles, TrendingUp, Users } from "lucide-react";
+import Link from "next/link";
+import { ArrowUpRight, Lightbulb, MessageCircleQuestion, Sparkles, TrendingUp, Users } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScoreBars, TrendBars } from "@/components/coaching/score-bars";
 import { requireRole } from "@/lib/data/auth";
-import { getFeedbackHistory } from "@/lib/data/coaching";
+import { avgScore, getFeedbackHistory } from "@/lib/data/coaching";
 
 export default async function TeacherCoachingPage() {
   const teacher = await requireRole("teacher");
@@ -52,8 +53,14 @@ export default async function TeacherCoachingPage() {
             <CardHeader>
               <div className="flex items-center justify-between">
                 <CardTitle className="text-base">Latest lesson</CardTitle>
-                <span className="text-xs text-muted-foreground">
+                <span className="flex items-center gap-2 text-xs text-muted-foreground">
                   {latest.course_name} · {DateTime.fromISO(latest.created_at, { zone: "utc" }).setZone(teacher.timezone).toFormat("d LLL")}
+                  <Link
+                    href={`/coaching/${latest.session_id}`}
+                    className="flex items-center gap-0.5 font-medium text-primary hover:underline"
+                  >
+                    Deep dive <ArrowUpRight className="h-3 w-3" />
+                  </Link>
                 </span>
               </div>
               <CardDescription>{latest.summary}</CardDescription>
@@ -109,8 +116,8 @@ export default async function TeacherCoachingPage() {
           </Card>
         </div>
 
-        {/* Dimension scores */}
-        <div>
+        {/* Dimension scores + per-lesson history */}
+        <div className="space-y-6">
           <Card>
             <CardHeader className="pb-3">
               <CardTitle className="text-base">This lesson&rsquo;s scores</CardTitle>
@@ -118,6 +125,33 @@ export default async function TeacherCoachingPage() {
             </CardHeader>
             <CardContent>
               <ScoreBars scores={latest.dimension_scores} />
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base">All coached lessons</CardTitle>
+              <CardDescription>Open any lesson for its full deep dive.</CardDescription>
+            </CardHeader>
+            <CardContent className="divide-y">
+              {history.slice(0, 10).map((f) => (
+                <Link
+                  key={f.session_id}
+                  href={`/coaching/${f.session_id}`}
+                  className="group flex items-center gap-3 py-2.5 first:pt-0 last:pb-0"
+                >
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-sm font-medium group-hover:text-primary">
+                      {f.course_name} · {f.student_name}
+                    </div>
+                    <div className="text-xs text-muted-foreground">
+                      {DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(teacher.timezone).toFormat("d LLL, h:mm a")}
+                    </div>
+                  </div>
+                  <span className="text-sm font-semibold tabular-nums">{avgScore(f)}</span>
+                  <ArrowUpRight className="h-3.5 w-3.5 text-muted-foreground group-hover:text-primary" />
+                </Link>
+              ))}
             </CardContent>
           </Card>
         </div>

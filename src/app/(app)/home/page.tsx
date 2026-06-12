@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CalendarDays, ClipboardCheck, Coins, FileText, Video } from "lucide-react";
+import { CalendarDays, ClipboardCheck, FileText, Video } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { SessionCard } from "@/components/session-card";
@@ -11,7 +11,6 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireRole } from "@/lib/data/auth";
 import { getPastForProfile, getUpcomingForProfile } from "@/lib/data/sessions";
 import {
-  getBalance,
   getChildren,
   getEnrolledCourses,
   getReportForSession,
@@ -35,11 +34,6 @@ export default async function HomePage() {
     getHomeworkForProfile(profile).catch(() => []),
   ]);
   const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
-
-  const balances = await Promise.all(
-    children.map(async (c) => ({ child: c, balance: await getBalance(c.id) })),
-  );
-  const totalCredits = balances.reduce((sum, b) => sum + b.balance, 0);
 
   // Bookable combos: each student (self or child) + the courses they're enrolled in.
   const bookOptions = await Promise.all(
@@ -95,11 +89,11 @@ export default async function HomePage() {
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-3">
         <StatCard label="Upcoming" value={upcoming.length} icon={<CalendarDays className="h-4 w-4" />} />
         <StatCard
-          label="Lesson credits"
-          value={totalCredits}
-          tone={totalCredits <= 2 ? "warning" : "default"}
-          hint={totalCredits <= 2 ? "Running low — top up soon" : undefined}
-          icon={<Coins className="h-4 w-4" />}
+          label="Homework open"
+          value={openHomework.length}
+          tone={openHomework.length ? "warning" : "default"}
+          hint={openHomework.length ? "See the homework card below" : "All done"}
+          icon={<ClipboardCheck className="h-4 w-4" />}
         />
         <StatCard label="Completed" value={past.filter((s) => s.status === "completed").length} tone="success" />
       </div>

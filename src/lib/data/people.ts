@@ -1,7 +1,6 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import {
-  demoBalances,
   demoConsents,
   demoCourses,
   demoEnrollments,
@@ -205,9 +204,3 @@ export async function getConsents(studentId: string): Promise<Consent[]> {
   return (data ?? []) as Consent[];
 }
 
-export async function getBalance(studentId: string): Promise<number> {
-  if (isDemoMode) return demoBalances.find((b) => b.student_id === studentId)?.balance ?? 0;
-  const supabase = createSupabaseServerClient()!;
-  const { data } = await supabase.from("credit_balances").select("balance").eq("student_id", studentId).maybeSingle();
-  return (data?.balance as number) ?? 0;
-}

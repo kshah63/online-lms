@@ -43,6 +43,7 @@ export async function finalizeLesson(
     summary: feedback.summary,
     strengths: feedback.strengths,
     suggestions: feedback.suggestions,
+    moments: feedback.moments,
     dimension_scores: feedback.dimension_scores,
   });
   await supabase

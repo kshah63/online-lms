@@ -1,4 +1,5 @@
-import { AlarmClockOff, CheckCheck, ListChecks, Phone, RefreshCw } from "lucide-react";
+import Link from "next/link";
+import { AlarmClockOff, CheckCheck, ListChecks, RefreshCw, X } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
@@ -6,6 +7,7 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { MessageParentDialog } from "@/components/admin/message-parent-dialog";
+import { cn } from "@/lib/utils";
 import { requireRole } from "@/lib/data/auth";
 import { getOpenFollowups } from "@/lib/data/followups";
 import { generateFollowups, resolveFollowup, snoozeFollowup } from "@/lib/actions/followups";
@@ -13,13 +15,52 @@ import { FOLLOWUP_LABEL, type FollowupView } from "@/lib/types";
 
 const PRIORITY_DOT = { high: "bg-destructive", normal: "bg-primary", low: "bg-muted-foreground/40" };
 
-export default async function AdminFollowupsPage() {
+const PRIORITIES = ["high", "normal", "low"] as const;
+const TYPES = Object.keys(FOLLOWUP_LABEL) as (keyof typeof FOLLOWUP_LABEL)[];
+
+export default async function AdminFollowupsPage({
+  searchParams,
+}: {
+  searchParams: { priority?: string; type?: string; view?: string };
+}) {
   const admin = await requireRole("admin");
-  const items = await getOpenFollowups();
+  const items = await getOpenFollowups(); // open + snoozed
+
+  // ----- Filters (combinable: ?priority=high&type=no_show&view=snoozed) -----
+  const priority = PRIORITIES.find((p) => p === searchParams.priority);
+  const type = TYPES.find((t) => t === searchParams.type);
+  const view = searchParams.view === "snoozed" ? "snoozed" : undefined;
+
+  const visible = items.filter(
+    (f) =>
+      (!priority || f.priority === priority) &&
+      (!type || f.type === type) &&
+      (!view || f.status === "snoozed"),
+  );
+  const filtered = Boolean(priority || type || view);
+
+  // Build a query string toggling one filter while keeping the others.
+  const href = (patch: Partial<{ priority: string; type: string; view: string }>) => {
+    const params = new URLSearchParams();
+    const merged = { priority, type, view, ...patch };
+    for (const [k, v] of Object.entries(merged)) if (v) params.set(k, v);
+    const qs = params.toString();
+    return qs ? `/admin/followups?${qs}` : "/admin/followups";
+  };
+  const toggle = (key: "priority" | "type" | "view", value: string, current?: string) =>
+    href({ [key]: current === value ? "" : value });
 
   const high = items.filter((f) => f.priority === "high").length;
-  const noShows = items.filter((f) => f.type === "no_show").length;
-  const gaps = items.filter((f) => f.type === "attendance_gap").length;
+  const snoozed = items.filter((f) => f.status === "snoozed").length;
+  const countOf = (t: string) => items.filter((f) => f.type === t).length;
+
+  const chip = (active: boolean) =>
+    cn(
+      "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
+      active
+        ? "border-primary bg-primary/10 text-primary"
+        : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground",
+    );
 
   return (
     <div>
@@ -35,22 +76,83 @@ export default async function AdminFollowupsPage() {
         }
       />
 
-      <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
-        <StatCard label="Open items" value={items.length} icon={<ListChecks className="h-4 w-4" />} />
-        <StatCard label="High priority" value={high} tone={high ? "warning" : "default"} />
-        <StatCard label="No-shows" value={noShows} tone={noShows ? "warning" : "default"} />
-        <StatCard label="Attendance gaps" value={gaps} />
+      {/* Clickable stat cards — click again to clear. */}
+      <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
+        <Link href="/admin/followups">
+          <StatCard
+            className="h-full transition-colors hover:border-primary/40"
+            label="Open items"
+            value={items.length}
+            hint={filtered ? "Show all" : undefined}
+            icon={<ListChecks className="h-4 w-4" />}
+          />
+        </Link>
+        <Link href={toggle("priority", "high", priority)}>
+          <StatCard
+            className={cn("h-full transition-colors hover:border-primary/40", priority === "high" && "ring-2 ring-primary border-primary/40")}
+            label="High priority"
+            value={high}
+            tone={high ? "warning" : "default"}
+          />
+        </Link>
+        <Link href={toggle("type", "no_show", type)}>
+          <StatCard
+            className={cn("h-full transition-colors hover:border-primary/40", type === "no_show" && "ring-2 ring-primary border-primary/40")}
+            label="No-shows"
+            value={countOf("no_show")}
+            tone={countOf("no_show") ? "warning" : "default"}
+          />
+        </Link>
+        <Link href={toggle("view", "snoozed", view)}>
+          <StatCard
+            className={cn("h-full transition-colors hover:border-primary/40", view === "snoozed" && "ring-2 ring-primary border-primary/40")}
+            label="Snoozed"
+            value={snoozed}
+          />
+        </Link>
       </div>
 
-      {items.length === 0 ? (
+      {/* Type chips — combinable with the cards above. */}
+      <div className="mb-4 flex flex-wrap items-center gap-2">
+        {TYPES.map((t) => (
+          <Link key={t} href={toggle("type", t, type)} className={chip(type === t)}>
+            {FOLLOWUP_LABEL[t]} ({countOf(t)})
+          </Link>
+        ))}
+        {PRIORITIES.map((p) => (
+          <Link key={p} href={toggle("priority", p, priority)} className={chip(priority === p)}>
+            {p} priority
+          </Link>
+        ))}
+        {filtered && (
+          <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
+            <Link href="/admin/followups">
+              <X className="h-3 w-3" /> Clear filters
+            </Link>
+          </Button>
+        )}
+      </div>
+
+      {visible.length === 0 ? (
         <EmptyState
           icon={<CheckCheck className="h-5 w-5" />}
-          title="All clear"
-          description="No open follow-ups. Run a scan to refresh attendance gaps and overdue homework."
+          title={filtered ? "Nothing matches these filters" : "All clear"}
+          description={
+            filtered
+              ? "Clear the filters to see every open item."
+              : "No open follow-ups. Run a scan to refresh attendance gaps and overdue homework."
+          }
+          action={
+            filtered ? (
+              <Button asChild variant="outline">
+                <Link href="/admin/followups">Show all</Link>
+              </Button>
+            ) : undefined
+          }
         />
       ) : (
         <div className="space-y-3">
-          {items.map((f) => (
+          {visible.map((f) => (
             <FollowupRow key={f.id} f={f} adminTz={admin.timezone} />
           ))}
         </div>

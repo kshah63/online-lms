@@ -177,12 +177,6 @@ export interface Consent {
   granted_at: string;
 }
 
-export interface CreditBalance {
-  student_id: string;
-  balance: number;
-  updated_at: string;
-}
-
 export interface Notification {
   id: string;
   profile_id: string;

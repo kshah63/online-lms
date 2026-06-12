@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { CalendarClock, CalendarX2, Radio, UserRoundX, Users, X } from "lucide-react";
+import { BellRing, CalendarClock, CalendarX2, Radio, UserRoundX, Users, X } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { SessionCard } from "@/components/session-card";
@@ -8,6 +8,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { requireRole } from "@/lib/data/auth";
 import { getSessionsForDay } from "@/lib/data/sessions";
+import { getAdminActionItems } from "@/lib/data/approvals";
 import type { SessionView } from "@/lib/types";
 
 const FILTERS = {
@@ -39,7 +40,10 @@ export default async function AdminBoardPage({
   const tz = admin.timezone;
 
   const dayISO = searchParams.date ?? DateTime.now().setZone(tz).toISODate()!;
-  const sessions = await getSessionsForDay(tz, dayISO);
+  const [sessions, actionItems] = await Promise.all([
+    getSessionsForDay(tz, dayISO),
+    getAdminActionItems(tz),
+  ]);
 
   const filter = (searchParams.filter && searchParams.filter in FILTERS
     ? searchParams.filter
@@ -83,6 +87,47 @@ export default async function AdminBoardPage({
           </div>
         }
       />
+
+      {/* At a glance: workload counts + everything waiting on an admin. */}
+      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border bg-card px-3 py-2 text-sm">
+        <span className="text-muted-foreground">
+          <span className="font-semibold text-foreground">{actionItems.sessionsToday}</span>{" "}
+          {actionItems.sessionsToday === 1 ? "lesson" : "lessons"} today
+        </span>
+        <span className="text-muted-foreground">
+          <span className="font-semibold text-foreground">{actionItems.sessionsUpcoming}</span> upcoming overall
+        </span>
+
+        {actionItems.totalActions > 0 && (
+          <>
+            <span className="hidden h-4 w-px bg-border sm:block" aria-hidden />
+            <span className="flex items-center gap-1.5 font-medium text-warning-foreground">
+              <BellRing className="h-4 w-4" />
+              {actionItems.totalActions} action {actionItems.totalActions === 1 ? "item" : "items"}:
+            </span>
+            {actionItems.accountRequests > 0 && (
+              <Link href="/admin/people" className="text-primary hover:underline">
+                {actionItems.accountRequests} account {actionItems.accountRequests === 1 ? "request" : "requests"} →
+              </Link>
+            )}
+            {actionItems.enrollmentRequests > 0 && (
+              <Link href="/admin/courses" className="text-primary hover:underline">
+                {actionItems.enrollmentRequests} course {actionItems.enrollmentRequests === 1 ? "request" : "requests"} →
+              </Link>
+            )}
+            {actionItems.unassignedSessions > 0 && (
+              <Link href="/admin/sessions" className="text-primary hover:underline">
+                {actionItems.unassignedSessions} unassigned {actionItems.unassignedSessions === 1 ? "lesson" : "lessons"} →
+              </Link>
+            )}
+            {actionItems.openFollowups > 0 && (
+              <Link href="/admin/followups" className="text-primary hover:underline">
+                {actionItems.openFollowups} open {actionItems.openFollowups === 1 ? "follow-up" : "follow-ups"} →
+              </Link>
+            )}
+          </>
+        )}
+      </div>
 
       <div className="mb-4 flex items-center gap-2">
         <CalendarClock className="h-4 w-4 text-muted-foreground" />

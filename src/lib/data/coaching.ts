@@ -3,8 +3,8 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { demoProfiles } from "@/lib/demo/data";
 import { heuristicFeedback } from "@/lib/coaching/analyze";
-import type { SessionMetrics } from "@/lib/coaching/metrics";
-import type { TeacherFeedback } from "@/lib/coaching/analyze";
+import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
+import type { FeedbackMoment, TeacherFeedback } from "@/lib/coaching/analyze";
 
 export interface FeedbackView {
   session_id: string;
@@ -16,8 +16,15 @@ export interface FeedbackView {
   summary: string;
   strengths: string[];
   suggestions: string[];
+  moments: FeedbackMoment[];
   dimension_scores: TeacherFeedback["dimension_scores"];
   metrics: SessionMetrics | null;
+}
+
+/** Everything the coaching detail page needs for one lesson. */
+export interface FeedbackDetail extends FeedbackView {
+  segments: TranscriptSegment[];
+  nudges: { type: string; message: string; created_at: string }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -79,9 +86,34 @@ function synth(
     summary: fb.summary,
     strengths: fb.strengths,
     suggestions: fb.suggestions,
+    moments: demoMoments(p.student),
     dimension_scores: fb.dimension_scores,
     metrics,
   };
+}
+
+function demoMoments(student: string): FeedbackMoment[] {
+  const first = student.split(" ")[0];
+  return [
+    {
+      at: "07:42",
+      kind: "strength",
+      quote: `Walk me through how you'd start this one, ${first}.`,
+      comment: "Open hand-off that put the thinking on the student — they talked for 40s straight after this.",
+    },
+    {
+      at: "18:03",
+      kind: "improvement",
+      quote: "It's minus two, see, because the bracket flips the sign.",
+      comment: `You answered your own question after ~1s. Try waiting 3-5s, or narrowing it: "what happens to the sign inside the bracket?"`,
+    },
+    {
+      at: "31:15",
+      kind: "strength",
+      quote: "Exactly — and you spotted the restriction on the domain without a hint.",
+      comment: "Specific, earned praise tied to what they actually did; this is the kind that builds confidence.",
+    },
+  ];
 }
 
 function round2(n: number) {
@@ -104,7 +136,7 @@ export async function getFeedbackHistory(teacherId: string): Promise<FeedbackVie
   const { data, error } = await supabase
     .from("teacher_feedback")
     .select(
-      `session_id, teacher_id, summary, strengths, suggestions, dimension_scores, created_at,
+      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
        session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
        teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
     )
@@ -135,7 +167,7 @@ export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
   const { data, error } = await supabase
     .from("teacher_feedback")
     .select(
-      `session_id, teacher_id, summary, strengths, suggestions, dimension_scores, created_at,
+      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
        session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
        teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
     )
@@ -173,7 +205,72 @@ function mapRow(row: any): FeedbackView {
     summary: row.summary ?? "",
     strengths: row.strengths ?? [],
     suggestions: row.suggestions ?? [],
+    moments: row.moments ?? [],
     dimension_scores: row.dimension_scores ?? { engagement: 0, questioning: 0, clarity: 0, rapport: 0 },
     metrics: session.metrics ?? null,
   };
+}
+
+/**
+ * Coaching detail for one lesson: feedback + moments + transcript + the live
+ * nudges shown during the lesson. RLS limits transcripts/feedback/events to
+ * the session's teacher and admins; the page re-checks the caller anyway.
+ */
+export async function getFeedbackDetail(sessionId: string): Promise<FeedbackDetail | null> {
+  if (isDemoMode) {
+    const view = demoHistory().find((f) => f.session_id === sessionId);
+    if (!view) return null;
+    return { ...view, segments: demoSegments(), nudges: demoNudges(view.created_at) };
+  }
+
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("teacher_feedback")
+    .select(
+      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
+       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
+       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
+    )
+    .eq("session_id", sessionId)
+    .maybeSingle();
+  if (error || !data) return null;
+
+  const [transcript, events] = await Promise.all([
+    supabase.from("transcripts").select("segments").eq("session_id", sessionId).maybeSingle(),
+    supabase
+      .from("live_events")
+      .select("type, payload, created_at")
+      .eq("session_id", sessionId)
+      .order("created_at"),
+  ]);
+
+  return {
+    ...mapRow(data),
+    segments: ((transcript.data?.segments ?? []) as TranscriptSegment[]) ?? [],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    nudges: (events.data ?? []).map((e: any) => ({
+      type: e.type,
+      message: String(e.payload?.message ?? ""),
+      created_at: e.created_at,
+    })),
+  };
+}
+
+function demoSegments(): TranscriptSegment[] {
+  return [
+    { speaker: "teacher", text: "Let's pick up where we left off — completing the square.", start_ms: 5_000, end_ms: 12_000 },
+    { speaker: "teacher", text: "Walk me through how you'd start this one.", start_ms: 462_000, end_ms: 466_000 },
+    { speaker: "student", text: "I'd move the constant over first, then halve the x coefficient…", start_ms: 468_000, end_ms: 508_000 },
+    { speaker: "teacher", text: "It's minus two, see, because the bracket flips the sign.", start_ms: 1_083_000, end_ms: 1_089_000 },
+    { speaker: "student", text: "Oh right, I keep forgetting that flip.", start_ms: 1_090_000, end_ms: 1_094_000 },
+    { speaker: "teacher", text: "Exactly — and you spotted the restriction on the domain without a hint.", start_ms: 1_875_000, end_ms: 1_881_000 },
+  ];
+}
+
+function demoNudges(lessonISO: string): FeedbackDetail["nudges"] {
+  const base = DateTime.fromISO(lessonISO, { zone: "utc" });
+  return [
+    { type: "wait_time", message: "Give them a few seconds to think before jumping in.", created_at: base.plus({ minutes: 18 }).toISO()! },
+    { type: "praise_drought", message: "Acknowledge their effort — a little encouragement goes a long way.", created_at: base.plus({ minutes: 33 }).toISO()! },
+  ];
 }

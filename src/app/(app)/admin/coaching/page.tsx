@@ -1,4 +1,5 @@
-import { AlertTriangle, Sparkles } from "lucide-react";
+import Link from "next/link";
+import { AlertTriangle, ArrowUpRight, Sparkles } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
@@ -53,6 +54,12 @@ export default async function AdminCoachingPage() {
                   )}
                   <p className="text-sm text-muted-foreground">{f.summary}</p>
                   <ScoreBars scores={f.dimension_scores} />
+                  <Link
+                    href={`/coaching/${f.session_id}`}
+                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                  >
+                    Deep dive — key moments, transcript & nudges <ArrowUpRight className="h-3.5 w-3.5" />
+                  </Link>
                 </CardContent>
               </Card>
             );
