@@ -24,6 +24,7 @@ alter table audit_log enable row level security;
 
 -- Admins may read. NO insert/update/delete policies for any role: the only
 -- writer is the service role (bypasses RLS), and nothing ever edits a row.
+drop policy if exists audit_log_admin_read on audit_log;
 create policy audit_log_admin_read on audit_log
   for select using (public.is_admin());
 

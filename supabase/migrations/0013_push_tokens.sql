@@ -17,6 +17,7 @@ create index if not exists push_tokens_profile_idx on push_tokens (profile_id);
 
 alter table push_tokens enable row level security;
 
+drop policy if exists push_tokens_owner on push_tokens;
 create policy push_tokens_owner on push_tokens
   for all using (profile_id = auth.uid()) with check (profile_id = auth.uid());
 
