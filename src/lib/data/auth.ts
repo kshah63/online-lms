@@ -37,10 +37,20 @@ export async function getCurrentProfile(): Promise<Profile | null> {
   return (data as Profile) ?? null;
 }
 
-/** Require a signed-in profile; redirect to /login otherwise. */
+/** Require a signed-in profile; redirect to /login otherwise.
+ * If the account has 2FA enrolled but this session hasn't completed the TOTP
+ * challenge yet (AAL1), force it through /mfa first. */
 export async function requireProfile(): Promise<Profile> {
   const profile = await getCurrentProfile();
   if (!profile) redirect("/login");
+
+  if (!isDemoMode) {
+    const supabase = createSupabaseServerClient();
+    if (supabase) {
+      const { data: aal } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+      if (aal && aal.currentLevel === "aal1" && aal.nextLevel === "aal2") redirect("/mfa");
+    }
+  }
   return profile;
 }
 

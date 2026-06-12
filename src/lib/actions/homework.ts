@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
+import { logAudit } from "@/lib/audit";
 
 /** Persist the tldraw page created for this homework the first time it's opened. */
 export async function setHomeworkPage(id: string, pageId: string): Promise<void> {
@@ -55,6 +56,11 @@ export async function gradeHomework(id: string, grade: HomeworkGrade): Promise<v
         review_note: grade.verified ? null : grade.feedback ?? null,
       })
       .eq("id", id);
+    await logAudit(profile, "homework.grade", { type: "homework", id }, {
+      verified: grade.verified,
+      correct: grade.correct ?? null,
+      incorrect: grade.incorrect ?? null,
+    });
   }
   revalidatePath("/teacher/homework");
   revalidatePath(`/hw/${id}`);

@@ -7,6 +7,12 @@ import {
   notifyBookingChanged,
   notifyBookingCancelled,
 } from "@/lib/messaging/notify";
+import {
+  findStudentConflict,
+  isOverlapViolation,
+  CONFLICT_MESSAGE,
+} from "@/lib/booking/conflicts";
+import { logAudit } from "@/lib/audit";
 import type { Profile } from "@/lib/types";
 
 // ============================================================================
@@ -87,6 +93,12 @@ export async function POST(req: Request) {
     if (start < DateTime.now()) return NextResponse.json({ ok: false, message: "Pick a future time." });
 
     const startISO = start.toUTC().toISO()!;
+    const endISO = start.plus({ minutes: duration }).toUTC().toISO()!;
+
+    if (await findStudentConflict(admin, student_id, startISO, endISO)) {
+      return NextResponse.json({ ok: false, message: CONFLICT_MESSAGE });
+    }
+
     const { data: created, error } = await admin
       .from("sessions")
       .insert({
@@ -94,17 +106,28 @@ export async function POST(req: Request) {
         student_id,
         teacher_id: null,
         scheduled_start: startISO,
-        scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
+        scheduled_end: endISO,
         status: "scheduled",
         agenda,
       })
       .select("id")
       .maybeSingle();
-    if (error) return NextResponse.json({ ok: false, message: error.message });
+    if (error) {
+      return NextResponse.json({
+        ok: false,
+        message: isOverlapViolation(error) ? CONFLICT_MESSAGE : error.message,
+      });
+    }
 
     if (created?.id) {
       const { studentName, course } = await studentAndCourse(admin, student_id, course_id);
       await notifyBookingConfirmed({ studentId: student_id, studentName, course, sessionId: created.id, startISO });
+      await logAudit(profile, "booking.create", { type: "session", id: created.id }, {
+        student_id,
+        course_id,
+        scheduled_start: startISO,
+        via: "mobile",
+      });
     }
     return NextResponse.json({ ok: true, message: "Lesson requested — an admin will assign a teacher." });
   }
@@ -142,13 +165,25 @@ export async function POST(req: Request) {
     if (!isAdmin && start < DateTime.now()) return NextResponse.json({ ok: false, message: "Pick a future time." });
 
     const startISO = start.toUTC().toISO()!;
+    const endISO = start.plus({ minutes: duration }).toUTC().toISO()!;
+
+    if (await findStudentConflict(admin, session.student_id as string, startISO, endISO, session_id)) {
+      return NextResponse.json({ ok: false, message: CONFLICT_MESSAGE });
+    }
+
     const { error } = await admin
       .from("sessions")
-      .update({ scheduled_start: startISO, scheduled_end: start.plus({ minutes: duration }).toUTC().toISO() })
+      .update({ scheduled_start: startISO, scheduled_end: endISO })
       .eq("id", session_id);
-    if (error) return NextResponse.json({ ok: false, message: error.message });
+    if (error) {
+      return NextResponse.json({
+        ok: false,
+        message: isOverlapViolation(error) ? CONFLICT_MESSAGE : error.message,
+      });
+    }
 
     await notifyBookingChanged({ studentId: session.student_id as string, studentName, course, sessionId: session_id, startISO, changeId: startISO });
+    await logAudit(profile, "booking.reschedule", { type: "session", id: session_id }, { to: startISO, via: "mobile" });
     return NextResponse.json({ ok: true, message: "Lesson rescheduled." });
   }
 
@@ -161,6 +196,7 @@ export async function POST(req: Request) {
     if (error) return NextResponse.json({ ok: false, message: error.message });
 
     await notifyBookingCancelled({ studentId: session.student_id as string, studentName, course, sessionId: session_id });
+    await logAudit(profile, "booking.cancel", { type: "session", id: session_id }, { reason, via: "mobile" });
     return NextResponse.json({ ok: true, message: "Lesson cancelled." });
   }
 

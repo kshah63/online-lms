@@ -12,6 +12,12 @@ import {
   notifyBookingChanged,
   notifyBookingCancelled,
 } from "@/lib/messaging/notify";
+import {
+  findStudentConflict,
+  isOverlapViolation,
+  CONFLICT_MESSAGE,
+} from "@/lib/booking/conflicts";
+import { logAudit } from "@/lib/audit";
 import type { ActionResult } from "@/lib/actions/types";
 
 const EDITABLE = ["scheduled", "confirmed"];
@@ -68,20 +74,30 @@ export async function bookLesson(formData: FormData): Promise<ActionResult> {
   const supabase = createSupabaseAdminClient();
   if (!supabase) return { ok: false, message: "Booking isn't available — server not configured." };
 
+  const startISO = start.toUTC().toISO()!;
+  const endISO = start.plus({ minutes: duration }).toUTC().toISO()!;
+
+  // No double-booking: reject if the student already has a lesson in the slot.
+  if (await findStudentConflict(supabase, student_id, startISO, endISO)) {
+    return { ok: false, message: CONFLICT_MESSAGE };
+  }
+
   const { data: created, error } = await supabase
     .from("sessions")
     .insert({
       course_id,
       student_id,
       teacher_id: null,
-      scheduled_start: start.toUTC().toISO(),
-      scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
+      scheduled_start: startISO,
+      scheduled_end: endISO,
       status: "scheduled",
       agenda,
     })
     .select("id")
     .maybeSingle();
-  if (error) return { ok: false, message: error.message };
+  if (error) {
+    return { ok: false, message: isOverlapViolation(error) ? CONFLICT_MESSAGE : error.message };
+  }
 
   // Confirm to the family by WhatsApp (no-op without opt-in/provider).
   if (created?.id) {
@@ -96,7 +112,12 @@ export async function bookLesson(formData: FormData): Promise<ActionResult> {
       studentName: student?.display_name ?? "your child",
       course: course?.name ?? "the lesson",
       sessionId: created.id,
-      startISO: start.toUTC().toISO()!,
+      startISO,
+    });
+    await logAudit(await getCurrentProfile(), "booking.create", { type: "session", id: created.id }, {
+      student_id,
+      course_id,
+      scheduled_start: startISO,
     });
   }
 
@@ -140,14 +161,20 @@ export async function rescheduleSession(formData: FormData): Promise<ActionResul
   if (!supabase) return { ok: false, message: "Rescheduling isn't available — server not configured." };
 
   const newStartISO = start.toUTC().toISO()!;
+  const newEndISO = start.plus({ minutes: duration }).toUTC().toISO()!;
+
+  // No double-booking (ignoring the session being moved itself).
+  if (await findStudentConflict(supabase, session.student_id, newStartISO, newEndISO, session_id)) {
+    return { ok: false, message: CONFLICT_MESSAGE };
+  }
+
   const { error } = await supabase
     .from("sessions")
-    .update({
-      scheduled_start: newStartISO,
-      scheduled_end: start.plus({ minutes: duration }).toUTC().toISO(),
-    })
+    .update({ scheduled_start: newStartISO, scheduled_end: newEndISO })
     .eq("id", session_id);
-  if (error) return { ok: false, message: error.message };
+  if (error) {
+    return { ok: false, message: isOverlapViolation(error) ? CONFLICT_MESSAGE : error.message };
+  }
 
   await notifyBookingChanged({
     studentId: session.student_id,
@@ -156,6 +183,10 @@ export async function rescheduleSession(formData: FormData): Promise<ActionResul
     sessionId: session_id,
     startISO: newStartISO,
     changeId: newStartISO, // unique per reschedule target
+  });
+  await logAudit(profile, "booking.reschedule", { type: "session", id: session_id }, {
+    from: session.scheduled_start,
+    to: newStartISO,
   });
 
   revalidateBookings();
@@ -195,6 +226,10 @@ export async function cancelBooking(formData: FormData): Promise<ActionResult> {
     studentName: session.student.display_name,
     course: session.course.name,
     sessionId: session_id,
+  });
+  await logAudit(profile, "booking.cancel", { type: "session", id: session_id }, {
+    reason,
+    scheduled_start: session.scheduled_start,
   });
 
   revalidateBookings();

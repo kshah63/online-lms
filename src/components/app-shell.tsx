@@ -15,6 +15,8 @@ import {
   LayoutDashboard,
   ListChecks,
   LogOut,
+  ScrollText,
+  ShieldCheck,
   Sparkles,
   Users,
 } from "lucide-react";
@@ -45,6 +47,7 @@ const NAV: Record<Role, NavItem[]> = {
     { href: "/admin/courses", label: "Courses", icon: BookOpen },
     { href: "/admin/people", label: "People", icon: Users },
     { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
+    { href: "/admin/audit", label: "Audit log", icon: ScrollText },
   ],
   teacher: [
     { href: "/teacher", label: "Today", icon: LayoutDashboard },
@@ -158,6 +161,12 @@ export function AppShell({
                   </div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                <DropdownMenuItem asChild className="cursor-pointer">
+                  <Link href="/settings/security">
+                    <ShieldCheck className="h-4 w-4" />
+                    Account security
+                  </Link>
+                </DropdownMenuItem>
                 <DropdownMenuItem
                   className="cursor-pointer"
                   onSelect={() => {

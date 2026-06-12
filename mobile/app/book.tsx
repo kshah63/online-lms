@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { Alert, Pressable, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
+import { DateTime } from "luxon";
 import { useAuth } from "../lib/auth";
 import {
   getActableChildren,
@@ -10,7 +11,8 @@ import {
 } from "../lib/data";
 import { callBooking, webUrlConfigured } from "../lib/api";
 import { deviceTimezone } from "../lib/format";
-import { Screen, H2, Muted, Card, Button, Field, Loader } from "../components/ui";
+import { Screen, H2, Muted, Card, Button, Loader } from "../components/ui";
+import { DateTimeField } from "../components/datetime-field";
 import { colors } from "../lib/theme";
 import type { ChildRow, CourseRow } from "../lib/types";
 
@@ -63,8 +65,10 @@ export default function Book() {
   const [courses, setCourses] = useState<CourseRow[]>([]);
   const [childId, setChildId] = useState<string | null>(null);
   const [courseId, setCourseId] = useState<string | null>(null);
-  const [date, setDate] = useState("");
-  const [time, setTime] = useState("");
+  // Default: tomorrow at 4pm, a sensible after-school slot.
+  const [when, setWhen] = useState<Date>(() =>
+    DateTime.now().plus({ days: 1 }).set({ hour: 16, minute: 0, second: 0, millisecond: 0 }).toJSDate(),
+  );
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
 
@@ -107,17 +111,18 @@ export default function Book() {
         router.back();
         return;
       }
-      if (!date || !time) {
-        Alert.alert("Almost there", "Pick a date and time.");
+      if (when.getTime() < Date.now()) {
+        Alert.alert("Almost there", "Pick a time in the future.");
         setSaving(false);
         return;
       }
+      const local = DateTime.fromJSDate(when);
       const res = await callBooking({
         op: "book",
         student_id: childId,
         course_id: courseId,
-        date,
-        time,
+        date: local.toFormat("yyyy-MM-dd"),
+        time: local.toFormat("HH:mm"),
         timezone: tz,
         duration: 60,
       });
@@ -163,8 +168,7 @@ export default function Book() {
 
       {!enrollMode ? (
         <Card style={{ gap: 12 }}>
-          <Field label="Date (YYYY-MM-DD)" value={date} onChangeText={setDate} placeholder="2026-06-20" autoCapitalize="none" />
-          <Field label="Time (24h, HH:MM)" value={time} onChangeText={setTime} placeholder="16:30" autoCapitalize="none" />
+          <DateTimeField label="When" value={when} onChange={setWhen} minimumDate={new Date()} />
           <Muted>Timezone: {tz}</Muted>
         </Card>
       ) : null}

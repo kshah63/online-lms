@@ -41,6 +41,13 @@ writes admin/teacher-only), so they call the web app's bearer-authenticated
 endpoint `POST /api/mobile/sessions` with the signed-in user's Supabase access
 token. That's why `EXPO_PUBLIC_WEB_URL` is required for booking.
 
+## Biometric unlock
+
+More tab → **Biometric unlock** (shown only on devices with Face ID /
+fingerprint enrolled). When on, the app locks on every cold start until the
+device authenticates; the Supabase session itself stays signed in. The
+preference is stored in the device's secure enclave (expo-secure-store).
+
 ## Push notifications
 
 The app registers each device's Expo push token in the `push_tokens` table; the

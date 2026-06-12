@@ -3,6 +3,8 @@
 import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
+import { getCurrentProfile } from "@/lib/data/auth";
+import { logAudit } from "@/lib/audit";
 import type { ActionResult } from "@/lib/actions/types";
 
 function revalidateCourses() {
@@ -26,6 +28,7 @@ export async function createCourse(formData: FormData): Promise<ActionResult> {
   const { error } = await supabase.from("courses").insert({ name, subject, materials_course_id: materials });
   if (error) return { ok: false, message: error.message };
 
+  await logAudit(await getCurrentProfile(), "course.create", { type: "course" }, { name, subject });
   revalidateCourses();
   return { ok: true, message: "Course added." };
 }
@@ -44,6 +47,7 @@ export async function enrollStudent(formData: FormData): Promise<ActionResult> {
   const { error } = await supabase.from("enrollments").upsert({ student_id, course_id });
   if (error) return { ok: false, message: error.message };
 
+  await logAudit(await getCurrentProfile(), "enrollment.add", { type: "enrollment" }, { student_id, course_id });
   revalidateCourses();
   return { ok: true, message: "Student enrolled." };
 }
@@ -55,6 +59,7 @@ export async function unenrollStudent(formData: FormData): Promise<void> {
   if (!isDemoMode && student_id && course_id) {
     const supabase = createSupabaseServerClient()!;
     await supabase.from("enrollments").delete().eq("student_id", student_id).eq("course_id", course_id);
+    await logAudit(await getCurrentProfile(), "enrollment.remove", { type: "enrollment" }, { student_id, course_id });
   }
   revalidateCourses();
 }

@@ -54,4 +54,5 @@ export const LIMITS = {
   reportDraft: { limit: 40, windowSeconds: 3600 },
   // Public, unauthenticated — per IP.
   accountRequest: { limit: 5, windowSeconds: 3600 },
+  passwordReset: { limit: 5, windowSeconds: 3600 },
 } as const;

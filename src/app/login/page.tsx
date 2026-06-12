@@ -14,8 +14,13 @@ const ROLE_BLURB: Record<string, string> = {
   parent: "Your child's lessons, reports and progress",
 };
 
-export default function LoginPage() {
+export default function LoginPage({
+  searchParams,
+}: {
+  searchParams?: { message?: string };
+}) {
   if (isMisconfigured) return <NotConfigured />;
+  const message = searchParams?.message;
   return (
     <div className="grid min-h-screen lg:grid-cols-2">
       {/* Brand / pitch */}
@@ -57,6 +62,12 @@ export default function LoginPage() {
           <div className="mb-6 lg:hidden">
             <BrandWordmark size={32} textClassName="text-lg" />
           </div>
+
+          {message && (
+            <div className="mb-4 rounded-lg border border-warning/40 bg-warning/10 px-3 py-2 text-sm">
+              {message}
+            </div>
+          )}
 
           {isDemoMode ? <PersonaPicker /> : <SignInForm />}
         </div>

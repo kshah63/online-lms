@@ -7,6 +7,7 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import { requireRole } from "@/lib/data/auth";
 import { rateLimit, getClientIp, LIMITS } from "@/lib/rate-limit";
+import { logAudit } from "@/lib/audit";
 import type { Role } from "@/lib/types";
 
 export type ProvisionResult = { ok: boolean; message: string; tempPassword?: string; email?: string };
@@ -108,7 +109,7 @@ async function provision(input: {
 
 /** Admin: create a user directly. */
 export async function createUserAccount(formData: FormData): Promise<ProvisionResult> {
-  await requireRole("admin");
+  const actor = await requireRole("admin");
   const role = String(formData.get("role") ?? "") as Role;
   const display_name = String(formData.get("display_name") ?? "").trim();
   const email = String(formData.get("email") ?? "").trim().toLowerCase();
@@ -122,7 +123,10 @@ export async function createUserAccount(formData: FormData): Promise<ProvisionRe
   if (isDemoMode) return { ok: true, message: "Demo mode: account not created.", tempPassword: "demo-mode" };
 
   const res = await provision({ role, display_name, email, phone, timezone, parentId });
-  if (res.ok) revalidatePath("/admin/people");
+  if (res.ok) {
+    await logAudit(actor, "account.create", { type: "profile" }, { role, email, display_name });
+    revalidatePath("/admin/people");
+  }
   return res;
 }
 
@@ -149,19 +153,24 @@ export async function approveAccountRequest(id: string): Promise<ProvisionResult
     .from("account_requests")
     .update({ status: "approved", decided_by: profile.id, decided_at: new Date().toISOString() })
     .eq("id", id);
+  await logAudit(profile, "account.approve", { type: "account_request", id }, {
+    role: req.role,
+    email: req.email,
+  });
   revalidatePath("/admin/people");
   return res;
 }
 
 /** Admin: reject a pending request. */
 export async function rejectAccountRequest(id: string): Promise<void> {
-  await requireRole("admin");
+  const actor = await requireRole("admin");
   if (!isDemoMode && id) {
     const supabase = createSupabaseServerClient()!;
     await supabase
       .from("account_requests")
       .update({ status: "rejected", decided_at: new Date().toISOString() })
       .eq("id", id);
+    await logAudit(actor, "account.reject", { type: "account_request", id });
   }
   revalidatePath("/admin/people");
 }

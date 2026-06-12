@@ -5,6 +5,7 @@ import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
 import { getChildren } from "@/lib/data/people";
+import { logAudit } from "@/lib/audit";
 import type { ActionResult } from "@/lib/actions/types";
 
 /** Student/parent requests enrollment in a course (admin approves). */
@@ -73,6 +74,10 @@ export async function decideEnrollment(formData: FormData): Promise<void> {
     .from("enrollment_requests")
     .update({ status: decision, decided_by: profile?.id ?? null, decided_at: new Date().toISOString() })
     .eq("id", id);
+  await logAudit(profile, `enrollment.${decision}`, { type: "enrollment_request", id }, {
+    student_id: req?.student_id,
+    course_id: req?.course_id,
+  });
 
   revalidatePath("/admin/courses");
   revalidatePath("/home");

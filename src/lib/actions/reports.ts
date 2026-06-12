@@ -7,6 +7,7 @@ import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getSessionTranscript } from "@/lib/data/reports";
 import { rateLimit, LIMITS } from "@/lib/rate-limit";
+import { logAudit } from "@/lib/audit";
 import { notifyReportPublished } from "@/lib/messaging/notify";
 import { draftReport, type ReportDraft } from "@/lib/reports/draft";
 import type { ActionResult } from "@/lib/actions/types";
@@ -118,6 +119,11 @@ export async function saveReport(
       studentName: session.student.display_name,
       course: session.course.name,
       sessionId,
+    });
+    await logAudit(profile, "report.publish", { type: "session", id: sessionId }, {
+      student_id: session.student_id,
+      rating: input.rating,
+      needs_followup: input.needs_followup,
     });
   }
 
