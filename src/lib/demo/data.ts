@@ -174,7 +174,9 @@ export function demoRoomAccess(viewer: Profile, s: DemoSessionRequest, nowMs = D
   if (s.student_id === viewer.id && open) return "learner";
   if (viewer.role === "admin") return "observer";
   if (viewer.role === "staff" && (demoInchargeDepartments[viewer.id] ?? []).includes(s.department_id)) return "observer";
-  if (viewer.role === "support") return "observer";
+  // Support has no seat: room_access seats admins and the room's in-charges only.
+  // (INTEGRATION.md's "support when reads_the_roster" is a widening the owner has
+  // not approved; the demo matches the SQL as written.)
   return null;
 }
 
@@ -270,7 +272,7 @@ function demoListingSeat(viewer: Profile, s: DemoSessionRequest): LessonSeat | n
   if (s.assigned_teacher_id === viewer.id) return "host";
   if (s.student_id === viewer.id) return "learner";
   if (viewer.role === "parent" && viewer.family_id && s.family_id === viewer.family_id) return "family";
-  if (viewer.role === "admin" || viewer.role === "support") return "observer";
+  if (viewer.role === "admin") return "observer";
   if (viewer.role === "staff" && (demoInchargeDepartments[viewer.id] ?? []).includes(s.department_id)) return "observer";
   return null;
 }

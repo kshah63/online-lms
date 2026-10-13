@@ -47,7 +47,7 @@ describe("demoRoomAccess / lesson_room_state — seats as room_access would deci
   it("gives the office the observer seat and a parent none", () => {
     expect(demoRoomAccess(by(DEMO_IDS.admin), live)).toBe("observer");
     expect(demoRoomAccess(by(DEMO_IDS.grace), live)).toBe("observer"); // in charge of Online Mathematics
-    expect(demoRoomAccess(by(DEMO_IDS.ravi), live)).toBe("observer");
+    expect(demoRoomAccess(by(DEMO_IDS.ravi), live)).toBeNull(); // support: no seat, as room_access decides
     expect(demoRoomAccess(by(DEMO_IDS.marco), live)).toBeNull(); // Sofia's parent: no seat in a 1-1 lesson
     expect(demoRoomAccess(by(DEMO_IDS.daniel), live)).toBeNull(); // another teacher
     expect(demoRoomAccess(by(DEMO_IDS.aarav), live)).toBeNull(); // another student
