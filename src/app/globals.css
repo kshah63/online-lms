@@ -94,3 +94,44 @@
   background-image: radial-gradient(hsl(var(--border)) 1px, transparent 1px);
   background-size: 16px 16px;
 }
+
+/* ---------------------------------------------------------------------------
+   Data-viz tokens (reference palette; validated). Charts reference roles,
+   never raw hex, so light/dark swap in one place.
+   --------------------------------------------------------------------------- */
+.viz-root {
+  color-scheme: light;
+  --viz-surface: #fcfcfb;
+  --viz-text: #0b0b0b;
+  --viz-text-2: #52514e;
+  --viz-muted: #898781;
+  --viz-grid: #e1e0d9;
+  --viz-baseline: #c3c2b7;
+  --viz-series-1: #2a78d6;
+  --viz-series-1-track: #b7d3f6;
+  --viz-deemph: #c3c2b7;
+  --viz-good: #0ca30c;
+  --viz-good-text: #006300;
+  --viz-warning: #fab219;
+  --viz-serious: #ec835a;
+  --viz-critical: #d03b3b;
+  --viz-border: rgba(11, 11, 11, 0.1);
+}
+.dark .viz-root {
+  color-scheme: dark;
+  --viz-surface: #1a1a19;
+  --viz-text: #f0efec;
+  --viz-text-2: #c3c2b7;
+  --viz-muted: #898781;
+  --viz-grid: #2c2c2a;
+  --viz-baseline: #383835;
+  --viz-series-1: #3987e5;
+  --viz-series-1-track: #184f95;
+  --viz-deemph: #383835;
+  --viz-good: #0ca30c;
+  --viz-good-text: #0ca30c;
+  --viz-warning: #fab219;
+  --viz-serious: #ec835a;
+  --viz-critical: #d03b3b;
+  --viz-border: rgba(255, 255, 255, 0.1);
+}

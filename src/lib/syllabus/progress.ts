@@ -151,8 +151,11 @@ export function summariseCourse(topics: TopicProgress[], limit = 3): CourseProgr
   const counts: Record<TopicStatus, number> = { not_started: 0, in_progress: 0, covered: 0, secure: 0, needs_work: 0 };
   for (const t of topics) counts[t.status]++;
   const coveredOrBetter = counts.covered + counts.secure + counts.needs_work;
+  // Weak = flagged needs-work, or still-forming topics (covered / in progress)
+  // with low practice accuracy. A topic the evidence or the teacher calls
+  // secure is never listed as weak, whatever its rounded accuracy.
   const weak = topics
-    .filter((t) => t.status === "needs_work" || (t.status !== "not_started" && t.accuracy !== null && t.accuracy < SECURE_ACCURACY))
+    .filter((t) => t.status === "needs_work" || ((t.status === "covered" || t.status === "in_progress") && t.accuracy !== null && t.accuracy < SECURE_ACCURACY))
     .sort((a, b) => (a.status === "needs_work" ? 0 : 1) - (b.status === "needs_work" ? 0 : 1) || (a.accuracy ?? 1) - (b.accuracy ?? 1));
   const next = [
     ...topics.filter((t) => t.status === "needs_work"),

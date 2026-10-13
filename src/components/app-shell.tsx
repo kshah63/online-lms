@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
+  BarChart3,
   Bell,
   BookOpen,
   CalendarClock,
@@ -59,11 +60,13 @@ const NAV: Record<Role, NavItem[]> = {
   student: [
     { href: "/home", label: "Dashboard", icon: LayoutDashboard },
     { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
+    { href: "/home/progress", label: "Progress", icon: BarChart3 },
     { href: "/home/reports", label: "Reports", icon: FileText },
   ],
   parent: [
     { href: "/home", label: "Dashboard", icon: LayoutDashboard },
     { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
+    { href: "/home/progress", label: "Progress", icon: BarChart3 },
     { href: "/home/reports", label: "Reports", icon: FileText },
   ],
 };

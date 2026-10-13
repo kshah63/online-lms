@@ -58,6 +58,9 @@ describe("summariseCourse / practiceByWeek", () => {
     expect(s.counts).toEqual({ not_started: 1, in_progress: 0, covered: 1, secure: 1, needs_work: 1 });
     expect(s.coverage).toBe(0.75);
     expect(s.weak_areas.map((t) => t.topic_id)).toEqual(["b"]);
+    // A teacher-marked secure topic with middling accuracy is not "weak".
+    const marked = topicProgress({ topic_id: "m", sessions: [], practice: [{ at: d(2), correct: 7, total: 10 }], tests: [], teacher_mark: { status: "secure", at: d(1) } }, NOW);
+    expect(summariseCourse([marked]).weak_areas).toEqual([]);
     expect(s.recommended_next.map((t) => t.topic_id)).toEqual(["b", "c"]);
     expect(s.practice_items_total).toBe(20);
   });
