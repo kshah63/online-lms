@@ -8,6 +8,7 @@ import { getSessionById } from "@/lib/data/sessions";
 import { getChildren } from "@/lib/data/people";
 import { loadNotebookSnapshot } from "@/lib/actions/notebook";
 import { isDemoMode } from "@/lib/env";
+import { SAMPLE_QUESTIONS } from "@/lib/practice/samples";
 
 export default async function LessonPage({ params }: { params: { sessionId: string } }) {
   const profile = await requireProfile();
@@ -51,6 +52,7 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
       initialSnapshot={initialSnapshot}
       actualStartISO={session.actual_start}
       demoCoaching={isDemoMode}
+      activitySets={isDemoMode ? [{ id: "sample-quadratics", title: "Quadratics — quick check", questions: SAMPLE_QUESTIONS }] : []}
     />
   );
 }

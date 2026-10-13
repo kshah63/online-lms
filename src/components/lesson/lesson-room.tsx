@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   BellOff,
   ChevronLeft,
+  ListChecks,
   Clock,
   Loader2,
   NotebookPen,
@@ -15,6 +16,8 @@ import {
   X,
 } from "lucide-react";
 import { VideoStage } from "@/components/lesson/video-stage";
+import { ActivityPanel, type ActivitySet } from "@/components/lesson/activity-panel";
+import { useLessonActivity } from "@/lib/practice/activity-channel";
 import { MaterialsPanel } from "@/components/lesson/materials-panel";
 import { ProviderBadge } from "@/components/lesson/video-panel";
 import { StatusBadge } from "@/components/status-badge";
@@ -43,7 +46,7 @@ const NotebookPanel = dynamic(
   },
 );
 
-type Tab = "notebook" | "video" | "materials";
+type Tab = "notebook" | "video" | "materials" | "activity";
 
 export function LessonRoom({
   sessionId,
@@ -59,6 +62,7 @@ export function LessonRoom({
   initialSnapshot,
   actualStartISO,
   demoCoaching,
+  activitySets,
 }: {
   sessionId: string;
   notebookId: string;
@@ -73,9 +77,44 @@ export function LessonRoom({
   initialSnapshot: unknown | null;
   actualStartISO: string | null;
   demoCoaching: boolean;
+  /** Practice sets the teacher can push into the room. */
+  activitySets: ActivitySet[];
 }) {
   const [tab, setTab] = useState<Tab>("notebook");
   const coach = useLiveCoach(sessionId, isTeacher);
+
+  // In-lesson activities: the teacher pushes a quick check; the student answers
+  // in the side panel, which opens itself when something arrives.
+  const [activityOpen, setActivityOpen] = useState(false);
+  const handleActivityArrived = useCallback(() => {
+    setActivityOpen(true);
+    setTab("activity");
+  }, []);
+  const activity = useLessonActivity({
+    sessionId,
+    selfId,
+    role: isTeacher ? "teacher" : "student",
+    onActivity: handleActivityArrived,
+  });
+  const activityPanel = (
+    <ActivityPanel
+      isTeacher={isTeacher}
+      sets={activitySets}
+      activity={activity.activity}
+      submission={activity.submission}
+      released={activity.released}
+      onPush={activity.push}
+      onSubmit={activity.submit}
+      onRespond={activity.respond}
+      onRelease={activity.release}
+      onClose={activity.close}
+      onDismiss={() => {
+        setActivityOpen(false);
+        if (tab === "activity") setTab("notebook");
+      }}
+      peerName={peerName}
+    />
+  );
 
   // The lesson clock runs from when BOTH join (actual_start), not booking time.
   const [startedAtMs, setStartedAtMs] = useState<number | null>(
@@ -177,6 +216,20 @@ export function LessonRoom({
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
+          <Button
+            variant={activityOpen ? "secondary" : "ghost"}
+            size="sm"
+            onClick={() => {
+              const next = !activityOpen;
+              setActivityOpen(next);
+              setTab(next ? "activity" : "notebook");
+            }}
+            title="Activity: send a quick check or mini test"
+          >
+            <ListChecks className="h-4 w-4" />
+            <span className="hidden sm:inline">Activity</span>
+            {activity.activity && !activityOpen && <span className="h-2 w-2 rounded-full bg-primary" />}
+          </Button>
           <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} />
           <ProviderBadge />
           {isTeacher && (
@@ -199,6 +252,7 @@ export function LessonRoom({
           <TabButton active={tab === "notebook"} onClick={() => setTab("notebook")} icon={<NotebookPen className="h-4 w-4" />} label="Notebook" />
           <TabButton active={tab === "video"} onClick={() => setTab("video")} icon={<Video className="h-4 w-4" />} label="Video" />
           <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
+          <TabButton active={tab === "activity"} onClick={() => { setTab("activity"); setActivityOpen(true); }} icon={<ListChecks className="h-4 w-4" />} label="Activity" />
         </div>
 
         {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
@@ -217,6 +271,11 @@ export function LessonRoom({
           {isTeacher && <CoachChip coach={coach} />}
         </main>
 
+        {/* Activity panel (desktop): a right-hand rail beside the notebook */}
+        {isDesktop === true && activityOpen && (
+          <aside className="flex w-[400px] shrink-0 flex-col border-l bg-card">{activityPanel}</aside>
+        )}
+
         {/* Mobile panels — video stays mounted across tab switches, just hidden */}
         {isDesktop === false && (
           <>
@@ -224,6 +283,7 @@ export function LessonRoom({
             <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
               <MaterialsPanel materialsCourseId={materialsCourseId} />
             </div>
+            <div className={cn("min-h-[60vh]", tab === "activity" ? "block" : "hidden")}>{activityPanel}</div>
           </>
         )}
       </div>
