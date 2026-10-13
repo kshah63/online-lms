@@ -30,7 +30,7 @@ export async function ProgressScreen({
   basePath: string;
   query?: Record<string, string>;
 }) {
-  const courses = await getProgressCourses(student.id);
+  const courses = await getProgressCourses(viewer, student.id);
   const course = courses.find((c) => c.id === courseId) ?? courses[0] ?? null;
 
   let data: ProgressPageData | null = null;

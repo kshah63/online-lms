@@ -346,7 +346,7 @@ function SyllabusTable({ topics }: { topics: ProgressView["topics"] }) {
               <td className="py-1.5 text-right tabular-nums">{pct(t.progress.accuracy)}</td>
               <td className="py-1.5 text-right tabular-nums">{t.progress.practice_items || "—"}</td>
               <td className="hidden py-1.5 text-right sm:table-cell" style={{ color: "var(--viz-text-2)" }}>
-                {t.progress.last_activity ? DateTime.fromISO(t.progress.last_activity).toRelative({ unit: ["days", "weeks"] }) : "—"}
+                {t.progress.last_activity ? relativeDays(t.progress.last_activity) : "—"}
               </td>
             </tr>
           ))}
@@ -492,6 +492,16 @@ function roundedRight(x: number, y: number, w: number, h: number, r: number): st
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/** "today", "yesterday", "N days ago", then weeks — never "0 weeks ago". */
+function relativeDays(iso: string): string {
+  const days = Math.floor(DateTime.now().diff(DateTime.fromISO(iso), "days").days);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 14) return `${days} days ago`;
+  const weeks = Math.round(days / 7);
+  return `${weeks} weeks ago`;
 }
 
 export function statusTone(status: TopicStatus): string {

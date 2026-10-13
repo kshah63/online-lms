@@ -26,8 +26,8 @@ export interface ProgressCourse {
  * room's rows for its in-charge, every row for an admin) and names them from
  * courses, which any signed-in account may read.
  */
-export async function getProgressCourses(studentId: string): Promise<ProgressCourse[]> {
-  if (isDemoMode) return demoProgressCourses(studentId);
+export async function getProgressCourses(viewer: Profile, studentId: string): Promise<ProgressCourse[]> {
+  if (isDemoMode) return demoProgressCourses(viewer, studentId);
 
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase.from("session_requests").select("course_id").eq("student_id", studentId).eq("mode", "online").not("course_id", "is", null);

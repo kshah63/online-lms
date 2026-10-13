@@ -114,9 +114,13 @@ describe("the demo answers child_progress in the contract's shape", () => {
     expect(reports.map((r) => r.topic)).toEqual(["Completing the square"]);
   });
 
-  it("lists a course per online booking, so a student on two courses gets a picker", () => {
-    expect(demoProgressCourses(DEMO_IDS.aarav).map((c) => c.name)).toEqual(["IGCSE Mathematics", "A-Level Physics"]);
-    expect(demoProgressCourses(DEMO_IDS.sofia).map((c) => c.name)).toEqual(["SAT Math Prep"]);
+  it("lists a course per online booking the viewer may read, so a student on two courses gets a picker", () => {
+    expect(demoProgressCourses(priya, DEMO_IDS.aarav).map((c) => c.name)).toEqual(["IGCSE Mathematics", "A-Level Physics"]);
+    expect(demoProgressCourses(marco, DEMO_IDS.sofia).map((c) => c.name)).toEqual(["SAT Math Prep"]);
+    // An in-charge reads only the bookings in their room; a parent none of another family's.
+    expect(demoProgressCourses(grace, DEMO_IDS.aarav).map((c) => c.name)).toEqual(["IGCSE Mathematics"]);
+    expect(demoProgressCourses(grace, DEMO_IDS.lena)).toEqual([]);
+    expect(demoProgressCourses(marco, DEMO_IDS.aarav)).toEqual([]);
   });
 
   it("mirrors child_progress's gate", () => {

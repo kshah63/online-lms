@@ -160,9 +160,25 @@ function testName(courseId: string, label: string): string {
   return `${label} test`;
 }
 
-/** The online courses a student has sessions on, as the course picker lists them (from session_requests). */
-export function demoProgressCourses(studentId: string): { id: string; name: string }[] {
-  const ids = new Set(buildDemoSessionRequests().filter((s) => s.student_id === studentId).map((s) => s.course_id));
+/**
+ * The online courses a student has sessions on, as the course picker lists
+ * them — the session_requests rows the viewer may read (the household's
+ * own, an in-charge's room, the assigned teacher's, support's and admin's
+ * all), mirroring session_requests_select.
+ */
+export function demoProgressCourses(viewer: Profile, studentId: string): { id: string; name: string }[] {
+  const student = demoProfiles.find((p) => p.id === studentId);
+  const rooms = demoInchargeDepartments[viewer.id] ?? [];
+  const readable = buildDemoSessionRequests().filter(
+    (s) =>
+      s.student_id === studentId &&
+      ((student?.family_id != null && viewer.family_id === student.family_id) ||
+        viewer.role === "admin" ||
+        viewer.role === "support" ||
+        (viewer.role === "staff" && rooms.includes(s.department_id)) ||
+        s.assigned_teacher_id === viewer.id),
+  );
+  const ids = new Set(readable.map((s) => s.course_id));
   return demoCourses.filter((c) => ids.has(c.id)).map((c) => ({ id: c.id, name: c.name }));
 }
 

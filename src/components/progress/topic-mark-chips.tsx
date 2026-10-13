@@ -107,7 +107,7 @@ export function TopicMarkChips({ sessionId, studentId, topics }: { sessionId: st
                   aria-checked={active}
                   onClick={() => setStatus(s)}
                   className={cn(
-                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm capitalize transition-colors",
+                    "inline-flex h-8 items-center gap-1.5 rounded-full border px-3 text-sm transition-colors",
                     active ? "border-primary bg-primary/10 font-medium text-primary" : "border-input bg-card hover:bg-secondary",
                   )}
                 >
