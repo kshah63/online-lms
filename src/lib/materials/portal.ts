@@ -99,7 +99,7 @@ export async function fetchMaterialsTree(materialsCourseId: string, role: Acting
 /** POST /api/v1/files/{id}/view-url → short-lived signed URL (60s). */
 export async function fetchFileViewUrl(fileId: string, role: ActingRole): Promise<{ url: string; name: string }> {
   if (!portalConfigured) {
-    return { url: `https://www.africau.edu/images/default/sample.pdf#file=${encodeURIComponent(fileId)}`, name: `${fileId}.pdf` };
+    return { url: `/samples/sample-worksheet.pdf?file=${encodeURIComponent(fileId)}`, name: `${fileId}.pdf` };
   }
   return portalJson<{ url: string; name: string }>(`/api/v1/files/${encodeURIComponent(fileId)}/view-url`, {
     role,

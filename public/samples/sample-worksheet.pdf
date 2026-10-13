@@ -1,0 +1,40 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [3 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>
+endobj
+4 0 obj
+<< /Length 579 >>
+stream
+BT /F1 18 Tf 60 770 Td (Quadratics - practice set) Tj ET
+BT /F1 13 Tf 60 730 Td (1. Solve x^2 - 5x + 6 = 0.) Tj ET
+BT /F1 13 Tf 60 702 Td (2. Write y = x^2 - 6x + 5 in vertex form.) Tj ET
+BT /F1 13 Tf 60 674 Td (3. Factorise 2x^2 + 3x - 2.) Tj ET
+BT /F1 13 Tf 60 646 Td (4. The curve y = x^2 + bx + c passes through (1, 0) and (3, 0). Find b and c.) Tj ET
+BT /F1 13 Tf 60 618 Td (5. Sketch y = (x - 2)^2 - 4, marking the vertex and intercepts.) Tj ET
+BT /F1 13 Tf 60 590 Td () Tj ET
+BT /F1 13 Tf 60 562 Td (Show full working for every question.) Tj ET
+0.5 w 60 120 m 535 120 l S
+endstream
+endobj
+5 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000241 00000 n 
+0000000870 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+940
+%%EOF
