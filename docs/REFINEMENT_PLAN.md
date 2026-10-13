@@ -1,5 +1,12 @@
 # MathVision Lessons — Refinement plan
 
+> **Update, 13 Oct 2026 (later the same day).** The centre's own app (mv-app) turned out to already hold
+> accounts, households, in-charge scope, bookings (including online sessions), per-session reports,
+> two-way messaging that replaced WhatsApp, push, and a portal sync. The architecture decision is in
+> **[INTEGRATION.md](./INTEGRATION.md)**: fold the lesson platform into mv-app and keep only a browser
+> "room" (this repo, trimmed) on mv-app's Supabase project. Items below that mention WhatsApp two-way,
+> a separate roles model, or a mobile app are superseded by that document.
+
 _Gap analysis of the current platform against the ten requested feature areas, with
 recommendations, effort estimates and the decisions that need to be made before building.
 Written 13 Oct 2026 from the code on `main` of `online-lms` and `material`._
