@@ -151,97 +151,115 @@ export interface LessonRoomState {
 }
 
 // ============================================================================
-// LEGACY — online-lms shapes that the integration retires. The pages that read
-// them (homework, reports, follow-ups) still compile behind the data layer; the
-// next stage ports them onto session_reports, lesson_report_drafts,
-// lesson_followups and homework_submissions, or removes them.
+// Reports, drafts, follow-ups and coaching — mv-app's own tables, read under
+// RLS. Nothing here is written by the room except through submit_report.
 // ============================================================================
 
-export interface Report {
-  session_id: string;
-  teacher_id: string | null;
-  topics_covered: string | null;
-  how_student_did: string | null;
-  strengths: string | null;
-  areas_to_work: string | null;
+/** session_reports.status (enum report_status). */
+export type ReportStatus = "pending" | "published" | "rejected";
+
+/** A session_reports row, as the family and the teacher may read it under RLS. */
+export interface SessionReport {
+  id: string;
+  session_request_id: string | null;
+  student_id: string | null;
+  status: ReportStatus;
+  course_name: string | null;
+  topic: string | null;
+  topic_completed: boolean | null;
+  topics_not_done: string | null;
+  understanding: number | null;
+  otr: number | null;
+  gp: number | null;
+  prev_hw: string | null;
   homework: string | null;
-  rating: number | null;
-  teacher_notes: string | null;
-  ai_drafted: boolean;
-  needs_followup: boolean;
-  followup_reason: string | null;
+  remarks: string | null;
+  written_tests: { name: string; score: number | null; out_of: number | null; percent: number | null }[];
+  has_upcoming_tests: boolean;
   published_at: string | null;
-}
-
-export type HomeworkStatus = "assigned" | "submitted" | "completed" | "incomplete";
-
-export interface Homework {
-  id: string;
-  session_id: string | null;
-  student_id: string;
-  course_id: string | null;
-  description: string;
-  assigned_at: string;
-  due_at: string | null;
-  status: HomeworkStatus;
-  completed_at: string | null;
-  marked_by: string | null;
-  notebook_id: string | null;
-  notebook_page_id: string | null;
-  submitted_at: string | null;
-  verified_by: string | null;
-  verified_at: string | null;
-  review_note: string | null;
-  mark_correct: number | null;
-  mark_incorrect: number | null;
-  mark_not_done: number | null;
-  feedback: string | null;
-  attachments: HomeworkAttachment[];
-  updated_at: string;
-}
-
-export interface HomeworkAttachment {
-  name: string;
-  path: string;
-  size: number;
-}
-
-export type FollowupType =
-  | "attendance_gap"
-  | "no_show"
-  | "report_flag"
-  | "low_rating"
-  | "homework_overdue";
-
-export type FollowupStatus = "open" | "snoozed" | "done";
-export type FollowupPriority = "low" | "normal" | "high";
-
-export interface Followup {
-  id: string;
-  student_id: string;
-  session_id: string | null;
-  type: FollowupType;
-  priority: FollowupPriority;
-  reason: string | null;
-  status: FollowupStatus;
-  due_at: string | null;
-  snoozed_until: string | null;
-  resolved_by: string | null;
-  resolved_at: string | null;
-  resolution_note: string | null;
   created_at: string;
 }
 
-/** A follow-up joined with the student (and parent) it concerns. */
-export interface FollowupView extends Followup {
-  student: { id: string; name: string; avatar_url: string | null };
-  parent: { id: string; name: string } | null;
+/** The columns of session_reports the room selects (never `*`). */
+export const SESSION_REPORT_COLUMNS =
+  "id, session_request_id, student_id, status, course_name, topic, topic_completed, topics_not_done, understanding, otr, gp, prev_hw, homework, remarks, written_tests, has_upcoming_tests, published_at, created_at";
+
+/** A lesson_report_drafts row: the AI draft in submit_report's vocabulary, written by lesson-finalize. */
+export interface ReportDraftRow {
+  session_id: string;
+  draft: Record<string, unknown>;
+  rationale: string | null;
+  source: "ai" | "heuristic";
+  created_at: string;
+  used_at: string | null;
 }
 
-export const FOLLOWUP_LABEL: Record<FollowupType, string> = {
-  attendance_gap: "Attendance gap",
-  no_show: "No-show",
-  report_flag: "Report flagged",
-  low_rating: "Low rating",
-  homework_overdue: "Homework overdue",
+export type FollowupKind = "win" | "concern" | "misconception" | "logistics" | "exam_upcoming" | "ask_to_relay" | "tech_issue";
+export type FollowupAction = "share_with_parent" | "staff_task" | "note_for_next_lesson" | "staff_call";
+export type FollowupStatus = "proposed" | "approved" | "dismissed" | "done";
+
+/** A lesson_followups row, proposed from the transcript and decided in the centre app. */
+export interface LessonFollowup {
+  id: string;
+  session_id: string;
+  student_id: string;
+  family_id: string | null;
+  department_id: string | null;
+  kind: FollowupKind;
+  action: FollowupAction;
+  priority: string;
+  title: string;
+  detail: string | null;
+  quote: string | null;
+  at_ms: number | null;
+  suggested_parent_message: string | null;
+  status: FollowupStatus;
+  decided_at: string | null;
+  created_at: string;
+}
+
+export const LESSON_FOLLOWUP_COLUMNS =
+  "id, session_id, student_id, family_id, department_id, kind, action, priority, title, detail, quote, at_ms, suggested_parent_message, status, decided_at, created_at";
+
+export const FOLLOWUP_KIND_LABEL: Record<FollowupKind, string> = {
+  win: "Win to share",
+  concern: "Concern",
+  misconception: "Misconception",
+  logistics: "Logistics",
+  exam_upcoming: "Exam coming up",
+  ask_to_relay: "Asked to relay",
+  tech_issue: "Tech issue",
 };
+
+export const FOLLOWUP_ACTION_LABEL: Record<FollowupAction, string> = {
+  share_with_parent: "Share with the parent",
+  staff_task: "Staff task",
+  note_for_next_lesson: "Note for next lesson",
+  staff_call: "Staff call",
+};
+
+/** A lesson_metrics row, computed by lesson-finalize from the transcript. */
+export interface LessonMetricsRow {
+  session_id: string;
+  teacher_talk_pct: number;
+  student_talk_pct: number;
+  question_count: number;
+  open_question_pct: number;
+  avg_wait_ms: number;
+  student_turns: number;
+  praise_count: number;
+  computed_at: string;
+}
+
+/** A lesson_feedback row: the post-session coaching for the teacher. */
+export interface LessonFeedbackRow {
+  session_id: string;
+  summary: string;
+  strengths: string[];
+  suggestions: string[];
+  dimension_scores: { engagement: number; questioning: number; clarity: number; rapport: number };
+  moments: { at: string; kind: "strength" | "improvement"; quote: string; comment: string }[];
+  created_at: string;
+}
+
+export const LESSON_FEEDBACK_COLUMNS = "session_id, summary, strengths, suggestions, dimension_scores, moments, created_at";

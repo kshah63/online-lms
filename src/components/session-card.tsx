@@ -18,12 +18,16 @@ export function LessonCard({
   perspective,
   showDay = false,
   action,
+  footer,
 }: {
   lesson: OnlineLesson;
   viewerTz: string;
   perspective: Perspective;
   showDay?: boolean;
+  /** Replaces the room link; null for nothing at all. */
   action?: React.ReactNode;
+  /** A row under the body (the teacher's report links). */
+  footer?: React.ReactNode;
 }) {
   const live = lessonIsLive(lesson);
   const endISO = lessonEndISO(lesson);
@@ -35,7 +39,7 @@ export function LessonCard({
   return (
     <div
       className={cn(
-        "flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-sm transition-colors sm:flex-row sm:items-center",
+        "flex flex-col gap-4 rounded-xl border bg-card p-4 shadow-sm transition-colors sm:flex-row sm:flex-wrap sm:items-center",
         live && "border-success/40 ring-1 ring-success/20",
       )}
     >
@@ -93,16 +97,18 @@ export function LessonCard({
 
       {/* Action */}
       <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
-        {action ??
-          (canEnter ? (
+        {action !== undefined
+          ? action
+          : canEnter ? (
             <Button asChild size="sm" variant={live ? "success" : "default"}>
               <Link href={`/lesson/${lesson.session_id}`}>
                 {observer ? <Eye className="h-4 w-4" /> : <Video className="h-4 w-4" />}
                 {observer ? "Observe" : live ? "Join now" : "Open room"}
               </Link>
             </Button>
-          ) : null)}
+          ) : null}
       </div>
+      {footer && <div className="border-t pt-3 sm:basis-full">{footer}</div>}
     </div>
   );
 }

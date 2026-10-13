@@ -1,16 +1,15 @@
 import Link from "next/link";
-import { CalendarDays, ClipboardCheck, FileText, Video } from "lucide-react";
+import { BarChart3, CalendarDays, FileText, Video } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { LessonCard } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
-import { HomeworkList } from "@/components/homework/homework-list";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { listMyOnlineLessons } from "@/lib/data/lessons";
-import { getHomeworkForProfile } from "@/lib/data/homework";
+import { getPublishedFamilyReports } from "@/lib/data/reports";
 import { lessonEndISO, lessonIsLive, roomIsOpen } from "@/lib/lessons/window";
 import { formatRange, dayLabel } from "@/lib/time";
 import { firstName } from "@/lib/types";
@@ -34,40 +33,26 @@ export default async function HomePage() {
   }
 
   const nowISO = new Date().toISOString();
-  const [lessons, homework] = await Promise.all([
-    listMyOnlineLessons(profile, 14),
-    // Homework is a secondary card — don't let it take down the dashboard.
-    getHomeworkForProfile(profile).catch(() => []),
-  ]);
+  const [lessons, reports] = await Promise.all([listMyOnlineLessons(profile, 14), getPublishedFamilyReports(profile, 5)]);
   const upcoming = lessons.filter((l) => lessonEndISO(l) >= nowISO && l.status !== "cancelled" && l.status !== "declined");
   const past = lessons.filter((l) => lessonEndISO(l) < nowISO);
-  const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
 
   const next = upcoming[0];
   const nextLive = next ? lessonIsLive(next) : false;
   const nextCanJoin = next ? next.seat !== "family" && roomIsOpen(next) : false;
+  const latestReport = reports.rows[0];
 
   return (
     <div>
       <PageHeader
         title={`Welcome, ${firstName(profile)}`}
-        description={
-          profile.role === "parent"
-            ? "Your children's online lessons, homework and reports."
-            : "Your online lessons, homework and reports."
-        }
+        description={profile.role === "parent" ? "Your children's online lessons, reports and progress." : "Your online lessons, reports and progress."}
       />
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-3">
         <StatCard label="Upcoming" value={upcoming.length} icon={<CalendarDays className="h-4 w-4" />} />
-        <StatCard
-          label="Homework open"
-          value={openHomework.length}
-          tone={openHomework.length ? "warning" : "default"}
-          hint={openHomework.length ? "See the homework card below" : "All done"}
-          icon={<ClipboardCheck className="h-4 w-4" />}
-        />
-        <StatCard label="Completed" value={past.filter((l) => l.status === "completed").length} tone="success" />
+        <StatCard label="Completed" value={past.filter((l) => l.status === "completed").length} tone="success" hint="last two weeks" />
+        <StatCard label="Reports" value={reports.rows.length} hint={latestReport ? `latest ${dayLabel(latestReport.published_at ?? latestReport.created_at, tz)}` : "none yet"} icon={<FileText className="h-4 w-4" />} />
       </div>
 
       {/* Next lesson highlight */}
@@ -123,27 +108,32 @@ export default async function HomePage() {
         </div>
 
         <div className="space-y-6">
-          {openHomework.length > 0 && (
-            <div>
-              <div className="mb-3 flex items-center justify-between">
-                <h2 className="text-sm font-semibold text-muted-foreground">Homework</h2>
-                <Link href="/home/homework" className="text-xs text-primary hover:underline">
-                  View all
-                </Link>
-              </div>
-              <HomeworkList items={openHomework} viewerTz={tz} showStudent={profile.role === "parent"} />
-            </div>
-          )}
-
           <div>
             <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Reports</h2>
             <Card className="p-4">
-              <p className="text-sm text-muted-foreground">
-                Published lesson reports arrive in the MathVision app, and are listed here too.
-              </p>
+              {latestReport ? (
+                <>
+                  <div className="text-sm font-medium">{latestReport.course_name ?? "Lesson"}{latestReport.topic ? ` · ${latestReport.topic}` : ""}</div>
+                  <p className="mt-1 line-clamp-3 text-sm text-muted-foreground">{latestReport.remarks}</p>
+                </>
+              ) : (
+                <p className="text-sm text-muted-foreground">Published lesson reports arrive in the MathVision app, and are listed here too.</p>
+              )}
               <Button asChild variant="outline" size="sm" className="mt-3 w-full">
                 <Link href="/home/reports">
                   <FileText className="h-4 w-4" /> View reports
+                </Link>
+              </Button>
+            </Card>
+          </div>
+
+          <div>
+            <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Progress</h2>
+            <Card className="p-4">
+              <p className="text-sm text-muted-foreground">Topics covered, practice volume and where help is needed.</p>
+              <Button asChild variant="outline" size="sm" className="mt-3 w-full">
+                <Link href="/home/progress">
+                  <BarChart3 className="h-4 w-4" /> See progress
                 </Link>
               </Button>
             </Card>

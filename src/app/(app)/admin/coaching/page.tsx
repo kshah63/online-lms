@@ -16,7 +16,7 @@ const FLAG_THRESHOLD = 3; // flag teachers whose engagement is below this for re
 export default async function AdminCoachingPage() {
   const admin = await requireRole(...OFFICE_ROLES);
   const tz = viewerTimeZone(admin);
-  const latest = await getAllTeachersLatest();
+  const latest = await getAllTeachersLatest(admin);
 
   return (
     <div>

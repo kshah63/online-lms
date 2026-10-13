@@ -1,35 +1,27 @@
-import { BookOpen, FileText, GraduationCap, Lightbulb, Star, Target } from "lucide-react";
+import { BookOpen, CalendarCheck, FileText, GraduationCap, ListChecks } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
-import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
-import { listMyOnlineLessons } from "@/lib/data/lessons";
-import { getReport } from "@/lib/data/reports";
+import { getChildren } from "@/lib/data/family";
+import { getPublishedFamilyReports } from "@/lib/data/reports";
+import { displayName } from "@/lib/types";
 
-/**
- * Published lesson reports. TODO(next stage): read mv-app's session_reports
- * (my_online_lessons.report_id, status published) instead of the legacy shape.
- */
+/** Published session_reports for the family (RLS: status published, family_id = my_family_id()). */
 export default async function ReportsPage() {
   const profile = await requireRole("student", "parent");
   const tz = viewerTimeZone(profile);
-  // Parents don't see the individual teacher's name on reports.
-  const showTeacher = profile.role !== "parent";
-
-  const nowISO = new Date().toISOString();
-  const past = (await listMyOnlineLessons(profile, 30)).filter((l) => l.effective_start < nowISO).reverse();
-  const withReports = (
-    await Promise.all(past.map(async (lesson) => ({ lesson, report: await getReport(lesson.session_id) })))
-  ).filter((x) => x.report?.published_at);
+  const [{ rows, hitLimit }, children] = await Promise.all([getPublishedFamilyReports(profile, 50), getChildren(profile)]);
+  const childName = new Map(children.map((c) => [c.id, displayName(c)]));
 
   return (
     <div>
-      <PageHeader title="Reports" description="Published lesson reports from your teachers." />
+      <PageHeader title="Reports" description="Each lesson's report, once the centre has published it." />
 
-      {withReports.length === 0 ? (
+      {rows.length === 0 ? (
         <EmptyState
           icon={<FileText className="h-5 w-5" />}
           title="No published reports yet"
@@ -37,41 +29,57 @@ export default async function ReportsPage() {
         />
       ) : (
         <div className="space-y-4">
-          {withReports.map(({ lesson, report }) => (
-            <Card key={lesson.session_id}>
+          {hitLimit && <p className="text-sm text-muted-foreground">Showing the latest {rows.length} reports.</p>}
+          {rows.map((r) => (
+            <Card key={r.id}>
               <CardHeader className="pb-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <CardTitle className="text-base">{lesson.subject ?? "Lesson"}</CardTitle>
+                    <CardTitle className="text-base">
+                      {r.course_name ?? "Lesson"}
+                      {r.topic ? ` · ${r.topic}` : ""}
+                    </CardTitle>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>{DateTime.fromISO(lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("cccc, d LLL yyyy")}</span>
-                      {profile.role === "parent" && <span>{lesson.student_name}</span>}
-                      {showTeacher && lesson.teacher_name && (
-                        <span className="flex items-center gap-1.5">
-                          <Avatar name={lesson.teacher_name} size={18} /> {lesson.teacher_name}
-                        </span>
-                      )}
+                      <span>{DateTime.fromISO(r.published_at ?? r.created_at, { zone: "utc" }).setZone(tz).toFormat("cccc, d LLL yyyy")}</span>
+                      {profile.role === "parent" && r.student_id && childName.has(r.student_id) && <span>{childName.get(r.student_id)}</span>}
                     </p>
                   </div>
-                  {report!.rating != null && <Stars rating={report!.rating} />}
+                  <div className="flex items-center gap-2">
+                    {r.understanding != null && <Badge variant="secondary">Understanding {r.understanding}/10</Badge>}
+                    {r.gp != null && <Badge variant="default">GP {r.gp.toFixed(2)}</Badge>}
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <Field icon={<BookOpen className="h-4 w-4" />} label="Topics covered" value={report!.topics_covered} />
-                <Field icon={<GraduationCap className="h-4 w-4" />} label="How they did" value={report!.how_student_did} />
+                <Field icon={<BookOpen className="h-4 w-4" />} label="Topic" value={r.topic ? `${r.topic}${r.topic_completed === false ? ` — not finished${r.topics_not_done ? `: ${r.topics_not_done}` : ""}` : ""}` : null} />
+                <Field icon={<GraduationCap className="h-4 w-4" />} label="Remarks" value={r.remarks} />
                 <div className="grid gap-4 sm:grid-cols-2">
-                  <Field icon={<Lightbulb className="h-4 w-4 text-success" />} label="Strengths" value={report!.strengths} />
-                  <Field icon={<Target className="h-4 w-4 text-warning-foreground" />} label="Areas to work on" value={report!.areas_to_work} />
+                  <Field icon={<CalendarCheck className="h-4 w-4" />} label="Previous homework" value={r.prev_hw} />
+                  {r.otr != null && <Field icon={<ListChecks className="h-4 w-4" />} label="Oral test" value={`${r.otr}% to ${r.otr + 5}%`} />}
                 </div>
-                {report!.homework && (
+                {r.written_tests.length > 0 && (
+                  <div>
+                    <div className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted-foreground">Written tests</div>
+                    <ul className="text-sm">
+                      {r.written_tests.map((t, i) => (
+                        <li key={i}>
+                          {t.name}
+                          {t.score != null && t.out_of != null ? `: ${t.score}/${t.out_of}${t.percent != null ? ` (${t.percent}%)` : ""}` : ""}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                {r.homework && (
                   <>
                     <Separator />
                     <div className="rounded-lg bg-accent/40 p-3">
                       <div className="text-xs font-semibold uppercase tracking-wide text-accent-foreground">Homework</div>
-                      <p className="mt-1 text-sm">{report!.homework}</p>
+                      <p className="mt-1 text-sm">{r.homework}</p>
                     </div>
                   </>
                 )}
+                {r.has_upcoming_tests && <p className="text-xs text-muted-foreground">A school test or exam is coming up.</p>}
               </CardContent>
             </Card>
           ))}
@@ -89,16 +97,6 @@ function Field({ icon, label, value }: { icon: React.ReactNode; label: string; v
         {icon} {label}
       </div>
       <p className="text-sm leading-relaxed">{value}</p>
-    </div>
-  );
-}
-
-function Stars({ rating }: { rating: number }) {
-  return (
-    <div className="flex items-center gap-0.5">
-      {Array.from({ length: 5 }).map((_, i) => (
-        <Star key={i} className={i < rating ? "h-4 w-4 fill-warning text-warning" : "h-4 w-4 text-muted-foreground/30"} />
-      ))}
     </div>
   );
 }

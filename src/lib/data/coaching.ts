@@ -1,16 +1,21 @@
 import { DateTime } from "luxon";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { heuristicFeedback } from "@/lib/coaching/analyze";
-import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
+import type { TranscriptSegment } from "@/lib/coaching/metrics";
 import type { FeedbackMoment, TeacherFeedback } from "@/lib/coaching/analyze";
+import { demoCourses, demoInchargeDepartments } from "@/lib/demo/data";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
+import { LESSON_METRICS_COLUMNS } from "@/lib/data/reports";
+import { LESSON_FEEDBACK_COLUMNS, type LessonFeedbackRow, type LessonMetricsRow, type OnlineLesson, type Profile } from "@/lib/types";
 
 // ============================================================================
-// Coaching feedback, behind the data layer. online-lms's teacher_feedback,
-// session_metrics, transcripts and live_events are retired: the lesson-finalize
-// edge function writes lesson_feedback and lesson_metrics from lesson_transcripts,
-// and the room appends lesson_events. TODO(next stage): read those four tables
-// here (RLS: assigned teacher for own sessions, in-charge chain, admin). The
-// live paths return nothing until then; demo mode keeps its synthetic history.
+// Coaching, read-only. lesson-finalize writes lesson_feedback and
+// lesson_metrics from lesson_transcripts; the room appends lesson_events
+// (the live nudges it showed). Who taught whom comes from my_online_lessons:
+// a feedback row is shown only for a lesson the viewer's list carries (host
+// rows for a teacher, observer rows for the office), so RLS and the listing
+// agree on what is theirs to see.
 // ============================================================================
 
 export interface FeedbackView {
@@ -25,7 +30,7 @@ export interface FeedbackView {
   suggestions: string[];
   moments: FeedbackMoment[];
   dimension_scores: TeacherFeedback["dimension_scores"];
-  metrics: SessionMetrics | null;
+  metrics: Omit<LessonMetricsRow, "session_id" | "computed_at"> | null;
 }
 
 /** Everything the coaching detail page needs for one lesson. */
@@ -34,9 +39,120 @@ export interface FeedbackDetail extends FeedbackView {
   nudges: { type: string; message: string; created_at: string }[];
 }
 
+const DAYS = 30;
+
+/** A teacher's coached lessons, newest first (host rows with a lesson_feedback row). */
+export async function getFeedbackHistory(teacher: Profile): Promise<FeedbackView[]> {
+  if (isDemoMode) {
+    return demoHistory()
+      .filter((f) => f.teacher_id === teacher.id)
+      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
+  }
+  const lessons = (await listMyOnlineLessons(teacher, DAYS)).filter((l) => l.seat === "host");
+  return joinFeedback(lessons);
+}
+
+/** Office QA: the latest coached lesson of every teacher the viewer observes. */
+export async function getAllTeachersLatest(viewer: Profile): Promise<FeedbackView[]> {
+  const all = isDemoMode
+    ? demoHistory().filter((f) => demoObserves(viewer, f.course_name))
+    : await joinFeedback((await listMyOnlineLessons(viewer, DAYS)).filter((l) => l.seat === "observer"));
+  const byTeacher = new Map<string, FeedbackView>();
+  for (const f of all.sort((a, b) => (a.created_at < b.created_at ? 1 : -1))) {
+    if (!byTeacher.has(f.teacher_id)) byTeacher.set(f.teacher_id, f);
+  }
+  return [...byTeacher.values()];
+}
+
+/** Average dimension score; used to flag lessons/teachers for review. */
+export function avgScore(f: FeedbackView): number {
+  const d = f.dimension_scores;
+  return round2((d.engagement + d.questioning + d.clarity + d.rapport) / 4);
+}
+
+/**
+ * Coaching detail for one lesson: feedback + moments + transcript + the live
+ * nudges shown during the lesson. Null when the lesson is not in the viewer's
+ * list with the right seat, or has no feedback yet.
+ */
+export async function getFeedbackDetail(viewer: Profile, sessionId: string): Promise<FeedbackDetail | null> {
+  if (isDemoMode) {
+    const view = demoHistory().find((f) => f.session_id === sessionId);
+    if (!view) return null;
+    if (viewer.role === "teacher" ? view.teacher_id !== viewer.id : !demoObserves(viewer, view.course_name)) return null;
+    return { ...view, segments: demoSegments(), nudges: demoNudges(view.created_at) };
+  }
+
+  const wanted = viewer.role === "teacher" ? "host" : "observer";
+  const lesson = (await listMyOnlineLessons(viewer, DAYS)).find((l) => l.session_id === sessionId && l.seat === wanted);
+  if (!lesson) return null;
+  const [view] = await joinFeedback([lesson]);
+  if (!view) return null;
+
+  const supabase = createSupabaseServerClient()!;
+  const [transcript, events] = await Promise.all([
+    supabase.from("lesson_transcripts").select("segments").eq("session_id", sessionId).maybeSingle(),
+    supabase.from("lesson_events").select("kind, payload, at").eq("session_id", sessionId).order("at"),
+  ]);
+  if (transcript.error) throw new Error(`lesson_transcripts failed: ${transcript.error.message}`);
+  if (events.error) throw new Error(`lesson_events failed: ${events.error.message}`);
+
+  const segments = Array.isArray(transcript.data?.segments) ? (transcript.data!.segments as TranscriptSegment[]) : [];
+  const nudges = ((events.data ?? []) as { kind: string; payload: Record<string, unknown> | null; at: string }[])
+    .filter((e) => typeof e.payload?.message === "string")
+    .map((e) => ({ type: e.kind, message: String(e.payload!.message), created_at: e.at }));
+  return { ...view, segments, nudges };
+}
+
+/** Select lesson_feedback and lesson_metrics for the given lessons and label each with its teacher, course and student. */
+async function joinFeedback(lessons: OnlineLesson[]): Promise<FeedbackView[]> {
+  if (lessons.length === 0) return [];
+  const ids = lessons.map((l) => l.session_id);
+  const supabase = createSupabaseServerClient()!;
+  const [feedback, metrics] = await Promise.all([
+    supabase.from("lesson_feedback").select(LESSON_FEEDBACK_COLUMNS).in("session_id", ids),
+    supabase.from("lesson_metrics").select(LESSON_METRICS_COLUMNS).in("session_id", ids),
+  ]);
+  if (feedback.error) throw new Error(`lesson_feedback failed: ${feedback.error.message}`);
+  if (metrics.error) throw new Error(`lesson_metrics failed: ${metrics.error.message}`);
+
+  const metricsBySession = new Map(((metrics.data ?? []) as LessonMetricsRow[]).map((m) => [m.session_id, m]));
+  const bySession = new Map(lessons.map((l) => [l.session_id, l]));
+  return ((feedback.data ?? []) as LessonFeedbackRow[]).flatMap((f) => {
+    const lesson = bySession.get(f.session_id);
+    if (!lesson) return [];
+    const m = metricsBySession.get(f.session_id);
+    return [
+      {
+        session_id: f.session_id,
+        teacher_id: lesson.teacher_id ?? "",
+        teacher_name: lesson.teacher_name ?? "Teacher",
+        course_name: lesson.subject ?? "Lesson",
+        student_name: lesson.student_name,
+        created_at: f.created_at,
+        summary: f.summary,
+        strengths: f.strengths ?? [],
+        suggestions: f.suggestions ?? [],
+        moments: f.moments ?? [],
+        dimension_scores: f.dimension_scores,
+        metrics: m ? stripMetrics(m) : null,
+      },
+    ];
+  });
+}
+
+function stripMetrics(m: LessonMetricsRow): FeedbackView["metrics"] {
+  const { session_id: _s, computed_at: _c, ...rest } = m;
+  void _s;
+  void _c;
+  return rest;
+}
+
 // ---------------------------------------------------------------------------
 // Demo synthesis — a believable coaching history with improving talk-ratio and
-// questioning over the past weeks, so the dashboard trends are meaningful.
+// questioning over the past weeks, so the dashboard trends are meaningful. The
+// two most recent of Maya's are keyed to real demo sessions so the brief finds
+// them.
 // ---------------------------------------------------------------------------
 const MAYA = "00000000-0000-0000-0000-0000000000a1";
 const DANIEL = "00000000-0000-0000-0000-0000000000a2";
@@ -50,8 +166,8 @@ function demoHistory(): FeedbackView[] {
     { talk: 0.31, q: 4, open: 0.4, praise: 2, wait: 1700, course: "SAT Math Prep", student: "Sofia Rossi" },
     { talk: 0.36, q: 5, open: 0.45, praise: 2, wait: 2100, course: "IGCSE Mathematics", student: "Aarav Sharma" },
     { talk: 0.4, q: 6, open: 0.5, praise: 3, wait: 2400, course: "SAT Math Prep", student: "Sofia Rossi" },
-    { talk: 0.44, q: 8, open: 0.55, praise: 3, wait: 2800, course: "IGCSE Mathematics", student: "Aarav Sharma" },
-    { talk: 0.47, q: 9, open: 0.6, praise: 4, wait: 3100, course: "SAT Math Prep", student: "Sofia Rossi" },
+    { talk: 0.44, q: 8, open: 0.55, praise: 3, wait: 2800, course: "SAT Math Prep", student: "Sofia Rossi", session: "20000000-0000-0000-0000-000000000007" },
+    { talk: 0.47, q: 9, open: 0.6, praise: 4, wait: 3100, course: "IGCSE Mathematics", student: "Aarav Sharma", session: "20000000-0000-0000-0000-000000000001" },
   ];
   mayaPoints.forEach((p, i) => out.push(synth(MAYA, "Maya Chen", p, mayaPoints.length - 1 - i)));
 
@@ -69,22 +185,21 @@ function demoHistory(): FeedbackView[] {
 function synth(
   teacherId: string,
   teacherName: string,
-  p: { talk: number; q: number; open: number; praise: number; wait: number; course: string; student: string },
+  p: { talk: number; q: number; open: number; praise: number; wait: number; course: string; student: string; session?: string },
   weeksAgo: number,
 ): FeedbackView {
-  const metrics: SessionMetrics = {
+  const metrics = {
     teacher_talk_pct: round2(1 - p.talk),
     student_talk_pct: p.talk,
     question_count: p.q,
     open_question_pct: p.open,
     avg_wait_ms: p.wait,
     student_turns: Math.round(p.q * 1.6),
-    avg_student_turn_ms: Math.round(8000 + p.talk * 12000),
     praise_count: p.praise,
   };
-  const fb = heuristicFeedback(metrics);
+  const fb = heuristicFeedback({ ...metrics, avg_student_turn_ms: Math.round(8000 + p.talk * 12000) });
   return {
-    session_id: `${teacherId}-hist-${weeksAgo}`,
+    session_id: p.session ?? `${teacherId}-hist-${weeksAgo}`,
     teacher_id: teacherId,
     teacher_name: teacherName,
     course_name: p.course,
@@ -123,63 +238,16 @@ function demoMoments(student: string): FeedbackMoment[] {
   ];
 }
 
+/** Mirrors the observer seat in demo: admin and support see every room, an in-charge their own departments. */
+function demoObserves(viewer: Profile, courseName: string): boolean {
+  if (viewer.role === "admin" || viewer.role === "support") return true;
+  if (viewer.role !== "staff") return false;
+  const department = demoCourses.find((c) => c.name === courseName)?.department_id;
+  return department != null && (demoInchargeDepartments[viewer.id] ?? []).includes(department);
+}
+
 function round2(n: number) {
   return Math.round(n * 100) / 100;
-}
-
-// ---------------------------------------------------------------------------
-// Public accessors
-// ---------------------------------------------------------------------------
-
-/** Full feedback history for a teacher, newest first. */
-export async function getFeedbackHistory(teacherId: string): Promise<FeedbackView[]> {
-  if (isDemoMode) {
-    return demoHistory()
-      .filter((f) => f.teacher_id === teacherId)
-      .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
-  }
-  // TODO(next stage): lesson_feedback joined with lesson_metrics for the teacher's sessions.
-  void teacherId;
-  return [];
-}
-
-export async function getLatestFeedback(teacherId: string): Promise<FeedbackView | null> {
-  const history = await getFeedbackHistory(teacherId);
-  return history[0] ?? null;
-}
-
-/** Office QA: the latest feedback for every teacher, flagged if low engagement. */
-export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
-  if (isDemoMode) {
-    const byTeacher = new Map<string, FeedbackView>();
-    for (const f of demoHistory().sort((a, b) => (a.created_at < b.created_at ? 1 : -1))) {
-      if (!byTeacher.has(f.teacher_id)) byTeacher.set(f.teacher_id, f);
-    }
-    return [...byTeacher.values()];
-  }
-  // TODO(next stage): latest lesson_feedback per teacher in the in-charge's departments (RLS: reports_to_id chain, admin).
-  return [];
-}
-
-/** Average dimension score; used to flag lessons/teachers for review. */
-export function avgScore(f: FeedbackView): number {
-  const d = f.dimension_scores;
-  return round2((d.engagement + d.questioning + d.clarity + d.rapport) / 4);
-}
-
-/**
- * Coaching detail for one lesson: feedback + moments + transcript + the live
- * nudges shown during the lesson.
- */
-export async function getFeedbackDetail(sessionId: string): Promise<FeedbackDetail | null> {
-  if (isDemoMode) {
-    const view = demoHistory().find((f) => f.session_id === sessionId);
-    if (!view) return null;
-    return { ...view, segments: demoSegments(), nudges: demoNudges(view.created_at) };
-  }
-  // TODO(next stage): lesson_feedback + lesson_metrics + lesson_transcripts.segments + lesson_events for sessionId.
-  void sessionId;
-  return null;
 }
 
 function demoSegments(): TranscriptSegment[] {
@@ -199,4 +267,13 @@ function demoNudges(lessonISO: string): FeedbackDetail["nudges"] {
     { type: "wait_time", message: "Give them a few seconds to think before jumping in.", created_at: base.plus({ minutes: 18 }).toISO()! },
     { type: "praise_drought", message: "Acknowledge their effort — a little encouragement goes a long way.", created_at: base.plus({ minutes: 33 }).toISO()! },
   ];
+}
+
+/** The coaching moments for a session when the viewer's list carries it (used by the brief). */
+export async function getMomentsForSession(viewer: Profile, sessionId: string): Promise<FeedbackMoment[]> {
+  if (isDemoMode) return demoHistory().find((f) => f.session_id === sessionId && f.teacher_id === viewer.id)?.moments ?? [];
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase.from("lesson_feedback").select("moments").eq("session_id", sessionId).maybeSingle();
+  if (error) throw new Error(`lesson_feedback failed: ${error.message}`);
+  return Array.isArray(data?.moments) ? (data!.moments as FeedbackMoment[]) : [];
 }

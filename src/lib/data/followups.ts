@@ -1,73 +1,62 @@
-import { DateTime } from "luxon";
+import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { demoProfiles } from "@/lib/demo/data";
-import { displayName, type FollowupView } from "@/lib/types";
+import { demoFollowups, demoInchargeDepartments } from "@/lib/demo/data";
+import { getDisplayNames } from "@/lib/data/family";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
+import { LESSON_FOLLOWUP_COLUMNS, type LessonFollowup, type Profile } from "@/lib/types";
 
 // ============================================================================
-// Follow-ups, behind the data layer. online-lms's followups table is retired:
-// the lesson's follow-ups are mv-app's lesson_followups (proposed from the
-// transcript, approved by the in-charge in the app, which raises message_tasks
-// and student_notes). TODO(next stage): read lesson_followups here, or drop this
-// page in favour of the app's queue. The live path returns nothing until then.
+// Follow-ups, read-only. lesson_followups rows are proposed from the transcript
+// by lesson-finalize and decided in the centre app (approve_followup raises
+// the message, task or note there). The room lists them so the office can see
+// what is waiting; it never decides one. RLS: the assigned teacher reads their
+// own, is_incharge_of(department_id) and admin read their rooms'.
 // ============================================================================
 
-function parentOf(studentId: string) {
-  const student = demoProfiles.find((p) => p.id === studentId);
-  const parent = student?.family_id
-    ? demoProfiles.find((p) => p.role === "parent" && p.family_id === student.family_id)
-    : null;
-  return parent ? { id: parent.id, name: displayName(parent) } : null;
+export interface FollowupView extends LessonFollowup {
+  student_name: string;
+  /** The lesson's subject and start when it is within the viewer's lessons window. */
+  lesson: { subject: string | null; effective_start: string } | null;
 }
 
-function studentLite(studentId: string) {
-  const s = demoProfiles.find((p) => p.id === studentId)!;
-  return { id: s.id, name: displayName(s), avatar_url: s.avatar_url };
+export const FOLLOWUPS_LIMIT = 200;
+
+/** Every follow-up the viewer may read, newest first, with the student's name and the lesson when known. */
+export async function listFollowups(viewer: Profile): Promise<{ rows: FollowupView[]; hitLimit: boolean }> {
+  const rows = await readFollowups(viewer);
+  const [names, lessons] = await Promise.all([
+    getDisplayNames(rows.map((r) => r.student_id)),
+    listMyOnlineLessons(viewer, 30),
+  ]);
+  const bySession = new Map(lessons.map((l) => [l.session_id, l]));
+  return {
+    rows: rows.map((r) => {
+      const lesson = bySession.get(r.session_id);
+      return {
+        ...r,
+        student_name: names.get(r.student_id) ?? "Student",
+        lesson: lesson ? { subject: lesson.subject, effective_start: lesson.effective_start } : null,
+      };
+    }),
+    hitLimit: rows.length === FOLLOWUPS_LIMIT,
+  };
 }
 
-function demoFollowups(): FollowupView[] {
-  const now = DateTime.utc();
-  const aarav = "00000000-0000-0000-0000-0000000000b1";
-  const sofia = "00000000-0000-0000-0000-0000000000b2";
-
-  const base = (
-    id: string,
-    studentId: string,
-    type: FollowupView["type"],
-    priority: FollowupView["priority"],
-    reason: string,
-    ageDays: number,
-  ): FollowupView => ({
-    id,
-    student_id: studentId,
-    session_id: null,
-    type,
-    priority,
-    reason,
-    status: "open",
-    due_at: null,
-    snoozed_until: null,
-    resolved_by: null,
-    resolved_at: null,
-    resolution_note: null,
-    created_at: now.minus({ days: ageDays }).toISO()!,
-    student: studentLite(studentId),
-    parent: parentOf(studentId),
-  });
-
-  return [
-    base("fu-1", aarav, "no_show", "high", "Missed the Trigonometry lesson and hasn't rebooked.", 1),
-    base("fu-2", sofia, "attendance_gap", "normal", "No lesson booked in 18 days — last attended 18 Jun.", 3),
-    base("fu-3", sofia, "homework_overdue", "normal", "Function transformations homework is 2 days overdue.", 2),
-    base("fu-4", aarav, "report_flag", "normal", "Teacher flagged persistent sign errors — suggest extra practice.", 0),
-  ];
-}
-
-/** Open + snoozed follow-ups for the office, with student + parent. */
-export async function getOpenFollowups(): Promise<FollowupView[]> {
+async function readFollowups(viewer: Profile): Promise<LessonFollowup[]> {
   if (isDemoMode) {
-    const order = { high: 0, normal: 1, low: 2 } as const;
-    return demoFollowups().sort((a, b) => order[a.priority] - order[b.priority]);
+    // Mirror the policy: admin reads all, an in-charge their departments, support none.
+    const mine = (f: LessonFollowup) =>
+      viewer.role === "admin" ||
+      (viewer.role === "staff" && f.department_id != null && (demoInchargeDepartments[viewer.id] ?? []).includes(f.department_id));
+    return demoFollowups.filter(mine).sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   }
-  // TODO(next stage): lesson_followups with status proposed for the in-charge's departments (RLS: is_incharge_of, admin).
-  return [];
+
+  const supabase = createSupabaseServerClient()!;
+  const { data, error } = await supabase
+    .from("lesson_followups")
+    .select(LESSON_FOLLOWUP_COLUMNS)
+    .order("created_at", { ascending: false })
+    .limit(FOLLOWUPS_LIMIT);
+  if (error) throw new Error(`lesson_followups failed: ${error.message}`);
+  return (data ?? []) as LessonFollowup[];
 }

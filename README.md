@@ -1,25 +1,26 @@
-# Lessons — 1-1 Online Tutoring Platform
+# MathVision — the online lesson room
 
-A web platform for live one-to-one online tutoring: scheduling, embedded video, a real-time
-collaborative notebook, AI coaching for teachers, post-lesson reports for parents, and an admin
-schedule/assignment console.
+The browser "room" of the MathVision centre app: the live lesson (Daily video, a shared
+tldraw notebook, the course materials beside it, the live coach and the activity panel),
+plus the few screens that are better in a browser — the teacher's day with its brief and
+report drafts, coaching, the family's reports and progress, and the office's board.
 
-Built per [`lessonsplatformbuildspec.md`](#). This repository implements **the foundation —
-build-order steps 1–2** (a usable product: running online lessons with a shared notebook and
-materials), with the data model, auth, RLS, and integration boundaries in place for the later AI
-layers to slot onto.
+**This app runs on the MathVision centre app's Supabase project; see `docs/INTEGRATION.md`.**
+It holds no schema of its own: every table and RPC it touches (`my_profile`,
+`my_online_lessons`, `lesson_room_state`, `lesson_join`, `lesson_end`, `submit_report`,
+the `lesson_*` tables) lives in mv-app's `supabase/migrations/`.
 
-**Stack:** Next.js 14 (App Router) · TypeScript · Tailwind CSS (clean, modern design system) ·
-Supabase (Postgres + Auth + Realtime) · tldraw (notebook) · Luxon (timezones) · Materials Portal API.
+**Stack:** Next.js 14 (App Router) · TypeScript · Tailwind · `@supabase/ssr` · tldraw ·
+Daily · Luxon · vitest · pnpm.
 
 ---
 
 ## Quick start (demo mode — no setup)
 
-With **no Supabase keys configured**, the room runs in **demo mode**: a built-in dataset in mv-app's
-shapes (profiles with mv roles and a family, departments, courses, course_topics, online
-session_requests) and a persona switcher stand in for real auth + Postgres, so every screen is
-explorable offline.
+With **no Supabase keys configured**, the room runs in **demo mode**: a built-in dataset in
+mv-app's shapes (profiles with mv roles and a family, departments, courses, course_topics,
+online session_requests, session_reports, lesson_report_drafts, lesson_followups) and a
+persona switcher stand in for real auth + Postgres, so every screen is explorable offline.
 
 ```bash
 pnpm install
@@ -29,181 +30,87 @@ pnpm dev
 
 Demo personas (ids are stable so scripts can set the `demo_persona` cookie directly):
 
-| Role (mv-app)     | Name          | Id suffix | Sees                                                      |
-|-------------------|---------------|-----------|-----------------------------------------------------------|
-| admin             | Admin Office  | …01       | Every online lesson, observer seat, coaching QA           |
-| staff (in-charge) | Grace Lim     | …d1       | Online Mathematics lessons as an observer, follow-ups     |
-| support           | Ravi Menon    | …d2       | Today's online lessons, observer seat                     |
-| teacher           | Maya Chen     | …a1       | Today's lessons, host the room, reports and coaching      |
-| student           | Sofia Rossi   | …b2       | Join the live lesson as the learner, homework             |
-| student           | Aarav Sharma  | …b1       | Upcoming lessons, homework, progress                      |
-| parent            | Priya Sharma  | …c1       | Aarav's lessons (no seat in the room), reports, progress  |
+| Role (mv-app)     | Name          | Id suffix | Sees                                                        |
+|-------------------|---------------|-----------|-------------------------------------------------------------|
+| admin             | Admin Office  | …01       | Board (every room), coaching QA, follow-ups                 |
+| staff (in-charge) | Grace Lim     | …d1       | Board (Online Mathematics), coaching QA, follow-ups         |
+| support           | Ravi Menon    | …d2       | Board, observer seat                                        |
+| teacher           | Maya Chen     | …a1       | Today, brief, host the room, report drafts, coaching        |
+| teacher           | Daniel Okafor | …a2       | Same, with a lesson later today                             |
+| student           | Sofia Rossi   | …b2       | Join the live lesson as the learner, reports, progress      |
+| student           | Aarav Sharma  | …b1       | Upcoming lessons, reports, progress                         |
+| parent            | Priya Sharma  | …c1       | Aarav's lessons (no seat in the room), reports, progress    |
+| parent            | Marco Rossi   | …c2       | Sofia's lessons, reports, progress                          |
 
-> In demo mode, **mutations aren't persisted** (a banner makes this clear). Connect the MathVision
-> Supabase project to go live.
-
----
-
-## Going live on mv-app's Supabase project
-
-The room runs on the MathVision app's project — one `auth.users`, one `profiles` row per person — and
-reads everything through its RPCs (`my_profile`, `my_online_lessons`, `lesson_room_state`,
-`lesson_join`, `lesson_end`, `save_lesson_notebook`, …). See `docs/INTEGRATION.md`. The SQL lives in
-mv-app's `supabase/migrations/`; nothing here creates tables.
-
-1. Copy the keys into `.env.local`:
-
-   ```bash
-   cp .env.example .env.local
-   # set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY of the mv-app project,
-   # and ROOM_REDEEM_SECRET (shared with the room-redeem edge function)
-   ```
-
-2. Run it:
-
-   ```bash
-   pnpm dev
-   ```
-
-   The login screen switches from the persona picker to the two doors the app has: families and
-   students sign in with a six-digit email code, the team with email (or portal username) and
-   password, then their authenticator. Lessons opened from the app arrive by ticket at `/join` and
-   need no sign-in at all. The presence of `NEXT_PUBLIC_SUPABASE_URL` is what flips the app out of
-   demo mode.
+> In demo mode, **mutations aren't persisted** (a banner makes this clear).
 
 ---
 
-## What's built (foundation — steps 1–2)
+## Going live
 
-**Step 1 — Identity, roles, timezones, scheduling, assignment, the daily board**
+This app runs on the MathVision centre app's Supabase project; see `docs/INTEGRATION.md`.
 
-- Supabase Auth + a `profiles` table with a first-class **IANA timezone** on every account.
-  All times are stored in UTC and **rendered in each viewer's own timezone** everywhere (`src/lib/time.ts`).
-- Four roles (admin / teacher / student / parent) with **Row Level Security** enforcing visibility
-  (`supabase/migrations/0003_rls.sql`).
-- **Admin daily schedule board** (`/admin`) — every session today in the admin's tz, with live-now,
-  unassigned, and no-show counts; day navigation.
-- **Scheduling console** (`/admin/sessions`) — one-off or recurring weekly lessons (shared `series_id`)
-  and **per-session teacher assignment**.
-- **People directory** (`/admin/people`) — teachers, students, parents with **consent** and **credit** status.
-- **Teacher today** (`/teacher`) + **availability** (`/teacher/availability`).
-- **Student/parent dashboard** (`/home`) + **reports** (`/home/reports`, published-only).
+```bash
+cp .env.example .env.local
+# NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY of the mv-app project,
+# ROOM_REDEEM_SECRET (shared with the room-redeem edge function), then the optional
+# DAILY_*, ANTHROPIC_API_KEY, MATERIALS_PORTAL_* and Sentry keys.
+pnpm dev
+```
 
-**Step 2 — The live lesson** (`/lesson/[sessionId]`)
-
-- Three-panel room: **Video** + **real-time collaborative notebook (tldraw)** + **Materials**.
-- **Assigned-teacher-only join is enforced server-side** (the spec's hard requirement): a teacher can
-  only enter a session where `teacher_id = caller`; others get an explicit access-denied screen. The
-  rule is re-checked when minting the video token, so the join-token endpoint is gated too.
-- **Materials Portal integration** over the API boundary (§6): a server-side proxy holds the service
-  credential and passes the caller's effective course role so the portal gates teacher-only files.
-- **Consent-gated recording** (§9): the record control is disabled unless the student's `recording`
-  consent is on file.
-
-**Video SDK — Daily** (`src/lib/video/daily.ts`, `src/components/lesson/daily-room.tsx`)
-
-- Rooms are created per session; meeting tokens are minted server-side, the assigned teacher joining
-  as **owner** (record/transcribe rights). Set `DAILY_API_KEY` to go live; without it the room falls
-  back to the built-in mock panel. *(LiveKit is the alternative if you want a server-side agent tapping
-  live audio; Daily is chosen for the fastest clean embed + built-in transcription that feeds §7.)*
-
-**Real-time notebook sync** (`src/lib/notebook/use-notebook-sync.ts`)
-
-- tldraw's store is wired to a **Supabase Realtime** channel: document edits broadcast both ways and
-  merge as remote changes, live **cursors/presence** render for each participant, and the running
-  document is persisted to `notebooks.tldraw_snapshot` (debounced). Falls back to local IndexedDB when
-  Supabase isn't configured.
-
-**AI teacher coaching — live + post-session (§7)**
-
-- **Metrics** (`src/lib/coaching/metrics.ts`): talk-time ratio, question frequency + open/closed mix,
-  wait-time, student turns, praise — computed from a diarized transcript.
-- **Live coaching** (`src/lib/coaching/coach.ts`): a rolling per-session state emits subtle,
-  teacher-only, **rate-limited** nudges (mutable, dismissible). Fed by Daily transcription live, or by
-  a scripted transcript in demo mode so the nudges are visible without audio.
-- **Post-session analysis** (`src/lib/coaching/analyze.ts`): the transcript + final metrics go to
-  **Claude (`claude-opus-4-8`, structured output)** for strengths-first coaching; saved to
-  `teacher_feedback`. Without `ANTHROPIC_API_KEY` it falls back to a metrics-derived heuristic.
-- **Dashboards** (§7.4): teacher coaching view (latest feedback, trends, dimension scores) and an
-  admin QA view flagging low-engagement lessons.
-
-**Reports — AI + teacher (§8)** (`/teacher/reports`)
-
-- The teacher jots **quick notes**; AI drafts a parent-facing report from the notes + the lesson
-  transcript + metrics (`src/lib/reports/draft.ts`, `claude-opus-4-8`, heuristic fallback). The
-  teacher edits every field and **publishes** to the parent/student. On publish it can also assign
-  homework and raise a follow-up.
-
-**Homework — done & verified on the notebook** (`/hw/[id]`)
-
-- Publishing a report with homework creates a `homework` item with a due date, linked to the student's
-  **running notebook**. The student opens it (`/hw/[id]`) on a dedicated **page inside that same tldraw
-  notebook** — drawing their working, typing, or **dragging a photo of their paper onto the canvas** —
-  then **submits**. The teacher opens the submitted page from their review queue (`/teacher/homework`)
-  and **verifies completion** or sends it back to redo. Completion is evidenced by real work, not an
-  honour-system checkbox. Overdue (not-yet-submitted) items feed the admin follow-up dashboard.
-
-**Follow-up dashboard** (`/admin/followups`)
-
-- Surfaces action items: **attendance gaps** (no completed lesson in 3 weeks, nothing booked),
-  **no-shows**, **overdue homework**, and **teacher-flagged / low-rating reports**. A "Scan now"
-  action regenerates the live ones. Each item can be resolved, snoozed, or actioned by **messaging the
-  parent over WhatsApp**.
-
-**WhatsApp (§11)** (`src/lib/messaging/whatsapp.ts`)
-
-- Parent outreach via the **Meta WhatsApp Cloud API**, with a templated message per follow-up type.
-  Set `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` to deliver; otherwise sends are **simulated** and logged
-  to `outbound_messages`.
+The presence of `NEXT_PUBLIC_SUPABASE_URL` flips the app out of demo mode. The login screen
+then shows the app's two doors — families and students by six-digit email code, the team by
+email (or portal username) and password, then their authenticator — and lessons opened from
+the app arrive by ticket at `/join` with no sign-in at all. There is no service-role key:
+everything the room reads comes back under RLS or from a SECURITY DEFINER RPC, and the only
+write to a booking's report is `submit_report`.
 
 ---
 
-## What's stubbed for later build steps
+## Screens
 
-These are deliberately scaffolded, not faked — the schema and seams exist so the later steps drop in:
+| Route | Who | Reads |
+| --- | --- | --- |
+| `/lesson/[sessionId]` | host, learner, observer | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event` |
+| `/teacher` | teacher | `my_online_lessons(14)`: today, coming up, recent, each with Join in the window, the brief, and the report state |
+| `/teacher/brief/[sessionId]` | teacher | `lesson_room_state` + the last `session_reports` / `lesson_report_drafts` + `lesson_feedback` moments → `composeBrief` |
+| `/teacher/reports`, `/teacher/reports/[sessionId]` | teacher | lessons awaiting a report; the editor prefilled from `lesson_report_drafts`, submitted through `submit_report` |
+| `/teacher/coaching`, `/coaching/[sessionId]` | teacher, office | `lesson_feedback`, `lesson_metrics`, `lesson_transcripts`, `lesson_events` |
+| `/home`, `/home/reports`, `/home/progress` | student, parent | `my_online_lessons`, published `session_reports`; progress is sample data until `child_progress` lands |
+| `/admin` | admin, in-charge, support | `my_online_lessons(1)` as an observer |
+| `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |
 
-- **Streaming STT** — Daily's built-in transcription feeds the coach when configured; a dedicated
-  Deepgram/AssemblyAI path is the alternative if you move off Daily.
-- **Billing/Stripe (§10)** — credit balances model exists and decrements on completion; checkout/top-up
-  is the remaining piece.
-- **Scheduled notifications (§11)** — WhatsApp parent outreach is built for follow-ups; timed reminders
-  (1h-before, reschedules) still need a scheduler/cron.
+Everything that needs a person to act — booking, staffing, approving a report or a
+follow-up, messaging a family — is in the MathVision app. The room holds no second queue.
 
----
+## Commands
+
+```bash
+pnpm dev          # next dev (demo mode without keys)
+pnpm typecheck    # tsc --noEmit
+pnpm test         # vitest
+pnpm build        # next build
+```
 
 ## Project structure
 
 ```
-supabase/
-  migrations/0001_schema.sql        full schema (all sections)
-  migrations/0002_functions_triggers.sql  RLS helpers, auto-notebook, credit consumption
-  migrations/0003_rls.sql           row-level security by role
-  seed.sql                          demo users + a full day of sessions
 src/
   app/
-    (app)/                          authenticated shell (sidebar by role)
-      admin/  teacher/  home/        role dashboards
-    lesson/[sessionId]/             the live three-panel room (full screen)
-    login/                          persona picker (demo) / sign-in (live)
-    api/materials/                  server proxy to the Materials Portal
-  components/ui/                     design system (button, card, dialog, select, …)
-  components/lesson/                 video, notebook (tldraw), materials, room
+    (app)/                 authenticated shell (sidebar by mv role)
+      admin/ teacher/ home/ coaching/   role screens
+    lesson/[sessionId]/    the live room (full screen)
+    join/ · api/join/      the ticket hand-off from the app
+    login/ · mfa/ · account/  the two sign-in doors, the TOTP step, the account gate
+    api/materials/         server proxy to the materials portal
+    api/lesson/.../video   Daily tokens, gated on the seat
+  components/lesson/       video, notebook (tldraw), materials, activity, room
+  components/teacher/      the centre-format session report editor
   lib/
-    time.ts                         UTC ⇄ timezone helpers (the bug-prone bit, centralised)
-    supabase/                       browser + server + middleware clients
-    data/                           data-access layer (Supabase, with demo fallback)
-    actions/                        server actions (schedule, assign, availability, auth)
-    materials/portal.ts             §6 API client (real portal or mock tree)
-    demo/data.ts                    demo dataset mirroring seed.sql
-```
-
-## Design notes
-
-- **Timezones are first-class.** Everything is UTC in the DB; `src/lib/time.ts` renders per-viewer and
-  computes day-windows so "today's sessions" is correct for any timezone.
-- **Demo fallback.** Every data-access function tries Supabase and falls back to the demo dataset when
-  no project is configured, so the UI is always runnable. This is a thin fallback, not a parallel mock
-  architecture — the Supabase path is the real one.
-- **The Materials boundary stays clean.** The lessons platform never sees a file the user shouldn't:
-  the portal does authorization; this app just passes the effective role and consumes the feed.
+    data/                  the data layer: RPCs and RLS reads, with the demo fallback
+    actions/               server actions (lesson_join / lesson_end, submit_report, notebook)
+    demo/data.ts           the demo dataset in mv-app's shapes
+    lessons/window.ts      the room's join window (mirrors room_access, for links only)
+    brief/ · reports/ · coaching/ · practice/ · syllabus/   pure modules, unit-tested
+docs/INTEGRATION.md        the decision record this app follows
 ```

@@ -32,11 +32,10 @@ function pct(x: number) {
 export default async function CoachingDetailPage({ params }: { params: { sessionId: string } }) {
   const profile = await requireRole("teacher", ...OFFICE_ROLES);
   const tz = viewerTimeZone(profile);
-  const detail = await getFeedbackDetail(params.sessionId);
+  // A teacher opens only lessons they hosted, the office only lessons they
+  // observe: the data layer answers null for anything else.
+  const detail = await getFeedbackDetail(profile, params.sessionId);
   if (!detail) notFound();
-  // Teachers may only open their own lessons (RLS enforces this for the
-  // transcript too; this guards the feedback shell).
-  if (profile.role === "teacher" && detail.teacher_id !== profile.id) notFound();
 
   const when = DateTime.fromISO(detail.created_at, { zone: "utc" })
     .setZone(tz)

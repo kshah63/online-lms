@@ -3,19 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import {
-  BarChart3,
-  CalendarDays,
-  ClipboardCheck,
-  ClipboardList,
-  Clock,
-  FileText,
-  LayoutDashboard,
-  ListChecks,
-  LogOut,
-  ShieldCheck,
-  Sparkles,
-} from "lucide-react";
+import { BarChart3, CalendarDays, ClipboardList, Clock, FileText, LayoutDashboard, ListChecks, LogOut, ShieldCheck, Sparkles } from "lucide-react";
 import { DateTime } from "luxon";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -29,37 +17,18 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/actions/auth";
 import { BrandMark, BrandWordmark } from "@/components/brand";
+import { navForRole, navIsActive, type NavIcon } from "@/lib/nav";
 import { cn } from "@/lib/utils";
 import { displayName, type Profile, type Role } from "@/lib/types";
 
-type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
-
-const OFFICE_NAV: NavItem[] = [
-  { href: "/admin", label: "Online lessons", icon: LayoutDashboard },
-  { href: "/admin/followups", label: "Follow-ups", icon: ListChecks },
-  { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
-];
-
-const FAMILY_NAV: NavItem[] = [
-  { href: "/home", label: "Dashboard", icon: LayoutDashboard },
-  { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
-  { href: "/home/progress", label: "Progress", icon: BarChart3 },
-  { href: "/home/reports", label: "Reports", icon: FileText },
-];
-
-const NAV: Record<Role, NavItem[]> = {
-  admin: OFFICE_NAV,
-  staff: OFFICE_NAV,
-  support: [OFFICE_NAV[0]],
-  teacher: [
-    { href: "/teacher", label: "Today", icon: LayoutDashboard },
-    { href: "/teacher/reports", label: "Reports", icon: ClipboardList },
-    { href: "/teacher/homework", label: "Homework", icon: ClipboardCheck },
-    { href: "/teacher/coaching", label: "Coaching", icon: Sparkles },
-  ],
-  student: FAMILY_NAV,
-  parent: FAMILY_NAV,
-  ambassador: [FAMILY_NAV[0]],
+const ICONS: Record<NavIcon, React.ComponentType<{ className?: string }>> = {
+  board: LayoutDashboard,
+  sparkles: Sparkles,
+  list: ListChecks,
+  today: LayoutDashboard,
+  reports: ClipboardList,
+  dashboard: LayoutDashboard,
+  progress: BarChart3,
 };
 
 const ROLE_LABEL: Record<Role, string> = {
@@ -85,7 +54,7 @@ export function AppShell({
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
-  const nav = NAV[profile.role];
+  const nav = navForRole(profile.role);
   const name = displayName(profile);
 
   return (
@@ -98,10 +67,8 @@ export function AppShell({
 
         <nav className="flex flex-1 flex-col gap-1">
           {nav.map((item) => {
-            const indexRoutes = ["/admin", "/teacher", "/home"];
-            const active =
-              pathname === item.href ||
-              (!indexRoutes.includes(item.href) && pathname.startsWith(item.href));
+            const active = navIsActive(item, pathname);
+            const Icon = item.icon === "reports" && profile.role !== "teacher" ? FileText : ICONS[item.icon];
             return (
               <Link
                 key={item.href}
@@ -113,7 +80,7 @@ export function AppShell({
                     : "text-muted-foreground hover:bg-secondary hover:text-foreground",
                 )}
               >
-                <item.icon className="h-[18px] w-[18px]" />
+                <Icon className="h-[18px] w-[18px]" />
                 {item.label}
               </Link>
             );

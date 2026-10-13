@@ -11,7 +11,7 @@ import { avgScore, getFeedbackHistory } from "@/lib/data/coaching";
 export default async function TeacherCoachingPage() {
   const teacher = await requireRole("teacher");
   const tz = viewerTimeZone(teacher);
-  const history = await getFeedbackHistory(teacher.id);
+  const history = await getFeedbackHistory(teacher);
   const latest = history[0];
 
   if (!latest) {

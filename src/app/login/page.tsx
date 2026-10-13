@@ -13,7 +13,7 @@ const ROLE_BLURB: Record<Role, string> = {
   staff: "In-charge: their room's lessons as an observer, follow-ups",
   support: "Front desk: today's online lessons, observer seat",
   teacher: "Today's lessons, host the room, reports and coaching",
-  student: "Upcoming lessons, join as the learner, homework",
+  student: "Upcoming lessons, join as the learner, reports and progress",
   parent: "Your child's lessons, reports and progress",
   ambassador: "Nothing in the room",
 };

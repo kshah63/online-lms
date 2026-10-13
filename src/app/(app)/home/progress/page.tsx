@@ -10,7 +10,7 @@ export default async function ProgressPage({ searchParams }: { searchParams: { s
   const profile = await requireRole("student", "parent");
   const children = await getChildren(profile);
   const student = children.find((c) => c.id === searchParams.student) ?? children[0] ?? null;
-  const view = student ? await getProgressView(student.id, null) : null;
+  const view = student ? await getProgressView(student, null) : null;
 
   return (
     <div className="space-y-6">

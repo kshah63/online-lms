@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { AlarmClockOff, CheckCheck, ListChecks, RefreshCw, X } from "lucide-react";
+import { CheckCheck, ListChecks, MessageSquareQuote, X } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
@@ -8,123 +8,83 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
-import { getOpenFollowups } from "@/lib/data/followups";
-import { generateFollowups, resolveFollowup, snoozeFollowup } from "@/lib/actions/followups";
-import { FOLLOWUP_LABEL, type FollowupView } from "@/lib/types";
+import { listFollowups, type FollowupView } from "@/lib/data/followups";
+import { OFFICE_ROLES } from "@/lib/permissions";
+import { FOLLOWUP_ACTION_LABEL, FOLLOWUP_KIND_LABEL, type FollowupKind, type FollowupStatus } from "@/lib/types";
 
-const PRIORITY_DOT = { high: "bg-destructive", normal: "bg-primary", low: "bg-muted-foreground/40" };
+const STATUSES: FollowupStatus[] = ["proposed", "approved", "done", "dismissed"];
+const KINDS = Object.keys(FOLLOWUP_KIND_LABEL) as FollowupKind[];
 
-const PRIORITIES = ["high", "normal", "low"] as const;
-const TYPES = Object.keys(FOLLOWUP_LABEL) as (keyof typeof FOLLOWUP_LABEL)[];
+const STATUS_VARIANT: Record<FollowupStatus, "warning" | "default" | "success" | "secondary"> = {
+  proposed: "warning",
+  approved: "default",
+  done: "success",
+  dismissed: "secondary",
+};
 
-export default async function AdminFollowupsPage({
-  searchParams,
-}: {
-  searchParams: { priority?: string; type?: string; view?: string };
-}) {
-  // Follow-ups are decided by the in-charge or an admin; support has no part in them.
-  const admin = await requireRole("admin", "staff");
-  const tz = viewerTimeZone(admin);
-  const items = await getOpenFollowups(); // open + snoozed
+/**
+ * What lesson-finalize proposed from each lesson's transcript, read-only.
+ * Approving one happens in the centre app (approve_followup raises the
+ * message, task or note there); this page only shows what is waiting.
+ */
+export default async function AdminFollowupsPage({ searchParams }: { searchParams: { status?: string; kind?: string } }) {
+  const viewer = await requireRole(...OFFICE_ROLES);
+  const tz = viewerTimeZone(viewer);
+  const { rows, hitLimit } = await listFollowups(viewer);
 
-  // ----- Filters (combinable: ?priority=high&type=no_show&view=snoozed) -----
-  const priority = PRIORITIES.find((p) => p === searchParams.priority);
-  const type = TYPES.find((t) => t === searchParams.type);
-  const view = searchParams.view === "snoozed" ? "snoozed" : undefined;
+  const status = STATUSES.find((s) => s === searchParams.status);
+  const kind = KINDS.find((k) => k === searchParams.kind);
+  const visible = rows.filter((f) => (!status || f.status === status) && (!kind || f.kind === kind));
+  const filtered = Boolean(status || kind);
 
-  const visible = items.filter(
-    (f) =>
-      (!priority || f.priority === priority) &&
-      (!type || f.type === type) &&
-      (!view || f.status === "snoozed"),
-  );
-  const filtered = Boolean(priority || type || view);
-
-  // Build a query string toggling one filter while keeping the others.
-  const href = (patch: Partial<{ priority: string; type: string; view: string }>) => {
+  const href = (patch: Partial<{ status: string; kind: string }>) => {
     const params = new URLSearchParams();
-    const merged = { priority, type, view, ...patch };
+    const merged = { status, kind, ...patch };
     for (const [k, v] of Object.entries(merged)) if (v) params.set(k, v);
     const qs = params.toString();
     return qs ? `/admin/followups?${qs}` : "/admin/followups";
   };
-  const toggle = (key: "priority" | "type" | "view", value: string, current?: string) =>
-    href({ [key]: current === value ? "" : value });
-
-  const high = items.filter((f) => f.priority === "high").length;
-  const snoozed = items.filter((f) => f.status === "snoozed").length;
-  const countOf = (t: string) => items.filter((f) => f.type === t).length;
+  const toggle = (key: "status" | "kind", value: string, current?: string) => href({ [key]: current === value ? "" : value });
+  const countOf = (s: FollowupStatus) => rows.filter((f) => f.status === s).length;
 
   const chip = (active: boolean) =>
     cn(
       "rounded-full border px-3 py-1 text-xs font-medium transition-colors",
-      active
-        ? "border-primary bg-primary/10 text-primary"
-        : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground",
+      active ? "border-primary bg-primary/10 text-primary" : "border-border bg-card text-muted-foreground hover:border-primary/40 hover:text-foreground",
     );
 
   return (
     <div>
       <PageHeader
         title="Follow-ups"
-        description="Action items needing outreach — attendance gaps, no-shows, overdue homework, and flagged reports."
-        actions={
-          <form action={generateFollowups}>
-            <Button type="submit" variant="outline" size="sm">
-              <RefreshCw className="h-4 w-4" /> Scan now
-            </Button>
-          </form>
-        }
+        description="What each lesson's transcript suggested the centre should act on. Approval happens in the MathVision app."
       />
 
-      {/* Clickable stat cards — click again to clear. */}
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <Link href="/admin/followups">
-          <StatCard
-            className="h-full transition-colors hover:border-primary/40"
-            label="Open items"
-            value={items.length}
-            hint={filtered ? "Show all" : undefined}
-            icon={<ListChecks className="h-4 w-4" />}
-          />
+          <StatCard className="h-full transition-colors hover:border-primary/40" label="All" value={rows.length} hint={filtered ? "Show all" : undefined} icon={<ListChecks className="h-4 w-4" />} />
         </Link>
-        <Link href={toggle("priority", "high", priority)}>
-          <StatCard
-            className={cn("h-full transition-colors hover:border-primary/40", priority === "high" && "ring-2 ring-primary border-primary/40")}
-            label="High priority"
-            value={high}
-            tone={high ? "warning" : "default"}
-          />
-        </Link>
-        <Link href={toggle("type", "no_show", type)}>
-          <StatCard
-            className={cn("h-full transition-colors hover:border-primary/40", type === "no_show" && "ring-2 ring-primary border-primary/40")}
-            label="No-shows"
-            value={countOf("no_show")}
-            tone={countOf("no_show") ? "warning" : "default"}
-          />
-        </Link>
-        <Link href={toggle("view", "snoozed", view)}>
-          <StatCard
-            className={cn("h-full transition-colors hover:border-primary/40", view === "snoozed" && "ring-2 ring-primary border-primary/40")}
-            label="Snoozed"
-            value={snoozed}
-          />
-        </Link>
+        {(["proposed", "approved", "done"] as const).map((s) => (
+          <Link key={s} href={toggle("status", s, status)}>
+            <StatCard
+              className={cn("h-full transition-colors hover:border-primary/40", status === s && "ring-2 ring-primary border-primary/40")}
+              label={s === "proposed" ? "Waiting for a decision" : s === "approved" ? "Approved" : "Done"}
+              value={countOf(s)}
+              tone={s === "proposed" && countOf(s) ? "warning" : "default"}
+            />
+          </Link>
+        ))}
       </div>
 
-      {/* Type chips — combinable with the cards above. */}
       <div className="mb-4 flex flex-wrap items-center gap-2">
-        {TYPES.map((t) => (
-          <Link key={t} href={toggle("type", t, type)} className={chip(type === t)}>
-            {FOLLOWUP_LABEL[t]} ({countOf(t)})
+        {KINDS.map((k) => (
+          <Link key={k} href={toggle("kind", k, kind)} className={chip(kind === k)}>
+            {FOLLOWUP_KIND_LABEL[k]} ({rows.filter((f) => f.kind === k).length})
           </Link>
         ))}
-        {PRIORITIES.map((p) => (
-          <Link key={p} href={toggle("priority", p, priority)} className={chip(priority === p)}>
-            {p} priority
-          </Link>
-        ))}
+        <Link href={toggle("status", "dismissed", status)} className={chip(status === "dismissed")}>
+          Dismissed ({countOf("dismissed")})
+        </Link>
         {filtered && (
           <Button asChild variant="ghost" size="sm" className="h-7 px-2 text-xs">
             <Link href="/admin/followups">
@@ -134,15 +94,13 @@ export default async function AdminFollowupsPage({
         )}
       </div>
 
+      {hitLimit && <p className="mb-3 text-sm text-muted-foreground">Showing the latest {rows.length} follow-ups.</p>}
+
       {visible.length === 0 ? (
         <EmptyState
           icon={<CheckCheck className="h-5 w-5" />}
-          title={filtered ? "Nothing matches these filters" : "All clear"}
-          description={
-            filtered
-              ? "Clear the filters to see every open item."
-              : "No open follow-ups. Run a scan to refresh attendance gaps and overdue homework."
-          }
+          title={filtered ? "Nothing matches these filters" : "Nothing waiting"}
+          description={filtered ? "Clear the filters to see every follow-up." : "Follow-ups are proposed from each lesson's transcript once it ends."}
           action={
             filtered ? (
               <Button asChild variant="outline">
@@ -154,7 +112,7 @@ export default async function AdminFollowupsPage({
       ) : (
         <div className="space-y-3">
           {visible.map((f) => (
-            <FollowupRow key={f.id} f={f} adminTz={tz} />
+            <FollowupRow key={f.id} f={f} tz={tz} />
           ))}
         </div>
       )}
@@ -162,59 +120,44 @@ export default async function AdminFollowupsPage({
   );
 }
 
-function FollowupRow({ f, adminTz }: { f: FollowupView; adminTz: string }) {
-  const age = DateTime.fromISO(f.created_at, { zone: "utc" }).toRelative();
-
+function FollowupRow({ f, tz }: { f: FollowupView; tz: string }) {
+  const when = f.lesson ? DateTime.fromISO(f.lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL") : DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL");
   return (
-    <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm sm:flex-row sm:items-center">
-      <span className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${PRIORITY_DOT[f.priority]} sm:mt-0`} />
-
-      <div className="min-w-0 flex-1">
-        <div className="flex flex-wrap items-center gap-2">
-          <Avatar name={f.student.name} src={f.student.avatar_url} size={24} />
-          <span className="font-medium">{f.student.name}</span>
-          <Badge variant="secondary">{FOLLOWUP_LABEL[f.type]}</Badge>
-          {f.snoozed_until && <Badge variant="outline">snoozed</Badge>}
-        </div>
-        <p className="mt-1 text-sm text-muted-foreground">{f.reason}</p>
-        <p className="mt-0.5 text-xs text-muted-foreground">
-          {age}
-          {f.parent ? ` · parent: ${f.parent.name}` : " · no parent linked"}
-        </p>
+    <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
+      <div className="flex flex-wrap items-center gap-2">
+        <Avatar name={f.student_name} size={24} />
+        <span className="font-medium">{f.student_name}</span>
+        <Badge variant="secondary">{FOLLOWUP_KIND_LABEL[f.kind]}</Badge>
+        <Badge variant={STATUS_VARIANT[f.status]}>{f.status}</Badge>
+        {f.priority === "high" && <Badge variant="destructive">high priority</Badge>}
+        <span className="ml-auto text-xs text-muted-foreground">
+          {f.lesson?.subject ? `${f.lesson.subject} · ` : ""}
+          {when}
+        </span>
       </div>
-
-      <div className="flex shrink-0 flex-wrap items-center gap-2">
-        {/* Messaging the family is the app's (start_family_direct / message_tasks); the suggested opener travels with the follow-up. */}
-        {f.parent && <span className="hidden max-w-xs truncate text-xs text-muted-foreground xl:inline" title={defaultBody(f)}>{defaultBody(f)}</span>}
-        <form action={snoozeFollowup}>
-          <input type="hidden" name="id" value={f.id} />
-          <input type="hidden" name="days" value="7" />
-          <Button type="submit" size="sm" variant="ghost" title="Snooze a week">
-            <AlarmClockOff className="h-4 w-4" />
-          </Button>
-        </form>
-        <form action={resolveFollowup}>
-          <input type="hidden" name="id" value={f.id} />
-          <Button type="submit" size="sm" variant="success">
-            <CheckCheck className="h-4 w-4" /> Done
-          </Button>
-        </form>
+      <div>
+        <div className="text-sm font-medium">{f.title}</div>
+        {f.detail && <p className="mt-0.5 text-sm text-muted-foreground">{f.detail}</p>}
+        {f.quote && (
+          <blockquote className="mt-1.5 flex gap-1.5 border-l-2 border-border pl-3 text-sm italic text-muted-foreground">
+            <MessageSquareQuote className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+            <span>
+              &ldquo;{f.quote}&rdquo;
+              {f.at_ms != null && <span className="ml-1 font-mono text-xs not-italic">{fmt(f.at_ms)}</span>}
+            </span>
+          </blockquote>
+        )}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
+        <span>Suggested action: {FOLLOWUP_ACTION_LABEL[f.action]}</span>
+        {f.suggested_parent_message && <span className="truncate" title={f.suggested_parent_message}>Draft to the parent: &ldquo;{f.suggested_parent_message}&rdquo;</span>}
+        <span className="ml-auto">{f.status === "proposed" ? "Decide in the MathVision app" : f.decided_at ? `decided ${DateTime.fromISO(f.decided_at, { zone: "utc" }).toRelative()}` : ""}</span>
       </div>
     </div>
   );
 }
 
-function defaultBody(f: FollowupView): string {
-  const first = f.student.name.split(" ")[0];
-  const parent = f.parent?.name?.split(" ")[0] ?? "there";
-  switch (f.type) {
-    case "no_show":
-      return `Hi ${parent}, ${first} missed their recent lesson. Would you like us to reschedule? Happy to find a time that works.`;
-    case "attendance_gap":
-      return `Hi ${parent}, we noticed ${first} hasn't had a lesson in a little while. Shall we book the next one to keep momentum going?`;
-    case "homework_overdue":
-      return `Hi ${parent}, a gentle reminder that ${first} has some homework due. Could you help them set aside time to finish it? Thank you!`;
-    default:
-      return `Hi ${parent}, we'd love a quick chat about ${first}'s progress. Is there a good time to call this week?`;
-  }
+function fmt(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  return `${String(Math.floor(s / 60)).padStart(2, "0")}:${String(s % 60).padStart(2, "0")}`;
 }

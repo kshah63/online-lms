@@ -3,14 +3,16 @@ import { roomIsOpen } from "@/lib/lessons/window";
 import type {
   Course,
   CourseTopic,
+  LessonFollowup,
   LessonRoomState,
   LessonSeat,
   OnlineLesson,
   Profile,
-  Report,
+  ReportDraftRow,
   Role,
   RoomConsents,
   Seat,
+  SessionReport,
   SessionStatus,
 } from "@/lib/types";
 import { displayName, NO_CONSENTS } from "@/lib/types";
@@ -156,6 +158,10 @@ export function buildDemoSessionRequests(): DemoSessionRequest[] {
     sr("20000000-0000-0000-0000-000000000006", IGCSE, ID.aarav, ID.maya,
       now.minus({ days: 1, hours: 2 }), 60, "completed", "Quadratics — the quadratic formula",
       { arrived_at: now.minus({ days: 1, hours: 2 }).toISO()!, departed_at: now.minus({ days: 1, hours: 1 }).toISO()! }),
+    // A week ago, reported — so the brief for the live lesson has a last time.
+    sr("20000000-0000-0000-0000-000000000007", SAT, ID.sofia, ID.maya,
+      now.minus({ days: 7, minutes: 10 }), 60, "completed", "SAT Math — linear systems",
+      { arrived_at: now.minus({ days: 7, minutes: 9 }).toISO()!, departed_at: now.minus({ days: 7 }).plus({ minutes: 49 }).toISO()! }),
   ];
 }
 
@@ -232,7 +238,7 @@ export function buildDemoOnlineLessons(viewer: Profile, days = 14, nowMs = Date.
     const seat = demoListingSeat(viewer, s);
     if (!seat) continue;
     const teacher = demoProfiles.find((x) => x.id === s.assigned_teacher_id) ?? null;
-    const report = demoReports.find((r) => r.session_id === s.id) ?? null;
+    const report = demoSessionReports.find((r) => r.session_request_id === s.id) ?? null;
     out.push({
       session_id: s.id,
       student_id: s.student_id,
@@ -249,9 +255,9 @@ export function buildDemoOnlineLessons(viewer: Profile, days = 14, nowMs = Date.
       meeting_url: s.meeting_url,
       teacher_id: teacher?.id ?? null,
       teacher_name: teacher ? displayName(teacher) : null,
-      report_id: report ? `rep-${s.id}` : null,
-      report_status: report ? (report.published_at ? "published" : "draft") : null,
-      draft_ready: s.status === "completed" && !report,
+      report_id: report?.id ?? null,
+      report_status: report?.status ?? null,
+      draft_ready: !report && s.id in demoReportDrafts,
       time_zone: s.time_zone,
       seat,
     });
@@ -276,24 +282,93 @@ export function demoChildren(parent: Profile): Profile[] {
   return demoProfiles.filter((x) => x.role === "student" && x.family_id === parent.family_id);
 }
 
-// --- legacy shapes still shown by the reports pages in demo -----------------
+// --- session_reports, lesson_report_drafts, lesson_followups -----------------
 
-export const demoReports: Report[] = [
+/** session_reports rows (written by submit_report in the app; the family reads published ones). */
+export const demoSessionReports: SessionReport[] = [
   {
-    session_id: "20000000-0000-0000-0000-000000000001",
-    teacher_id: ID.maya,
-    topics_covered: "Completing the square; vertex form of a parabola.",
-    how_student_did: "Aarav worked through 6 problems and reached vertex form independently by the end.",
-    strengths: "Strong algebraic manipulation; asked good clarifying questions.",
-    areas_to_work: "Sign errors when the coefficient of x² is not 1 — worth more practice.",
+    id: "30000000-0000-0000-0000-000000000001",
+    session_request_id: "20000000-0000-0000-0000-000000000001",
+    student_id: ID.aarav,
+    status: "published",
+    course_name: IGCSE.name,
+    topic: "Completing the square",
+    topic_completed: true,
+    topics_not_done: null,
+    understanding: 8,
+    otr: null,
+    gp: 5.5,
+    prev_hw: "Most of it Done",
     homework: "Exercise 4B questions 1–8.",
-    rating: 4,
-    teacher_notes: "Worked through 6 problems; strong on the algebra, careless with signs.",
-    ai_drafted: true,
-    needs_followup: false,
-    followup_reason: null,
+    remarks:
+      "Aarav worked through six problems on completing the square and reached vertex form on his own by the end. His algebra is strong and he asked good questions; sign errors when the x² coefficient is not 1 are the thing to practise.",
+    written_tests: [{ name: "Quick check", score: 4, out_of: 5, percent: 80 }],
+    has_upcoming_tests: false,
     published_at: DateTime.utc().minus({ hours: 1 }).toISO(),
+    created_at: DateTime.utc().minus({ hours: 1, minutes: 5 }).toISO()!,
   },
+  {
+    id: "30000000-0000-0000-0000-000000000007",
+    session_request_id: "20000000-0000-0000-0000-000000000007",
+    student_id: ID.sofia,
+    status: "published",
+    course_name: SAT.name,
+    topic: "Linear systems",
+    topic_completed: false,
+    topics_not_done: "systems with no solution",
+    understanding: 6,
+    otr: 70,
+    gp: 4.75,
+    prev_hw: "Yes",
+    homework: "Practice set 3, questions 1–10 (substitution and elimination).",
+    remarks:
+      "Sofia solved linear systems by substitution confidently and is getting faster at elimination. We ran out of time before systems with no solution, so that is where we pick up. A little more speed on the arithmetic would help on the timed sections.",
+    written_tests: [],
+    has_upcoming_tests: true,
+    published_at: DateTime.utc().minus({ days: 6, hours: 20 }).toISO(),
+    created_at: DateTime.utc().minus({ days: 6, hours: 22 }).toISO()!,
+  },
+];
+
+/** lesson_report_drafts: what lesson-finalize drafted for a lesson with no report yet. */
+export const demoReportDrafts: Record<string, ReportDraftRow> = {
+  "20000000-0000-0000-0000-000000000006": {
+    session_id: "20000000-0000-0000-0000-000000000006",
+    draft: {
+      topic: "Quadratic equations",
+      topic_completed: true,
+      topics_not_done: null,
+      understanding: 7,
+      otr: null,
+      gp: null,
+      prev_hw: "Yes",
+      homework: "Quadratic formula worksheet — questions 1–6.",
+      remarks:
+        "Aarav used the quadratic formula on eight equations today and got seven right. He is careful with the discriminant and spotted when there was no real root. Simplifying surds at the end is the next thing to tidy up.",
+      written_tests: [{ name: "Quick check", score: 7, out_of: 8 }],
+      has_upcoming_tests: false,
+    },
+    rationale: "Understanding 7: seven of eight correct with one surd slip. No oral check was scored, so no OTR.",
+    source: "ai",
+    created_at: DateTime.utc().minus({ days: 1, minutes: 55 }).toISO()!,
+    used_at: null,
+  },
+};
+
+/** lesson_followups: proposed from the transcript; decided in the centre app. */
+export const demoFollowups: LessonFollowup[] = [
+  fu("40000000-0000-0000-0000-000000000001", "20000000-0000-0000-0000-000000000001", ID.aarav, "win", "share_with_parent", "normal",
+    "Reached vertex form independently", "Aarav completed the square on his own by the end of the lesson.",
+    "I think I've got it now — it's always half the coefficient.", 1_873_000,
+    "Aarav reached vertex form on his own today — a real step forward on completing the square.", "proposed", 1),
+  fu("40000000-0000-0000-0000-000000000002", "20000000-0000-0000-0000-000000000006", ID.aarav, "misconception", "note_for_next_lesson", "normal",
+    "Surds not simplified", "Leaves √12 unsimplified; worth a five-minute recap before the next quadratics lesson.",
+    "Is √12 fine as the answer?", 2_410_000, null, "proposed", 1),
+  fu("40000000-0000-0000-0000-000000000003", "20000000-0000-0000-0000-000000000007", ID.sofia, "exam_upcoming", "staff_task", "high",
+    "SAT sitting in three weeks", "Sofia mentioned her SAT date; the office may want to add a timed practice test before then.",
+    "My test is on the first Saturday of next month.", 312_000, null, "approved", 6),
+  fu("40000000-0000-0000-0000-000000000004", "20000000-0000-0000-0000-000000000007", ID.sofia, "tech_issue", "staff_call", "low",
+    "Audio dropped twice", "Sofia's audio cut out twice in the first ten minutes.", null, 540_000, null, "dismissed", 6),
 ];
 
 // --- tiny builders -----------------------------------------------------------
@@ -311,6 +386,44 @@ function p(id: string, role: Role, name: string, family_id: string | null, grade
     approved_at: DateTime.utc().minus({ months: 6 }).toISO(),
     deactivated_at: null,
     report_auto_approve: false,
+  };
+}
+
+function fu(
+  id: string,
+  sessionId: string,
+  studentId: string,
+  kind: LessonFollowup["kind"],
+  action: LessonFollowup["action"],
+  priority: string,
+  title: string,
+  detail: string,
+  quote: string | null,
+  atMs: number,
+  suggested: string | null,
+  status: LessonFollowup["status"],
+  ageDays: number,
+): LessonFollowup {
+  const student = demoProfiles.find((x) => x.id === studentId)!;
+  const course = buildDemoSessionRequests().find((s) => s.id === sessionId);
+  const decided = status === "proposed" ? null : DateTime.utc().minus({ days: ageDays, hours: -2 }).toISO();
+  return {
+    id,
+    session_id: sessionId,
+    student_id: studentId,
+    family_id: student.family_id,
+    department_id: course?.department_id ?? null,
+    kind,
+    action,
+    priority,
+    title,
+    detail,
+    quote,
+    at_ms: atMs,
+    suggested_parent_message: suggested,
+    status,
+    decided_at: decided,
+    created_at: DateTime.utc().minus({ days: ageDays, hours: 1 }).toISO()!,
   };
 }
 
