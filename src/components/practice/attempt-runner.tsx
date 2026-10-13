@@ -61,6 +61,7 @@ export const AttemptRunner = forwardRef<AttemptRunnerHandle, AttemptRunnerProps>
   const [confirm, setConfirm] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const dirty = useRef(new Set<string>());
+  const inflight = useRef(new Map<string, Promise<MarkResult | null>>());
   const responsesRef = useRef(responses);
   responsesRef.current = responses;
 
@@ -68,22 +69,30 @@ export const AttemptRunner = forwardRef<AttemptRunnerHandle, AttemptRunnerProps>
   const submitted = status !== "in_progress";
   const answered = useMemo(() => questions.filter((q) => isAnswered(responses[q.id] ?? null)).length, [questions, responses]);
 
+  // One save per question at a time: a "Check answer" right after typing joins the blur's save instead of racing it.
   const save = useCallback(
-    async (q: Question): Promise<MarkResult | null> => {
+    (q: Question): Promise<MarkResult | null> => {
+      const running = inflight.current.get(q.id);
+      if (running) return running;
       const r = responsesRef.current[q.id] ?? null;
-      if (!r || !isAnswered(r)) return null;
+      if (!r || !isAnswered(r)) return Promise.resolve(null);
       setSaving((s) => ({ ...s, [q.id]: true }));
-      try {
-        const verdict = await answerQuestionAction(attemptId, q.id, r);
-        dirty.current.delete(q.id);
-        setError(null);
-        return verdictToMark(verdict, q.marks);
-      } catch (e) {
-        setError(e instanceof Error ? e.message : "Your answer could not be saved.");
-        return null;
-      } finally {
-        setSaving((s) => ({ ...s, [q.id]: false }));
-      }
+      const p = (async () => {
+        try {
+          const verdict = await answerQuestionAction(attemptId, q.id, r);
+          dirty.current.delete(q.id);
+          setError(null);
+          return verdictToMark(verdict, q.marks);
+        } catch (e) {
+          setError(e instanceof Error ? e.message : "Your answer could not be saved.");
+          return null;
+        } finally {
+          inflight.current.delete(q.id);
+          setSaving((s) => ({ ...s, [q.id]: false }));
+        }
+      })();
+      inflight.current.set(q.id, p);
+      return p;
     },
     [attemptId],
   );
@@ -233,7 +242,7 @@ export const AttemptRunner = forwardRef<AttemptRunnerHandle, AttemptRunnerProps>
             {!isTest && !submitted && !checked && (
               <div className="flex items-center justify-end gap-2">
                 {saving[q.id] && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                <Button size="sm" variant="outline" onClick={() => void check(q)} disabled={!isAnswered(responses[q.id] ?? null) || saving[q.id] || locked}>
+                <Button size="sm" variant="outline" onClick={() => void check(q)} disabled={!isAnswered(responses[q.id] ?? null) || locked}>
                   Check answer
                 </Button>
               </div>

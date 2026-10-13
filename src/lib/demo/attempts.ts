@@ -106,10 +106,10 @@ export function resetDemoPractice(): void {
 
 // --- the seed ------------------------------------------------------------------
 
-const Q = (n: number) => `50000000-0000-0000-0000-0000000000${String(n).padStart(2, "0")}`;
-const S = (n: number) => `51000000-0000-0000-0000-0000000000${String(n).padStart(2, "0")}`;
-const A = (n: number) => `52000000-0000-0000-0000-0000000000${String(n).padStart(2, "0")}`;
-const T = (n: number) => `53000000-0000-0000-0000-0000000000${String(n).padStart(2, "0")}`;
+const Q = (n: number) => `50000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const S = (n: number) => `51000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const A = (n: number) => `52000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
+const T = (n: number) => `53000000-0000-0000-0000-${String(n).padStart(12, "0")}`;
 
 /** Stable ids for scripts: the seeded assignments and attempts. */
 export const DEMO_PRACTICE_IDS = {
