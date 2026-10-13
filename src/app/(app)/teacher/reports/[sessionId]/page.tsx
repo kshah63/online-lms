@@ -4,6 +4,7 @@ import { ChevronLeft, ExternalLink } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader } from "@/components/page-header";
 import { ReportStateBadge, appSessionUrl } from "@/components/report-state-badge";
+import { RecordingLink } from "@/components/lesson/recording-link";
 import { Avatar } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -46,6 +47,7 @@ export default async function ReportEditorPage({ params }: { params: { sessionId
         actions={
           <div className="flex items-center gap-3 text-sm text-muted-foreground">
             <ReportStateBadge lesson={lesson} />
+            <RecordingLink viewer={teacher} sessionId={lesson.session_id} tz={tz} />
             <span className="flex items-center gap-2">
               <Avatar name={lesson.student_name} size={28} />
               {lesson.student_name}

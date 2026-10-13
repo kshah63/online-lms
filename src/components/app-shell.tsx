@@ -123,6 +123,14 @@ export function AppShell({
                   <div className="text-xs font-normal text-muted-foreground">{ROLE_LABEL[profile.role]}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
+                {(profile.role === "parent" || profile.role === "student") && (
+                  <DropdownMenuItem asChild className="cursor-pointer">
+                    <Link href="/settings/consents">
+                      <ShieldCheck className="h-4 w-4" />
+                      Lesson consents
+                    </Link>
+                  </DropdownMenuItem>
+                )}
                 <DropdownMenuItem asChild className="cursor-pointer">
                   <Link href="/settings/security">
                     <ShieldCheck className="h-4 w-4" />

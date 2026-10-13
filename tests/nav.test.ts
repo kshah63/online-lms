@@ -3,9 +3,9 @@ import { navForRole, navIsActive } from "@/lib/nav";
 import { ROLES } from "@/lib/types";
 
 describe("navForRole — the sidebar per mv-app role", () => {
-  it("gives the office the board, coaching QA, follow-ups and the question bank", () => {
+  it("gives the office the board, coaching QA, follow-ups, the question bank and progress", () => {
     for (const role of ["admin", "staff", "support"] as const) {
-      expect(navForRole(role).map((n) => n.label)).toEqual(["Board", "Coaching QA", "Follow-ups", "Question bank"]);
+      expect(navForRole(role).map((n) => n.label)).toEqual(["Board", "Coaching QA", "Follow-ups", "Question bank", "Progress"]);
     }
   });
 

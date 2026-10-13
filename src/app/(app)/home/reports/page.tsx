@@ -8,6 +8,7 @@ import { Separator } from "@/components/ui/separator";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { getChildren } from "@/lib/data/family";
 import { getPublishedFamilyReports } from "@/lib/data/reports";
+import { RecordingLink } from "@/components/lesson/recording-link";
 import { displayName } from "@/lib/types";
 
 /** Published session_reports for the family (RLS: status published, family_id = my_family_id()). */
@@ -80,6 +81,7 @@ export default async function ReportsPage() {
                   </>
                 )}
                 {r.has_upcoming_tests && <p className="text-xs text-muted-foreground">A school test or exam is coming up.</p>}
+                {r.session_request_id && <RecordingLink viewer={profile} sessionId={r.session_request_id} tz={tz} />}
               </CardContent>
             </Card>
           ))}

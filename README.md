@@ -73,10 +73,13 @@ write to a booking's report is `submit_report`.
 | --- | --- | --- |
 | `/lesson/[sessionId]` | host, learner, observer | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event`; the activity panel: `create_practice_set(quick_check)`, `assign_practice(in_session)`, `upsert_question` (one-off draft), `live_attempts` + postgres_changes on practice_attempts, `log_lesson_event` kind quick_check_result |
 | `/teacher` | teacher | `my_online_lessons(14)`: today, coming up, recent, each with Join in the window, the brief, and the report state |
-| `/teacher/brief/[sessionId]` | teacher | `lesson_room_state` + the last `session_reports` / `lesson_report_drafts` + `lesson_feedback` moments → `composeBrief` |
+| `/teacher/brief/[sessionId]` | teacher (host), in-charge and admin (observers) | `lesson_brief_facts` + `my_online_lessons` + `lesson_room_state` → `composeBrief`; the host marks topics through `set_topic_status`; `lesson_recordings` for the Recording link |
 | `/teacher/reports`, `/teacher/reports/[sessionId]` | teacher | lessons awaiting a report; the editor prefilled from `lesson_report_drafts`, submitted through `submit_report` |
 | `/teacher/coaching`, `/coaching/[sessionId]` | teacher, office | `lesson_feedback`, `lesson_metrics`, `lesson_transcripts`, `lesson_events` |
-| `/home`, `/home/reports`, `/home/progress` | student, parent | `my_online_lessons`, published `session_reports`; progress is sample data until `child_progress` lands |
+| `/home`, `/home/reports` | student, parent | `my_online_lessons`, published `session_reports` (with the Recording link when `lesson_recordings` is readable) |
+| `/home/progress`, `/home/progress/[studentId]` | student, parent (own / each child); in-charge, support, admin by ticket or the students list | `child_progress(p_student_id, p_course_id)` mapped through `src/lib/syllabus/from-rpc.ts`; courses from `session_requests.course_id` under RLS; a course picker when there is more than one |
+| `/settings/consents` | student, parent | `lesson_consents` under RLS, read-only (managed in the MathVision app) |
+| `/api/lesson/[sessionId]/recording` | anyone `lesson_recordings` lets read | selects the row under RLS, asks Daily for a short-lived access link with `DAILY_API_KEY`, redirects; `/recordings/demo` in demo mode |
 | `/admin` | admin, in-charge, support | `my_online_lessons(1)` as an observer |
 | `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |
 | `/bank` | admin, in-charge (`manages_course`) | `practice_questions`, `practice_sets`, `student_courses` under RLS; writes `upsert_question`, `approve_question`, `retire_question`, `store_extracted_questions`, `create_practice_set`, `assign_practice`; images to `practice-images` |

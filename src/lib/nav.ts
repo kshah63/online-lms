@@ -19,6 +19,7 @@ const OFFICE_NAV: NavItem[] = [
   { href: "/admin/coaching", label: "Coaching QA", icon: "sparkles" },
   { href: "/admin/followups", label: "Follow-ups", icon: "list" },
   { href: "/bank", label: "Question bank", icon: "bank" },
+  { href: "/home/progress", label: "Progress", icon: "progress" },
 ];
 
 const TEACHER_NAV: NavItem[] = [
