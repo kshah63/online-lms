@@ -142,24 +142,28 @@ export function QuestionCard({
 
         {question.type === "worked" && (
           <div className="space-y-2">
-            <p className="text-xs text-muted-foreground">Show your working on the notebook or attach a photo, then give your final answer.</p>
+            <p className="text-xs text-muted-foreground">{onAttachNotebook || onAttachPhoto ? "Show your working on the notebook or attach a photo, then give your final answer." : "Work it out on paper and give your final answer; your teacher marks the working."}</p>
             <div className="flex flex-wrap items-center gap-2">
-              <button
-                type="button"
-                disabled={disabled || attaching}
-                onClick={onAttachNotebook}
-                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-secondary disabled:opacity-60"
-              >
-                {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <NotebookPen className="h-4 w-4" />} Work on notebook
-              </button>
-              <button
-                type="button"
-                disabled={disabled || attaching}
-                onClick={onAttachPhoto}
-                className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-secondary disabled:opacity-60"
-              >
-                <Camera className="h-4 w-4" /> Attach photo
-              </button>
+              {onAttachNotebook && (
+                <button
+                  type="button"
+                  disabled={disabled || attaching}
+                  onClick={onAttachNotebook}
+                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-secondary disabled:opacity-60"
+                >
+                  {attaching ? <Loader2 className="h-4 w-4 animate-spin" /> : <NotebookPen className="h-4 w-4" />} Work on notebook
+                </button>
+              )}
+              {onAttachPhoto && (
+                <button
+                  type="button"
+                  disabled={disabled || attaching}
+                  onClick={onAttachPhoto}
+                  className="inline-flex items-center gap-1.5 rounded-md border px-3 py-1.5 text-sm hover:bg-secondary disabled:opacity-60"
+                >
+                  <Camera className="h-4 w-4" /> Attach photo
+                </button>
+              )}
               {response?.type === "worked" && response.evidence.length > 0 && (
                 <span className="text-xs text-muted-foreground">
                   {response.evidence.length} attachment{response.evidence.length > 1 ? "s" : ""}
@@ -195,6 +199,16 @@ export function QuestionCard({
                 </span>
               )}
             </p>
+            {showSolution && question.type === "numeric" && Number.isFinite(question.answer) && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Answer: <span className="font-medium text-foreground">{question.answer}{question.unit ? ` ${question.unit}` : ""}</span>
+              </p>
+            )}
+            {showSolution && question.type === "short" && question.answers[0] && (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Answer: <span className="font-medium text-foreground">{question.answers[0]}</span>
+              </p>
+            )}
             {showSolution && question.worked_solution && (
               <details className="mt-1.5 rounded-md bg-secondary/60 p-2 text-sm">
                 <summary className="cursor-pointer text-xs font-medium text-muted-foreground">Worked solution</summary>
