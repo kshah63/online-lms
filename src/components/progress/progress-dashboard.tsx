@@ -3,6 +3,7 @@
 import { useId, useMemo, useState } from "react";
 import { AlertTriangle, CheckCircle2, Circle, CircleDashed, CircleDot, Table2 } from "lucide-react";
 import { DateTime } from "luxon";
+import type { ProgressReport } from "@/lib/syllabus/from-rpc";
 import { label as statusLabel, type TopicStatus } from "@/lib/syllabus/progress";
 import type { ProgressView } from "@/lib/syllabus/view";
 import { cn } from "@/lib/utils";
@@ -16,7 +17,7 @@ import { cn } from "@/lib/utils";
 
 const pct = (x: number | null) => (x == null ? "—" : `${Math.round(x * 100)}%`);
 
-export function ProgressDashboard({ view }: { view: ProgressView }) {
+export function ProgressDashboard({ view, reports = [] }: { view: ProgressView; reports?: ProgressReport[] }) {
   const s = view.summary;
   const coveredOrBetter = s.counts.covered + s.counts.secure + s.counts.needs_work;
   const itemsThisWindow = view.weekly.reduce((a, w) => a + w.items, 0);
@@ -53,6 +54,7 @@ export function ProgressDashboard({ view }: { view: ProgressView }) {
         <div className="space-y-4">
           <NextSteps view={view} />
           <RecentTests tests={view.tests} />
+          <RecentReports reports={reports} />
         </div>
       </div>
     </div>
@@ -344,7 +346,7 @@ function SyllabusTable({ topics }: { topics: ProgressView["topics"] }) {
               <td className="py-1.5 text-right tabular-nums">{pct(t.progress.accuracy)}</td>
               <td className="py-1.5 text-right tabular-nums">{t.progress.practice_items || "—"}</td>
               <td className="hidden py-1.5 text-right sm:table-cell" style={{ color: "var(--viz-text-2)" }}>
-                {t.progress.last_activity ? DateTime.fromISO(t.progress.last_activity).toRelative({ unit: ["days", "weeks"] }) : "—"}
+                {t.progress.last_activity ? relativeDays(t.progress.last_activity) : "—"}
               </td>
             </tr>
           ))}
@@ -424,6 +426,47 @@ function RecentTests({ tests }: { tests: ProgressView["tests"] }) {
   );
 }
 
+/** The last published reports on this course: what the teacher wrote, as the family already reads it in the app. */
+function RecentReports({ reports }: { reports: ProgressReport[] }) {
+  return (
+    <div className="rounded-xl border p-4" style={{ background: "var(--viz-surface)", borderColor: "var(--viz-border)" }}>
+      <div className="mb-2 text-sm font-semibold" style={{ color: "var(--viz-text)" }}>
+        Recent reports
+      </div>
+      {reports.length === 0 ? (
+        <p className="text-sm" style={{ color: "var(--viz-text-2)" }}>
+          No published reports on this course yet.
+        </p>
+      ) : (
+        <ul className="space-y-2 text-sm" style={{ color: "var(--viz-text)" }}>
+          {reports.map((r) => (
+            <li key={r.id}>
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate">
+                  {r.topic ?? "Lesson"}
+                  <span className="ml-1 text-xs" style={{ color: "var(--viz-text-2)" }}>
+                    {DateTime.fromISO(r.at).toFormat("d LLL")}
+                  </span>
+                </span>
+                {r.understanding != null && (
+                  <span className="shrink-0 text-xs tabular-nums" style={{ color: "var(--viz-text-2)" }}>
+                    understanding {r.understanding}/10
+                  </span>
+                )}
+              </div>
+              {r.homework && (
+                <div className="line-clamp-1 text-xs" style={{ color: "var(--viz-text-2)" }}>
+                  Homework: {r.homework}
+                </div>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 // --- helpers ---------------------------------------------------------------
 
 function niceMax(n: number): number {
@@ -449,6 +492,16 @@ function roundedRight(x: number, y: number, w: number, h: number, r: number): st
 
 function truncate(s: string, n: number): string {
   return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+
+/** "today", "yesterday", "N days ago", then weeks — never "0 weeks ago". */
+function relativeDays(iso: string): string {
+  const days = Math.floor(DateTime.now().diff(DateTime.fromISO(iso), "days").days);
+  if (days <= 0) return "today";
+  if (days === 1) return "yesterday";
+  if (days < 14) return `${days} days ago`;
+  const weeks = Math.round(days / 7);
+  return `${weeks} weeks ago`;
 }
 
 export function statusTone(status: TopicStatus): string {

@@ -5,21 +5,29 @@
 // sentences. Nothing is invented: a section with nothing to say is omitted.
 // ============================================================================
 
+export interface BriefReport {
+  at: string;
+  topic: string | null;
+  topic_completed: boolean | null;
+  topics_not_done?: string | null;
+  understanding: number | null;
+  homework: string | null;
+  remarks: string | null;
+  /** Who wrote it, when the room knows (the brief may show another teacher's report). */
+  teacher_name?: string | null;
+}
+
 export interface BriefInput {
   student: { first_name: string; grade?: string | null; school?: string | null };
   course: string;
   session: { starts_at: string; topic?: string | null; agenda?: string | null; mode?: "online" | "in_person" };
-  last_report?: {
-    at: string;
-    topic: string | null;
-    topic_completed: boolean | null;
-    topics_not_done?: string | null;
-    understanding: number | null;
-    homework: string | null;
-    remarks: string | null;
-  } | null;
+  last_report?: BriefReport | null;
+  /** Older published reports on this student and course, newest first — by any teacher. */
+  earlier_reports?: BriefReport[];
   /** The teacher's own coaching moments from the last lesson with this student. */
   coaching_moments?: { kind: "strength" | "improvement"; comment: string }[];
+  /** Where a teacher marked the student on the syllabus (syllabus_teacher_marks). */
+  teacher_marks?: { label: string; status: string; at: string }[];
   /** Standing / session / reminder notes about the student (staff-written). */
   notes?: { kind: string; body: string; author?: string | null }[];
   homework?: { description: string; status: string; due_at?: string | null; marks?: string | null }[];
@@ -70,6 +78,13 @@ export function composeBrief(input: BriefInput): Brief {
     if (r.understanding != null) items.push(`Understanding was ${r.understanding}/10.`);
     if (r.homework) items.push(`Homework set: ${r.homework}`);
     if (r.remarks) items.push(`Report said: "${r.remarks.length > 180 ? r.remarks.slice(0, 177) + "…" : r.remarks}"`);
+    if (r.teacher_name) items.push(`Written by ${r.teacher_name}.`);
+    for (const e of input.earlier_reports ?? []) {
+      const bits: string[] = [];
+      if (e.understanding != null) bits.push(`understanding ${e.understanding}/10`);
+      if (e.teacher_name) bits.push(`by ${e.teacher_name}`);
+      items.push(`Earlier, ${daysAgo(e.at, now)}: ${e.topic ?? "a lesson"}${e.topic_completed === false ? " (not finished)" : ""}${bits.length ? ` — ${bits.join(", ")}` : ""}.`);
+    }
     if (items.length) sections.push({ title: "Last time", items });
     if (r.topic_completed === false && r.topic) focus.push(`Finish ${r.topic}${r.topics_not_done ? ` — ${r.topics_not_done}` : ""}.`);
     if (r.understanding != null && r.understanding <= 5 && r.topic) focus.push(`Re-check ${r.topic}; understanding was only ${r.understanding}/10.`);
@@ -102,6 +117,19 @@ export function composeBrief(input: BriefInput): Brief {
     sections.push({ title: "Practice and weak spots", items });
     const first = weak[0] ?? (practice[0] && practice[0].accuracy != null && practice[0].accuracy < 0.6 ? { label: practice[0].topic_label } : null);
     if (first) focus.push(`Spend ten minutes on ${first.label} — it is the weakest area.`);
+  }
+
+  // Syllabus marks (a teacher's explicit word on where the student stands)
+  const marks = input.teacher_marks ?? [];
+  if (marks.length) {
+    const items: string[] = [];
+    for (const status of ["needs_work", "in_progress", "covered", "secure"]) {
+      const labels = marks.filter((m) => m.status === status).map((m) => m.label);
+      if (labels.length) items.push(`${capitalise(status.replace("_", " "))}: ${labels.join(", ")}`);
+    }
+    sections.push({ title: "Syllabus marks", items });
+    const needsWork = marks.filter((m) => m.status === "needs_work").sort((a, b) => b.at.localeCompare(a.at))[0];
+    if (needsWork && !weak.length) focus.push(`Revisit ${needsWork.label} — marked needs work ${daysAgo(needsWork.at, now)}.`);
   }
 
   // Coaching
@@ -137,7 +165,11 @@ export function composeBrief(input: BriefInput): Brief {
 }
 
 function statusWord(s: string): string {
-  return { assigned: "Not yet done", submitted: "Submitted, to review", incomplete: "Sent back" }[s] ?? s;
+  return { assigned: "Not yet done", started: "Started, not finished", submitted: "Submitted, to review", incomplete: "Sent back" }[s] ?? s;
+}
+
+function capitalise(s: string): string {
+  return s.charAt(0).toUpperCase() + s.slice(1);
 }
 
 function dedupe(xs: string[]): string[] {
