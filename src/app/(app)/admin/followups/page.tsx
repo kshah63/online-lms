@@ -10,7 +10,8 @@ import { cn } from "@/lib/utils";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { listFollowups, type FollowupView } from "@/lib/data/followups";
 import { OFFICE_ROLES } from "@/lib/permissions";
-import { FOLLOWUP_ACTION_LABEL, FOLLOWUP_KIND_LABEL, type FollowupKind, type FollowupStatus } from "@/lib/types";
+import { FOLLOWUP_ACTION_LABEL, FOLLOWUP_KIND_LABEL, type FollowupKind, type FollowupStatus, type Profile } from "@/lib/types";
+import { FollowupDecision } from "@/components/followups/followup-decision";
 
 const STATUSES: FollowupStatus[] = ["proposed", "approved", "done", "dismissed"];
 const KINDS = Object.keys(FOLLOWUP_KIND_LABEL) as FollowupKind[];
@@ -23,9 +24,10 @@ const STATUS_VARIANT: Record<FollowupStatus, "warning" | "default" | "success" |
 };
 
 /**
- * What lesson-finalize proposed from each lesson's transcript, read-only.
- * Approving one happens in the centre app (approve_followup raises the
- * message, task or note there); this page only shows what is waiting.
+ * What lesson-finalize proposed from each lesson's transcript. An in-charge
+ * or admin decides here through the same two doors the app will use
+ * (approve_followup, dismiss_followup): the message, task or note is created
+ * in the app's own tables, as the approver. Support reads only.
  */
 export default async function AdminFollowupsPage({ searchParams }: { searchParams: { status?: string; kind?: string } }) {
   const viewer = await requireRole(...OFFICE_ROLES);
@@ -57,7 +59,7 @@ export default async function AdminFollowupsPage({ searchParams }: { searchParam
     <div>
       <PageHeader
         title="Follow-ups"
-        description="What each lesson's transcript suggested the centre should act on. Approval happens in the MathVision app."
+        description="What each lesson's transcript suggested the centre should act on. Approving one sends the message, files the task or writes the note in the MathVision app, as you."
       />
 
       <div className="mb-4 grid grid-cols-2 gap-3 lg:grid-cols-4">
@@ -112,7 +114,7 @@ export default async function AdminFollowupsPage({ searchParams }: { searchParam
       ) : (
         <div className="space-y-3">
           {visible.map((f) => (
-            <FollowupRow key={f.id} f={f} tz={tz} />
+            <FollowupRow key={f.id} f={f} tz={tz} viewer={viewer} />
           ))}
         </div>
       )}
@@ -120,7 +122,8 @@ export default async function AdminFollowupsPage({ searchParams }: { searchParam
   );
 }
 
-function FollowupRow({ f, tz }: { f: FollowupView; tz: string }) {
+function FollowupRow({ f, tz, viewer }: { f: FollowupView; tz: string; viewer: Profile }) {
+  const decides = viewer.role === "admin" || viewer.role === "staff";
   const when = f.lesson ? DateTime.fromISO(f.lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL") : DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL");
   return (
     <div className="flex flex-col gap-3 rounded-xl border bg-card p-4 shadow-sm">
@@ -151,8 +154,9 @@ function FollowupRow({ f, tz }: { f: FollowupView; tz: string }) {
       <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-muted-foreground">
         <span>Suggested action: {FOLLOWUP_ACTION_LABEL[f.action]}</span>
         {f.suggested_parent_message && <span className="truncate" title={f.suggested_parent_message}>Draft to the parent: &ldquo;{f.suggested_parent_message}&rdquo;</span>}
-        <span className="ml-auto">{f.status === "proposed" ? "Decide in the MathVision app" : f.decided_at ? `decided ${DateTime.fromISO(f.decided_at, { zone: "utc" }).toRelative()}` : ""}</span>
+        <span className="ml-auto">{f.status === "proposed" ? (decides ? "" : "Waiting for the room's in-charge") : f.decided_at ? `decided ${DateTime.fromISO(f.decided_at, { zone: "utc" }).toRelative()}` : ""}</span>
       </div>
+      {decides && <FollowupDecision id={f.id} action={f.action} status={f.status} suggestedParentMessage={f.suggested_parent_message} />}
     </div>
   );
 }
