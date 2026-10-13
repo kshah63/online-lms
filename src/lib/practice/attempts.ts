@@ -28,6 +28,8 @@ export const PRACTICE_KIND_LABEL: Record<PracticeKind, string> = {
 
 /** One row of rpc my_practice(p_days). */
 export interface PracticeRow {
+  /** my_practice's own total, on every row: the list stops at 200. */
+  total_count?: number;
   assignment_id: string;
   set_id: string;
   set_title: string;
@@ -189,18 +191,26 @@ export function toMarkResult(row: Pick<AttemptQuestionRow, "type" | "response" |
   return { status, score, max, feedback: row.feedback ?? (status === "correct" ? "Correct." : status === "partial" ? "Partly right." : "Not quite.") };
 }
 
-/** What answer_question returns: the verdict, never the answer. */
+/**
+ * What answer_question returns: the verdict, never the answer. The database
+ * ports the room's own marking rules, so its vocabulary is the same five
+ * statuses (partial credit on a multi-select, unanswered), plus the
+ * student-facing feedback sentence it composed.
+ */
 export interface AnswerVerdict {
   is_correct: boolean | null;
   marks_awarded: number | null;
-  status: "correct" | "incorrect" | "pending_review";
+  status: "correct" | "incorrect" | "partial" | "unanswered" | "pending_review";
+  feedback?: string | null;
 }
 
 export function verdictToMark(v: AnswerVerdict, max: number): MarkResult {
-  if (v.status === "pending_review") return { status: "pending_review", score: 0, max, feedback: "Submitted — your working will be marked." };
+  if (v.status === "pending_review") return { status: "pending_review", score: 0, max, feedback: v.feedback ?? "Submitted — your working will be marked." };
   const score = v.marks_awarded ?? (v.is_correct ? max : 0);
-  if (v.status === "correct") return { status: "correct", score, max, feedback: "Correct." };
-  return { status: score > 0 ? "partial" : "incorrect", score, max, feedback: score > 0 ? "Partly right." : "Not quite." };
+  if (v.status === "correct") return { status: "correct", score, max, feedback: v.feedback ?? "Correct." };
+  if (v.status === "unanswered") return { status: "unanswered", score: 0, max, feedback: v.feedback ?? "No answer given." };
+  const status = v.status === "partial" || score > 0 ? "partial" : "incorrect";
+  return { status, score, max, feedback: v.feedback ?? (status === "partial" ? "Partly right." : "Not quite.") };
 }
 
 export interface SubmitResult {

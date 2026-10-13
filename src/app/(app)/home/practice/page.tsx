@@ -72,7 +72,11 @@ export default async function PracticePage() {
               </div>
             )}
           </section>
-          {rows.length >= 200 && <p className="text-sm text-muted-foreground">Showing the first 200 of your practice; older rows are in the MathVision app.</p>}
+          {rows.length >= 200 && (
+            <p className="text-sm text-muted-foreground">
+              Showing the first 200{rows[0]?.total_count ? ` of ${rows[0].total_count}` : ""} of your practice; older rows are in the MathVision app.
+            </p>
+          )}
         </div>
       )}
     </div>
