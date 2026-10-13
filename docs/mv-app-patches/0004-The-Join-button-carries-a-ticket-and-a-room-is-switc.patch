@@ -1,0 +1,1497 @@
+From 3092ce3a96ee01f370e7656cff0161ec48a1c28b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 16:21:22 +0000
+Subject: [PATCH 4/9] The Join button carries a ticket, and a room is switched
+ on from Departments
+MIME-Version: 1.0
+Content-Type: text/plain; charset=UTF-8
+Content-Transfer-Encoding: 8bit
+
+The app's side of the lesson room. EXPO_PUBLIC_ROOM_URL names the room's
+host; empty means the platform is off in that build and every online
+session keeps its Zoom link. A session whose meeting_url sits on that host
+joins on a single-use ticket from room-ticket, opened in the in-app browser
+sheet; the breakout caption and the office's override controls are hidden
+for it, since the one thing they can do to a room link is clear it away.
+If the room cannot be reached the centre's Zoom link opens instead; if the
+room refuses this person, its sentence is shown and nothing else opens.
+
+The teacher's Write tab lists online lessons a fortnight each way from
+my_online_lessons, with Join inside the lesson's window and the report's
+state once it is over. Account → Departments gains a "Lesson platform"
+On / Off per room, drawn only on a build that knows the room's address.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016Yf774TAZaYcnfPt2CdeHJ
+---
+ .env.example                                  |   3 +
+ .../the-join-button-carries-a-ticket.test.tsx | 385 ++++++++++++++++++
+ ...he-write-pile-says-where-it-stops.test.tsx |  55 ++-
+ app.config.ts                                 |   8 +
+ app/admin/departments.tsx                     | 107 ++++-
+ app/reports/index.tsx                         | 267 ++++++++----
+ app/sessions/[id].tsx                         |  41 +-
+ docs/DEPLOYMENT.md                            |  32 +-
+ docs/GETTING_STARTED.md                       |   1 +
+ docs/RUNBOOK.md                               |  17 +-
+ docs/SCREENS.md                               |  19 +
+ src/lib/env.ts                                |  16 +
+ src/lib/lessons.ts                            | 161 ++++++++
+ 13 files changed, 1004 insertions(+), 108 deletions(-)
+ create mode 100644 __smoke__/the-join-button-carries-a-ticket.test.tsx
+ create mode 100644 src/lib/lessons.ts
+
+diff --git a/.env.example b/.env.example
+index 528619a..3a27b3b 100644
+--- a/.env.example
++++ b/.env.example
+@@ -21,3 +21,6 @@ EXPO_PUBLIC_SUPPORT_PHONE=
+ 
+ # Set by EAS; only needed locally if you run `eas build` from this machine.
+ EAS_PROJECT_ID=
++
++# The lesson room (room.mathvisionapp.com). Empty = the lesson platform is off in this build. Must equal edge_config.room_url.
++EXPO_PUBLIC_ROOM_URL=
+diff --git a/__smoke__/the-join-button-carries-a-ticket.test.tsx b/__smoke__/the-join-button-carries-a-ticket.test.tsx
+new file mode 100644
+index 0000000..fa824d9
+--- /dev/null
++++ b/__smoke__/the-join-button-carries-a-ticket.test.tsx
+@@ -0,0 +1,385 @@
++/**
++ * The Join button carries a ticket (the lesson room, stage 2).
++ *
++ * An online session in a department whose lesson room is on carries a
++ * meeting_url on the room's host, and that link must never be opened bare:
++ * the room is a different browser with no session of its own, so the bare
++ * link lands on its sign-in page. The session page asks room-ticket for a
++ * single-use ticket and opens THAT in the in-app browser (src/lib/lessons.ts).
++ * If the ticket cannot be had, the centre's Zoom link opens instead — a
++ * broken hand-off never cancels a lesson.
++ *
++ * Held here, for a room link: the ticket is asked for and the browser
++ * opened on its URL, Linking.openURL is never handed the room's link, and
++ * the office is not offered "Different link for this session only" or
++ * "Remove override" — the one thing those can do to a room link is clear
++ * the room away, and the INSERT-only trigger never puts it back. The
++ * breakout caption is gone too: the number is Zoom's. And for a Zoom link,
++ * every one of those is exactly as it was.
++ */
++import React from 'react';
++import { Alert, Linking, Text } from 'react-native';
++import { act, create, type ReactTestRenderer } from 'react-test-renderer';
++import { SafeAreaProvider } from 'react-native-safe-area-context';
++import * as WebBrowser from 'expo-web-browser';
++
++const METRICS = {
++  frame: { x: 0, y: 0, width: 390, height: 844 },
++  insets: { top: 47, left: 0, right: 0, bottom: 34 },
++};
++
++const mockRoom = 'https://room.mathvisionapp.com';
++const mockCentreZoom = 'https://zoom.us/j/centre';
++const mockMe = '00000000-0000-0000-0000-0000000000aa';
++const mockFamilyId = '00000000-0000-0000-0000-0000000000fb';
++const mockId = '00000000-0000-0000-0000-0000000000c1';
++const inAnHour = new Date(Date.now() + 3600_000).toISOString();
++
++const ROOM_LINK = `${mockRoom}/lesson/${mockId}`;
++const ZOOM_LINK = 'https://zoom.us/j/1';
++
++/** The session on the page — its link is what each test changes. */
++const mockSession: { value: Record<string, unknown> } = { value: {} };
++
++function sessionWith(meeting_url: string | null) {
++  return {
++    id: mockId,
++    family_id: mockFamilyId,
++    requested_by: mockMe,
++    student_id: '00000000-0000-0000-0000-0000000000b1',
++    student_name: 'Ben Tester',
++    subject: 'IB - HL Maths (Analysis)',
++    topic: 'Binomial',
++    mode: 'online',
++    requested_start: inAnHour,
++    confirmed_start: inAnHour,
++    alt_start: null,
++    proposed_start: null,
++    duration_minutes: 60,
++    notes: null,
++    status: 'confirmed',
++    department_id: '00000000-0000-0000-0000-0000000000d1',
++    course_id: '00000000-0000-0000-0000-0000000000cc',
++    booking_group_id: null,
++    rating: null,
++    is_ia: false,
++    is_ee: false,
++    has_upcoming_tests: false,
++    assigned_teacher_id: null,
++    location: null,
++    meeting_url,
++    breakout_room: 3,
++    ends_at: null,
++    time_zone: 'Asia/Singapore',
++    staff_note: null,
++    external_id: null,
++    created_at: new Date().toISOString(),
++    updated_at: new Date().toISOString(),
++  };
++}
++
++/** What room-ticket answers — swapped per test. */
++const mockInvoke = jest.fn();
++
++// The build knows the room's address; nothing else in this screen's graph
++// reads env, so the one field is the whole mock. The literal rather than
++// mockRoom: the import of lessons.ts below is hoisted above the const, so
++// the factory runs before it is assigned.
++jest.mock('../src/lib/env', () => ({ env: { roomUrl: 'https://room.mathvisionapp.com' } }));
++
++// setup.js mocks expo-web-browser without the presentation styles; the room
++// opens as a page sheet, so the enum has to exist for the call to be made.
++jest.mock('expo-web-browser', () => ({
++  openBrowserAsync: jest.fn(async () => ({ type: 'dismiss' })),
++  WebBrowserPresentationStyle: { PAGE_SHEET: 'pageSheet' },
++}));
++
++jest.mock('../src/lib/supabase', () => {
++  function chainFor(table: string) {
++    const rows = () =>
++      table === 'session_requests'
++        ? [mockSession.value]
++        : table === 'centre_schedule'
++          ? [{ id: 1, online_meeting_url: mockCentreZoom }]
++          : [];
++    const result: any = Promise.resolve({ data: rows(), error: null });
++    return new Proxy(result, {
++      get(target, prop) {
++        if (prop === 'then' || prop === 'catch' || prop === 'finally')
++          return target[prop].bind(target);
++        if (prop === 'single' || prop === 'maybeSingle')
++          return () => Promise.resolve({ data: rows()[0] ?? null, error: null });
++        return () => chainFor(table);
++      },
++    });
++  }
++  return {
++    supabase: {
++      from: (table: string) => chainFor(table),
++      rpc: () => Promise.resolve({ data: [], error: null }),
++      functions: { invoke: (...args: unknown[]) => mockInvoke(...args) },
++      ...require('./realtimeMock').createRealtime(),
++    },
++    describeError: (e: unknown) => String(e),
++  };
++});
++
++jest.mock('expo-router', () => ({
++  useRouter: () => ({ push: jest.fn(), replace: jest.fn(), back: jest.fn() }),
++  useLocalSearchParams: () => ({ id: mockId }),
++  useFocusEffect: (cb: () => void) => {
++    const { useEffect } = jest.requireActual('react');
++    useEffect(cb, [cb]);
++  },
++  Link: ({ children }: any) => children,
++  Stack: { Screen: () => null },
++  Tabs: { Screen: () => null },
++}));
++
++const mockAuth: { value: any } = { value: null };
++jest.mock('../src/context/AuthContext', () => ({ useAuth: () => mockAuth.value }));
++
++function authAs(role: string) {
++  const staff = role === 'staff' || role === 'support' || role === 'admin';
++  mockAuth.value = {
++    session: { user: { id: mockMe, email: 'x@x.test' } },
++    profile: { id: mockMe, family_id: staff ? null : mockFamilyId, role, full_name: 'T' },
++    isStaff: staff,
++  };
++}
++
++import { isRoomHostUrl } from '../src/lib/lessons';
++
++/** Every string the page renders, flattened. */
++function textIn(tree: ReactTestRenderer): string {
++  const out: string[] = [];
++  const walk = (child: unknown) => {
++    if (typeof child === 'string' || typeof child === 'number') out.push(String(child));
++    else if (Array.isArray(child)) child.forEach(walk);
++  };
++  tree.root
++    .findAll((node: any) => node.props?.children != null, { deep: true })
++    .forEach((node: any) => walk(node.props.children));
++  return out.join('');
++}
++
++const label = (node: { props: { children?: unknown } }) => [node.props.children].flat().join('');
++
++/** The Join button: the pressable whose text is the button's words. */
++function joinButton(tree: ReactTestRenderer) {
++  return tree.root.find(
++    (node) =>
++      typeof node.props.onPress === 'function' &&
++      node.findAllByType(Text).some((t) => label(t) === 'Join online session'),
++  );
++}
++
++async function openSession() {
++  const Screen = require('../app/sessions/[id]').default;
++  let tree!: ReactTestRenderer;
++  await act(async () => {
++    tree = create(
++      React.createElement(SafeAreaProvider, { initialMetrics: METRICS }, React.createElement(Screen)),
++    );
++  });
++  await act(async () => {});
++  await act(async () => {});
++  return tree;
++}
++
++const openBrowser = WebBrowser.openBrowserAsync as jest.Mock;
++let openURL: jest.SpyInstance;
++
++beforeEach(() => {
++  openURL = jest.spyOn(Linking, 'openURL').mockResolvedValue(true);
++  openURL.mockClear();
++  mockInvoke.mockReset();
++  mockInvoke.mockResolvedValue({
++    data: { url: `${mockRoom}/join#t=ticket-token&next=%2Flesson%2F${mockId}` },
++    error: null,
++  });
++  openBrowser.mockClear();
++});
++
++afterEach(() => {
++  jest.restoreAllMocks();
++});
++
++describe('a session whose link is the lesson room', () => {
++  beforeEach(() => {
++    mockSession.value = sessionWith(ROOM_LINK);
++  });
++
++  test.each(['staff', 'support', 'admin'])(
++    'as %s, Join asks for a ticket and opens THAT — never the room link itself',
++    async (role) => {
++      authAs(role);
++      const tree = await openSession();
++
++      await act(async () => {
++        joinButton(tree).props.onPress();
++      });
++
++      expect(mockInvoke).toHaveBeenCalledWith('room-ticket', {
++        body: { purpose: 'join', session_id: mockId },
++      });
++      // The bare link opens the room's sign-in page; it goes nowhere.
++      expect(openURL).not.toHaveBeenCalled();
++      expect(openBrowser).toHaveBeenCalledTimes(1);
++      const [opened, options] = openBrowser.mock.calls[0];
++      expect(opened).toContain('/join#t=ticket-token');
++      expect(opened).not.toBe(ROOM_LINK);
++      // The portal's sheet, so the room's cookie survives between opens.
++      expect(options).toMatchObject({ presentationStyle: 'pageSheet' });
++      await act(async () => tree.unmount());
++    },
++  );
++
++  test('the office is not offered the override, and the breakout room is not mentioned', async () => {
++    authAs('staff');
++    const tree = await openSession();
++    const text = textIn(tree);
++
++    expect(text).not.toContain('Different link for this session only');
++    expect(text).not.toContain('Remove override');
++    expect(text).not.toContain('Join the class link');
++    expect(text).not.toContain('Breakout room');
++    // And the words say where the button goes.
++    expect(text).toContain('Opens the lesson room');
++    expect(text).not.toContain('Zoom');
++    await act(async () => tree.unmount());
++  });
++
++  test('a family joins the same way — the room decides the seat, not the app', async () => {
++    authAs('parent');
++    const tree = await openSession();
++
++    await act(async () => {
++      joinButton(tree).props.onPress();
++    });
++
++    expect(mockInvoke).toHaveBeenCalledTimes(1);
++    expect(openURL).not.toHaveBeenCalled();
++    expect(openBrowser).toHaveBeenCalledTimes(1);
++    await act(async () => tree.unmount());
++  });
++
++  test('when the ticket cannot be had, the centre Zoom link opens instead', async () => {
++    authAs('staff');
++    mockInvoke.mockResolvedValue({
++      data: null,
++      error: {
++        message: 'Edge Function returned a non-2xx status code',
++        context: { json: async () => ({ error: 'The lesson room is not set up on the server.' }) },
++      },
++    });
++    const tree = await openSession();
++
++    await act(async () => {
++      joinButton(tree).props.onPress();
++    });
++
++    expect(openBrowser).not.toHaveBeenCalled();
++    expect(openURL).toHaveBeenCalledTimes(1);
++    expect(openURL).toHaveBeenCalledWith(mockCentreZoom);
++    // Still never the room link.
++    expect(openURL).not.toHaveBeenCalledWith(ROOM_LINK);
++    await act(async () => tree.unmount());
++  });
++
++  test('when the room refuses THIS person, its sentence is shown and Zoom is not opened instead', async () => {
++    // A parent, or a student forty minutes early: the room said no to them,
++    // not to the lesson. Sending them into an empty Zoom call while the
++    // teacher waits in the room tells them nothing; the sentence does.
++    authAs('staff');
++    const alert = jest.spyOn(Alert, 'alert').mockImplementation(() => undefined);
++    mockInvoke.mockResolvedValue({
++      data: null,
++      error: {
++        message: 'Edge Function returned a non-2xx status code',
++        context: { status: 403, json: async () => ({ error: 'That lesson is not yours to join.' }) },
++      },
++    });
++    const tree = await openSession();
++
++    await act(async () => {
++      joinButton(tree).props.onPress();
++    });
++
++    expect(openBrowser).not.toHaveBeenCalled();
++    expect(openURL).not.toHaveBeenCalled();
++    expect(alert).toHaveBeenCalledWith('Could not open the lesson room', 'That lesson is not yours to join.');
++    alert.mockRestore();
++    await act(async () => tree.unmount());
++  });
++});
++
++describe('a session whose link is Zoom', () => {
++  beforeEach(() => {
++    mockSession.value = sessionWith(ZOOM_LINK);
++  });
++
++  test('Join opens the link as it always has, with no ticket and no browser sheet', async () => {
++    authAs('staff');
++    const tree = await openSession();
++
++    await act(async () => {
++      joinButton(tree).props.onPress();
++    });
++
++    expect(openURL).toHaveBeenCalledWith(ZOOM_LINK);
++    expect(mockInvoke).not.toHaveBeenCalled();
++    expect(openBrowser).not.toHaveBeenCalled();
++    await act(async () => tree.unmount());
++  });
++
++  test('the office keeps the override field, and the breakout caption stays', async () => {
++    authAs('staff');
++    const tree = await openSession();
++    const text = textIn(tree);
++
++    expect(text).toContain('Different link for this session only');
++    expect(text).toContain('Join the class link');
++    expect(text).toContain('Breakout room 3');
++    expect(text).not.toContain('Opens the lesson room');
++    await act(async () => tree.unmount());
++  });
++
++  test('with no link of its own, the centre link opens', async () => {
++    mockSession.value = sessionWith(null);
++    authAs('parent');
++    const tree = await openSession();
++
++    await act(async () => {
++      joinButton(tree).props.onPress();
++    });
++
++    expect(openURL).toHaveBeenCalledWith(mockCentreZoom);
++    expect(mockInvoke).not.toHaveBeenCalled();
++    await act(async () => tree.unmount());
++  });
++});
++
++describe('what counts as the room', () => {
++  test('the host, bounded — a look-alike is not the room', () => {
++    expect(isRoomHostUrl(`${mockRoom}/lesson/${mockId}`)).toBe(true);
++    expect(isRoomHostUrl(`${mockRoom}`)).toBe(true);
++    expect(isRoomHostUrl(`${mockRoom}/`)).toBe(true);
++    expect(isRoomHostUrl(`HTTPS://ROOM.mathvisionapp.com/lesson/${mockId}`)).toBe(true);
++    // Not the room: a different host that merely starts the same way.
++    expect(isRoomHostUrl(`${mockRoom}.evil.example/lesson/${mockId}`)).toBe(false);
++    expect(isRoomHostUrl('https://room.mathvisionapp.com-evil.example/')).toBe(false);
++    expect(isRoomHostUrl(ZOOM_LINK)).toBe(false);
++    expect(isRoomHostUrl(null)).toBe(false);
++    expect(isRoomHostUrl('')).toBe(false);
++  });
++
++  test('with the platform off in this build, nothing is the room', () => {
++    // A phone that was never told about the room keeps opening links the
++    // old way, whatever the link says.
++    expect(isRoomHostUrl(`${mockRoom}/lesson/${mockId}`, '')).toBe(false);
++    expect(isRoomHostUrl(`${mockRoom}/lesson/${mockId}`, '   ')).toBe(false);
++    // A trailing slash on the setting is tolerated, as it is on the server.
++    expect(isRoomHostUrl(`${mockRoom}/lesson/${mockId}`, `${mockRoom}/`)).toBe(true);
++  });
++});
+diff --git a/__smoke__/the-write-pile-says-where-it-stops.test.tsx b/__smoke__/the-write-pile-says-where-it-stops.test.tsx
+index 6dd6d3c..6ee1603 100644
+--- a/__smoke__/the-write-pile-says-where-it-stops.test.tsx
++++ b/__smoke__/the-write-pile-says-where-it-stops.test.tsx
+@@ -93,13 +93,33 @@ function taughtRows(count: number, total: number) {
+   }));
+ }
+ 
+-function onlineRows(count: number, total: number) {
++/**
++ * my_online_lessons rows. The RPC carries no total_count — its own LIMIT is
++ * 200 — so the screen counts the rows in hand and says the list stopped only
++ * when it is at the cap.
++ */
++function onlineRows(count: number) {
+   return Array.from({ length: count }, (_, i) => ({
+-    id: `00000000-0000-0000-0000-${(600000 + i).toString().padStart(12, '0')}`,
++    session_id: `00000000-0000-0000-0000-${(600000 + i).toString().padStart(12, '0')}`,
++    student_id: null,
+     student_name: `Eve Evans${i}`,
+     subject: 'IB HL Physics',
++    topic: null,
+     effective_start: '2026-09-02T09:00:00Z',
+-    total_count: total,
++    ends_at: null,
++    duration_minutes: 60,
++    status: 'confirmed',
++    mode: 'online',
++    arrived_at: null,
++    departed_at: null,
++    meeting_url: null,
++    teacher_id: null,
++    teacher_name: null,
++    report_id: null,
++    report_status: null,
++    draft_ready: false,
++    time_zone: 'Asia/Singapore',
++    seat: 'host',
+   }));
+ }
+ 
+@@ -128,7 +148,7 @@ jest.mock('../src/lib/supabase', () => {
+           return Promise.resolve({ data: mockRows.approve, error: null });
+         if (name === 'my_taught_sessions')
+           return Promise.resolve({ data: mockRows.taught, error: null });
+-        if (name === 'search_sessions')
++        if (name === 'my_online_lessons')
+           return Promise.resolve({ data: mockRows.online, error: null });
+         return Promise.resolve({ data: [], error: null });
+       },
+@@ -263,20 +283,29 @@ describe('a section that stopped short says so, with the real total (#427)', ()
+     await act(async () => tree.unmount());
+   });
+ 
+-  test("and the teacher's own online sessions, whose heading was the page length", async () => {
+-    // search_sessions is asked for twenty and answers with the week's real
+-    // total on every row; the heading used to print `online.length` instead,
+-    // which is the page wearing the total's clothes.
++  test("and the teacher's online lessons, which stop at the RPC's cap and say so there", async () => {
++    // my_online_lessons sends no total of its own — its LIMIT is 200 — so
++    // under the cap the heading's count IS the total and nothing is said;
++    // at the cap the list says it stopped rather than letting 200 wear the
++    // total's clothes.
+     authAs('teacher');
+     mockRows.write = [];
+     mockRows.approve = [];
+     mockRows.taught = [];
+-    mockRows.online = onlineRows(2, 30);
+-    const tree = await renderReports();
+-    const text = textIn(tree).replace(/\n/g, '');
++    mockRows.online = onlineRows(2);
++    let tree = await renderReports();
++    let text = textIn(tree).replace(/\n/g, '');
++
++    expect(text).toContain('Online lessons · 2');
++    expect(text).not.toContain('Only the first');
++    await act(async () => tree.unmount());
++
++    mockRows.online = onlineRows(200);
++    tree = await renderReports();
++    text = textIn(tree).replace(/\n/g, '');
+ 
+-    expect(text).toContain('Your online sessions · 30');
+-    expect(text).toContain('Showing the first 2 of 30');
++    expect(text).toContain('Online lessons · 200');
++    expect(text).toContain('Only the first 200 are shown');
+     await act(async () => tree.unmount());
+   });
+ 
+diff --git a/app.config.ts b/app.config.ts
+index 54341bf..a5b8f68 100644
+--- a/app.config.ts
++++ b/app.config.ts
+@@ -570,6 +570,14 @@ const config: ExpoConfig = {
+      * takes updates on, and only says 'development' when nobody knows.
+      */
+     channel: cleaned(process.env.EXPO_PUBLIC_CHANNEL),
++    /*
++     * The lesson room's host. No default, on purpose: unset means the lesson
++     * platform is off in this build and every online session keeps its Zoom
++     * link, which is the state a phone that never heard of the room must
++     * stay in. Set it to the same value as edge_config.room_url (DEPLOYMENT.md
++     * §2c) — src/lib/env.ts says why the two must agree.
++     */
++    roomUrl: cleaned(process.env.EXPO_PUBLIC_ROOM_URL),
+     eas: {
+       // Left undefined rather than faked when unset: a placeholder uuid would
+       // point at a project that does not exist, which fails later and less
+diff --git a/app/admin/departments.tsx b/app/admin/departments.tsx
+index 151585a..bec499c 100644
+--- a/app/admin/departments.tsx
++++ b/app/admin/departments.tsx
+@@ -3,10 +3,11 @@ import { Pressable, ScrollView, StyleSheet, View } from 'react-native';
+ import { useFocusEffect, useRouter } from 'expo-router';
+ import { Ionicons } from '@expo/vector-icons';
+ 
+-import { Badge, Banner, Button, Chip, ChipBar, Field, Loader, Toggle, Txt } from '../../src/components/ui';
++import { Badge, Banner, Button, Chip, ChipBar, ChipRow, Field, Loader, Toggle, Txt } from '../../src/components/ui';
+ import { CrashScreen } from '../../src/components/CrashScreen';
+ import { AdminOnly } from '../../src/components/AdminOnly';
+ import { useAuth } from '../../src/context/AuthContext';
++import { env } from '../../src/lib/env';
+ import { supabase, describeError } from '../../src/lib/supabase';
+ import { colors, radius, spacing } from '../../src/theme';
+ import type { Department } from '../../src/types/db';
+@@ -16,6 +17,19 @@ export { CrashScreen as ErrorBoundary };
+ 
+ type DeptRow = Department & { member_count?: number };
+ 
++/**
++ * Whether this build knows where the lesson room is. Without it the On/Off
++ * below would switch something no phone on this build can open, so the
++ * section is not drawn at all — the same state as before the room existed.
++ */
++const LESSON_PLATFORM = Boolean(env.roomUrl);
++
++/** Two words, both visible: the choice is made by tapping, never by typing. */
++const ON_OFF = [
++  { key: 'on', label: 'On' },
++  { key: 'off', label: 'Off' },
++];
++
+ /**
+  * Every room and office team: create new ones, spot the inactive, tap
+  * through to manage members, routing rules, and courses.
+@@ -27,6 +41,14 @@ export default function AdminDepartments() {
+   const [rows, setRows] = useState<DeptRow[]>([]);
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState<string | null>(null);
++  /*
++   * Which rooms hold their online sessions in the lesson room: the set of
++   * department ids with a lesson_platform_rooms row. Its own table rather
++   * than a column on departments, which the sync daemon upserts and would
++   * null.
++   */
++  const [platformOn, setPlatformOn] = useState<Set<string>>(new Set());
++  const [platformBusy, setPlatformBusy] = useState<string | null>(null);
+ 
+   const [creating, setCreating] = useState(false);
+   const [newName, setNewName] = useState('');
+@@ -39,16 +61,25 @@ export default function AdminDepartments() {
+   const [busy, setBusy] = useState(false);
+ 
+   const load = useCallback(async () => {
+-    const { data, error: queryError } = await supabase
+-      .from('departments')
+-      .select('*')
+-      .order('kind')
+-      .order('sort_order')
+-      .order('name');
++    const [{ data, error: queryError }, platform] = await Promise.all([
++      supabase.from('departments').select('*').order('kind').order('sort_order').order('name'),
++      LESSON_PLATFORM
++        ? supabase.from('lesson_platform_rooms').select('department_id')
++        : Promise.resolve({ data: [], error: null }),
++    ]);
+     if (queryError) setError(queryError.message);
+     else {
+       setRows((data ?? []) as DeptRow[]);
+-      setError(null);
++      // A failed read here would draw every room as Off — a false all-clear
++      // over a room that is on — so it is said rather than drawn.
++      setError(
++        platform.error ? 'Which rooms have the lesson platform on could not be read.' : null,
++      );
++    }
++    if (!platform.error) {
++      setPlatformOn(
++        new Set(((platform.data ?? []) as { department_id: string }[]).map((r) => r.department_id)),
++      );
+     }
+     setLoading(false);
+   }, []);
+@@ -110,6 +141,32 @@ export default function AdminDepartments() {
+     setBusy(false);
+   };
+ 
++  /*
++   * Switch a room's lesson platform on or off. The database does the work
++   * (enable_lesson_platform, admin only): on records the room and stamps the
++   * room's link onto the department's FUTURE online sessions that have none
++   * yet, quietly; off deletes the record and leaves every link as it is.
++   */
++  const setPlatform = async (departmentId: string, on: boolean) => {
++    if (platformBusy || platformOn.has(departmentId) === on) return;
++    setPlatformBusy(departmentId);
++    setError(null);
++    const { error: rpcError } = await supabase.rpc('enable_lesson_platform', {
++      p_department_id: departmentId,
++      p_on: on,
++    });
++    if (rpcError) setError(describeError(rpcError));
++    else {
++      setPlatformOn((current) => {
++        const next = new Set(current);
++        if (on) next.add(departmentId);
++        else next.delete(departmentId);
++        return next;
++      });
++    }
++    setPlatformBusy(null);
++  };
++
+   if (profile && profile.role !== 'admin') {
+     return <AdminOnly body="Rooms and the routing between them are admin territory." />;
+   }
+@@ -169,6 +226,40 @@ export default function AdminDepartments() {
+       )}
+ 
+       <Section title="Rooms" rows={rooms} onOpen={(id) => router.push({ pathname: '/admin/department/[id]', params: { id } })} />
++
++      {/*
++        The lesson room, room by room. Only drawn when this build knows the
++        room's address: an admin on a build that does not would be switching
++        on something no phone could open.
++      */}
++      {LESSON_PLATFORM && rooms.length > 0 ? (
++        <View style={{ gap: spacing.sm }}>
++          <Txt variant="overline" color={colors.textFaint}>
++            Lesson platform
++          </Txt>
++          <Banner tone="neutral">
++            A room that is on holds its online sessions in the lesson room: new online bookings
++            get its link, and Join opens it signed in. A room that is off keeps the centre&apos;s
++            Zoom link and breakout rooms. If the lesson room ever fails to open, Join falls back
++            to Zoom.
++          </Banner>
++          <View style={styles.list}>
++            {rooms.map((department, index) => (
++              <View key={department.id} style={[styles.row, index > 0 && styles.rowBordered]}>
++                <Txt variant="bodyMedium" numberOfLines={1} style={{ flex: 1 }}>
++                  {department.name}
++                </Txt>
++                <ChipRow
++                  options={ON_OFF}
++                  selected={platformOn.has(department.id) ? 'on' : 'off'}
++                  onSelect={(key) => void setPlatform(department.id, key === 'on')}
++                />
++              </View>
++            ))}
++          </View>
++        </View>
++      ) : null}
++
+       <Section title="Office teams" rows={office} onOpen={(id) => router.push({ pathname: '/admin/department/[id]', params: { id } })} />
+     </ScrollView>
+   );
+diff --git a/app/reports/index.tsx b/app/reports/index.tsx
+index 25ee27c..adc2269 100644
+--- a/app/reports/index.tsx
++++ b/app/reports/index.tsx
+@@ -6,11 +6,12 @@ import { Ionicons } from '@expo/vector-icons';
+ import { Badge, Banner, Button, Chip, EmptyState, Loader, Txt } from '../../src/components/ui';
+ import { CrashScreen } from '../../src/components/CrashScreen';
+ import { useAuth } from '../../src/context/AuthContext';
+-import { listTimestamp, stoppedShortOf } from '../../src/lib/format';
++import { listTimestamp, sessionStatusCopy, sessionWhen, stoppedShortOf } from '../../src/lib/format';
++import { isRoomHostUrl, openLessonRoom } from '../../src/lib/lessons';
+ import { supabase, describeError } from '../../src/lib/supabase';
+ import { reportsScreenTitle } from '../../src/lib/roleTabs';
+ import { colors, radius, spacing } from '../../src/theme';
+-import type { ReportStatus } from '../../src/types/db';
++import type { ReportStatus, RequestStatus } from '../../src/types/db';
+ import { useForegroundRefresh } from '../../src/hooks/useForegroundRefresh';
+ 
+ export { CrashScreen as ErrorBoundary };
+@@ -83,15 +84,53 @@ function reportState(status: ReportStatus | null): { label: string; tone: 'brand
+   }
+ }
+ 
+-type OnlineSession = {
+-  id: string;
++/**
++ * One of the teacher's online lessons, a fortnight each way, as
++ * my_online_lessons hands it over: the booking, the state of its report, and
++ * its link — the lesson room's when the department's room is on, Zoom's (or
++ * null, meaning the centre's one link) when it is not.
++ */
++type OnlineLesson = {
++  session_id: string;
++  student_id: string | null;
+   student_name: string;
+   subject: string | null;
++  topic: string | null;
+   effective_start: string;
+-  /** The whole week's worth, not the page of twenty asked for (#427). */
+-  total_count: number;
++  ends_at: string | null;
++  duration_minutes: number;
++  status: RequestStatus;
++  mode: 'in_person' | 'online';
++  arrived_at: string | null;
++  departed_at: string | null;
++  meeting_url: string | null;
++  teacher_id: string | null;
++  teacher_name: string | null;
++  report_id: string | null;
++  report_status: ReportStatus | null;
++  draft_ready: boolean;
++  time_zone: string | null;
++  seat: 'host' | 'learner' | 'family' | 'observer';
+ };
+ 
++/** my_online_lessons' own LIMIT. It sends no total, so the cap is the tell. */
++const ONLINE_LESSONS_CAP = 200;
++
++/**
++ * When a lesson can be joined — room_access's window, the same numbers:
++ * fifteen minutes before it starts to half an hour after it ends. A Join
++ * drawn outside it is a button that only fails when pressed, because the
++ * room refuses a ticket outside the window. The Zoom rows take the same
++ * rule: one window for both is the one that gets kept.
++ */
++function lessonWindow(lesson: OnlineLesson): { opens: number; closes: number } {
++  const start = new Date(lesson.effective_start).getTime();
++  const end = lesson.ends_at
++    ? new Date(lesson.ends_at).getTime()
++    : start + lesson.duration_minutes * 60_000;
++  return { opens: start - 15 * 60_000, closes: end + 30 * 60_000 };
++}
++
+ /**
+  * The portal's "To Be Created", app-side: the last week's attended sessions
+  * with no report yet, plus — for the deciders — the ones waiting for
+@@ -106,17 +145,19 @@ export default function Reports() {
+   const [toWrite, setToWrite] = useState<ToWrite[]>([]);
+   const [taught, setTaught] = useState<Taught[]>([]);
+   const [toApprove, setToApprove] = useState<ToApprove[]>([]);
+-  const [online, setOnline] = useState<OnlineSession[]>([]);
++  const [lessons, setLessons] = useState<OnlineLesson[]>([]);
+   /*
+    * The centre runs ONE Zoom link for every online session, with a breakout
+    * room number generated per session (20260823001700) — so nobody at the
+    * office "adds a link", and the teacher's row says which room to head to.
+-   * The per-session meeting_url survives only as the odd override.
++   * The per-session meeting_url is the odd override, or — in a department
++   * whose lesson room is on — the room's own address, which opens on a
++   * ticket rather than bare (src/lib/lessons.ts). The centre link is then
++   * the door that still opens if the room will not.
+    */
+   const [centreLink, setCentreLink] = useState<string | null>(null);
+-  const [joinInfo, setJoinInfo] = useState<
+-    Map<string, { meeting_url: string | null; breakout_room: number | null }>
+-  >(new Map());
++  /** Breakout room numbers, for the Zoom rows only. */
++  const [breakouts, setBreakouts] = useState<Map<string, number | null>>(new Map());
+   const [loading, setLoading] = useState(true);
+   const [refreshing, setRefreshing] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+@@ -174,21 +215,16 @@ export default function Reports() {
+         ? Promise.resolve({ data: [], error: null })
+         : supabase.rpc('my_taught_sessions', { p_days: 7, p_limit: 100 }),
+       /*
+-       * The teacher's other reason to be here: online sessions they can
+-       * JOIN. The only assigned sessions a teacher can see are online ones
+-       * (and attended ones for reports) — the owner's rule, enforced
+-       * server-side — so this is their whole upcoming schedule: from two
+-       * hours ago (a running class is joinable) to a week out.
++       * The teacher's other reason to be here: online lessons they can
++       * JOIN, and the ones just taught with the report's state on the row.
++       * The only assigned sessions a teacher can see are online ones (and
++       * attended ones for reports) — the owner's rule, enforced server-side
++       * — so this is their whole online fortnight, each way. One RPC, every
++       * row carrying its own link, and no channel: the list is read on
++       * focus and on return to the foreground like everything else here.
+        */
+       teacher
+-        ? supabase.rpc('search_sessions', {
+-            p_mine: true,
+-            p_mode: 'online',
+-            p_status: 'confirmed',
+-            p_from: new Date(Date.now() - 2 * 3600e3).toISOString(),
+-            p_to: new Date(Date.now() + 7 * 86400e3).toISOString(),
+-            p_limit: 20,
+-          })
++        ? supabase.rpc('my_online_lessons', { p_days: 14 })
+         : Promise.resolve({ data: [], error: null }),
+     ]);
+     /*
+@@ -220,28 +256,35 @@ export default function Reports() {
+     if (!approve.error) setToApprove((approve.data ?? []) as ToApprove[]);
+     if (!mine.error) setTaught((mine.data ?? []) as Taught[]);
+     if (!joinable.error) {
+-      const rows = (joinable.data ?? []) as OnlineSession[];
+-      setOnline(rows);
++      const rows = (joinable.data ?? []) as OnlineLesson[];
++      setLessons(rows);
+       if (teacher && rows.length > 0) {
++        /*
++         * The centre's Zoom link — the door for the rows that are not the
++         * room's, and the fallback for the ones that are — and the breakout
++         * number for the Zoom rows alone: a department whose room is on has
++         * nothing to look up here, so its list costs the one RPC and one
++         * one-row read.
++         */
++        const zoomRows = rows.filter((row) => !isRoomHostUrl(row.meeting_url));
+         const [link, details] = await Promise.all([
+           supabase.from('centre_schedule').select('online_meeting_url').eq('id', 1).maybeSingle(),
+-          supabase
+-            .from('session_requests')
+-            .select('id, meeting_url, breakout_room')
+-            .in('id', rows.map((row) => row.id)),
++          zoomRows.length > 0
++            ? supabase
++                .from('session_requests')
++                .select('id, breakout_room')
++                .in('id', zoomRows.map((row) => row.session_id))
++            : Promise.resolve({ data: [], error: null }),
+         ]);
+         setCentreLink(
+           (link.data as { online_meeting_url: string | null } | null)?.online_meeting_url ?? null,
+         );
+-        setJoinInfo(
++        setBreakouts(
+           new Map(
+-            (
+-              (details.data ?? []) as {
+-                id: string;
+-                meeting_url: string | null;
+-                breakout_room: number | null;
+-              }[]
+-            ).map((row) => [row.id, row]),
++            ((details.data ?? []) as { id: string; breakout_room: number | null }[]).map((row) => [
++              row.id,
++              row.breakout_room,
++            ]),
+           ),
+         );
+       }
+@@ -278,8 +321,18 @@ export default function Reports() {
+ 
+   const writeTotal = toWrite[0]?.total_count ?? toWrite.length;
+   const approveTotal = toApprove[0]?.total_count ?? toApprove.length;
+-  const onlineTotal = online[0]?.total_count ?? online.length;
+-  const onlineStopped = stoppedShortOf(online.length, onlineTotal);
++
++  /*
++   * Where a lesson's row goes once it is over: the same door the taught rows
++   * use. An unwritten or sent-back report opens the form; one already with
++   * the office or the family opens the report, so a teacher can read back
++   * what they said. The app's form stays the one way a report is written —
++   * the room never offers a second editor.
++   */
++  const openReport = (lesson: OnlineLesson) =>
++    lesson.report_id && lesson.report_status !== 'rejected'
++      ? router.push({ pathname: '/reports/[id]', params: { id: lesson.report_id } })
++      : router.push({ pathname: '/reports/new', params: { sessionId: lesson.session_id } });
+ 
+   /*
+    * "For in charge accounts they also teach and hence also need to create
+@@ -486,49 +539,105 @@ export default function Reports() {
+           ) : null
+         }
+         ListHeaderComponent={
+-          teacher && online.length > 0 ? (
++          teacher && lessons.length > 0 ? (
+             <View style={{ gap: spacing.sm }}>
+-              {/* The real total on the heading, and the cut said below the
+-                  rows — a teacher's week can hold more than the twenty this
+-                  asks for, and a page length wearing the total's clothes is
+-                  the same lie as silence at the bottom. */}
+-              <Txt variant="bodyMedium">Your online sessions · {onlineTotal}</Txt>
+-              {online.map((session) => (
+-                <View key={session.id} style={styles.row}>
+-                  <View style={{ flex: 1, gap: 2 }}>
+-                    <Txt variant="small">{session.student_name}</Txt>
+-                    <Txt variant="caption" color={colors.textFaint}>
+-                      {[
+-                        session.subject,
+-                        listTimestamp(session.effective_start),
+-                        joinInfo.get(session.id)?.breakout_room != null
+-                          ? `Breakout room ${joinInfo.get(session.id)!.breakout_room}`
+-                          : null,
+-                      ]
+-                        .filter(Boolean)
+-                        .join(' · ')}
+-                    </Txt>
+-                  </View>
+-                  <Button
+-                    title="Join"
++              {/*
++                The count on the heading is the rows in hand, which is the
++                total until the RPC's cap — it sends no total of its own, so
++                at the cap the line below says the list stopped rather than
++                letting 200 wear the total's clothes.
++              */}
++              <Txt variant="bodyMedium">Online lessons · {lessons.length}</Txt>
++              {lessons.map((lesson) => {
++                const now = Date.now();
++                const { opens, closes } = lessonWindow(lesson);
++                /*
++                 * Only an approved session has a room to join; a held one
++                 * wears its status instead, in the map's words. Over means
++                 * the window has closed: the row becomes the report's door.
++                 */
++                const live = lesson.status === 'confirmed' || lesson.status === 'completed';
++                const joinable = live && now >= opens && now <= closes;
++                const over = now > closes;
++                const room = isRoomHostUrl(lesson.meeting_url);
++                // A held session that is now behind us has no report owed; only
++                // an approved one becomes the report's door.
++                const report =
++                  live && (over || lesson.report_id) ? reportState(lesson.report_status) : null;
++                const breakout = room ? null : breakouts.get(lesson.session_id);
++                return (
++                  <Pressable
++                    key={lesson.session_id}
++                    style={styles.row}
++                    disabled={!report}
+                     onPress={() => {
+-                      // The centre's one Zoom; a per-session URL is the odd
+-                      // override. Nobody at the office fills anything in.
+-                      const url = joinInfo.get(session.id)?.meeting_url ?? centreLink;
+-                      if (url) void Linking.openURL(url);
+-                      else {
+-                        Alert.alert(
+-                          'No link yet',
+-                          'The centre link is not set — the office can add it on the Calendar screen.',
+-                        );
+-                      }
++                      if (report) openReport(lesson);
+                     }}
+-                  />
+-                </View>
+-              ))}
+-              {onlineStopped ? (
++                    accessibilityRole={report ? 'button' : undefined}
++                    accessibilityLabel={
++                      report
++                        ? `${lesson.student_name}, ${report.label}`
++                        : `${lesson.student_name}, ${sessionWhen(lesson.effective_start, lesson.time_zone)}`
++                    }
++                  >
++                    <View style={{ flex: 1, gap: 2 }}>
++                      <Txt variant="small">{lesson.student_name}</Txt>
++                      <Txt variant="caption" color={colors.textFaint}>
++                        {[
++                          lesson.subject,
++                          lesson.topic,
++                          sessionWhen(lesson.effective_start, lesson.time_zone),
++                          breakout != null ? `Breakout room ${breakout}` : null,
++                        ]
++                          .filter(Boolean)
++                          .join(' · ')}
++                      </Txt>
++                    </View>
++                    {joinable ? (
++                      <Button
++                        title="Join"
++                        fullWidth={false}
++                        size="md"
++                        onPress={() => {
++                          /*
++                           * A room link opens on a ticket, never bare — the
++                           * room is a different browser with no session —
++                           * with the centre's Zoom as the door that still
++                           * opens if the room will not. A Zoom row opens its
++                           * own override or the centre's one link; nobody at
++                           * the office fills anything in.
++                           */
++                          if (room) {
++                            void openLessonRoom(lesson.session_id, centreLink);
++                            return;
++                          }
++                          const url = lesson.meeting_url ?? centreLink;
++                          if (url) void Linking.openURL(url);
++                          else {
++                            Alert.alert(
++                              'No link yet',
++                              'The centre link is not set — the office can add it on the Calendar screen.',
++                            );
++                          }
++                        }}
++                      />
++                    ) : !live ? (
++                      <Badge
++                        label={sessionStatusCopy({ status: lesson.status }).label}
++                        tone={sessionStatusCopy({ status: lesson.status }).tone}
++                      />
++                    ) : report ? (
++                      <>
++                        <Badge label={report.label} tone={report.tone} />
++                        <Ionicons name="chevron-forward" size={16} color={colors.textFaint} />
++                      </>
++                    ) : null}
++                  </Pressable>
++                );
++              })}
++              {lessons.length >= ONLINE_LESSONS_CAP ? (
+                 <Txt variant="caption" color={colors.accentDeep}>
+-                  {onlineStopped}
++                  Only the first {ONLINE_LESSONS_CAP} are shown; the rest are beyond this list.
+                 </Txt>
+               ) : null}
+             </View>
+diff --git a/app/sessions/[id].tsx b/app/sessions/[id].tsx
+index 894cfc1..5afa2b8 100644
+--- a/app/sessions/[id].tsx
++++ b/app/sessions/[id].tsx
+@@ -19,6 +19,7 @@ import { useSessionRequests } from '../../src/hooks/useSessionRequests';
+ import { startFamilyConversation } from '../../src/hooks/useConversations';
+ import { supabase, describeError } from '../../src/lib/supabase';
+ import { durationLabel, otherZoneHint, sessionStatusCopy, sessionWhen } from '../../src/lib/format';
++import { isRoomHostUrl, openLessonRoom } from '../../src/lib/lessons';
+ import { gradeName } from '../../src/lib/grades';
+ import { CENTRE_TZ } from '../../src/lib/schedule';
+ import { colors, spacing } from '../../src/theme';
+@@ -233,6 +234,19 @@ export default function SessionDetail() {
+   // always allowed them exactly that.
+   const canEdit = sessionIsEditable(request, isStaff);
+ 
++  /*
++   * Whether this session's link is the lesson room's. The database stamps
++   * meeting_url with the room's address for an online session in a
++   * department whose room is on (enable_lesson_platform, the
++   * session_requests_the_room_link trigger), and that one fact changes the
++   * card below three ways: the Join button opens on a ticket rather than
++   * the bare link, the breakout room is not mentioned (there is none), and
++   * the office is not offered the override controls — a "Remove override"
++   * on a room link clears the room away, and the trigger never refills a
++   * link a person cleared.
++   */
++  const roomLink = isRoomHostUrl(request.meeting_url);
++
+   const run = async (action: () => Promise<void>, failureTitle: string) => {
+     setBusy(true);
+     setError(null);
+@@ -508,7 +522,8 @@ export default function SessionDetail() {
+       {request.mode === 'online' ? (
+         <Card style={{ gap: spacing.sm }}>
+           <Txt variant="bodyMedium">Online session</Txt>
+-          {request.breakout_room != null ? (
++          {/* The breakout number is Zoom's; the lesson room has no such thing. */}
++          {request.breakout_room != null && !roomLink ? (
+             <View style={styles.breakout}>
+               <Ionicons name="grid-outline" size={18} color={colors.brand} />
+               <Txt variant="bodyMedium" color={colors.brand}>
+@@ -516,7 +531,25 @@ export default function SessionDetail() {
+               </Txt>
+             </View>
+           ) : null}
+-          {(request.meeting_url ?? onlineMeetingUrl) ? (
++          {roomLink ? (
++            <>
++              {/*
++                Never Linking.openURL on the room's link: the room is a
++                different browser with no session, so the bare link lands
++                on its sign-in page. openLessonRoom asks room-ticket for a
++                single-use ticket and opens that; if the room cannot be
++                reached, the centre's Zoom link is the door that still opens.
++              */}
++              <Button
++                title="Join online session"
++                icon="videocam-outline"
++                onPress={() => void openLessonRoom(request.id, onlineMeetingUrl)}
++              />
++              <Txt variant="caption" color={colors.textMuted}>
++                Opens the lesson room, signed in as you.
++              </Txt>
++            </>
++          ) : (request.meeting_url ?? onlineMeetingUrl) ? (
+             <>
+               <Button
+                 title="Join online session"
+@@ -543,7 +576,9 @@ export default function SessionDetail() {
+               link once, under Admin → Opening hours &amp; closures.
+             </Txt>
+           )}
+-          {isStaff ? (
++          {/* Not for a room link: the one thing these controls can do to it is
++              clear the room away, and nothing puts it back. */}
++          {isStaff && !roomLink ? (
+             <>
+               <Field
+                 label="Different link for this session only (optional)"
+diff --git a/docs/DEPLOYMENT.md b/docs/DEPLOYMENT.md
+index 543ec57..ae0b721 100644
+--- a/docs/DEPLOYMENT.md
++++ b/docs/DEPLOYMENT.md
+@@ -126,6 +126,7 @@ EXPO_PUBLIC_SUPABASE_ANON_KEY=eyJ...
+ EXPO_PUBLIC_PORTAL_URL=https://portal.mathvision.com
+ EXPO_PUBLIC_SUPPORT_EMAIL=apps@mathvision.com.sg
+ EXPO_PUBLIC_SUPPORT_PHONE=
++EXPO_PUBLIC_ROOM_URL=
+ ```
+ 
+ Leave `EXPO_PUBLIC_SUPPORT_PHONE` empty locally unless you want the Account
+@@ -137,6 +138,18 @@ build profile beside the two URLs, with a smoke test holding the two copies
+ equal (#354). Note that `eas.json`'s `env` block reaches builds only: an OTA
+ bundles on the runner and takes `EXPO_PUBLIC_*` from `eas env:pull`.
+ 
++`EXPO_PUBLIC_ROOM_URL` is where the lesson room is served
++(https://room.mathvisionapp.com). Leave it empty and the lesson platform is
++off in that build: every online session keeps the centre's Zoom link, the
++admin Departments screen shows no "Lesson platform" section, and no ticket is
++ever asked for. When set it must equal `edge_config.room_url` — the database
++stamps that value onto `meeting_url`, and the app recognises a room link by
++this one; if the two differ, every room link looks like a Zoom override and
++opens the room's sign-in page instead of the lesson. Set it in the expo.dev
++environment variables (all three environments), as an OTA bundles from
++`eas env:pull`; `build.yml` passes EXPO_PUBLIC_* secrets by name, so a native
++build needs the variable added there too.
++
+ The `anon` key is meant to ship in the app — row-level security is what
+ protects the data, which is why the test suite matters. Never put the
+ `service_role` key in the app.
+@@ -168,11 +181,13 @@ either way.
+ ### What notifies, and how
+ 
+ **Nothing to wire up. It is in the migrations.** `notify_push()` is attached to
+-fourteen table+event pairs — thirteen by
++twenty-eight table+event pairs — the first thirteen by
+ `20260809000100_thirteen_webhooks_become_one_trigger.sql`, `calls` by
+-`20260811000300_a_missed_call_says_so.sql` — so a fresh project
+-gets all fourteen from `supabase db push` and staging and production cannot
+-drift apart.
++`20260811000300_a_missed_call_says_so.sql`, the rest by the migrations that
++added their tables since — so a fresh project gets all twenty-eight from
++`supabase db push` and staging and production cannot drift apart. The table
++below is the list; `__smoke__/push-triggers.test.ts` holds it equal to the
++migrations and to send-push's header.
+ 
+ They used to be thirteen **Database Webhooks** created by hand in the
+ dashboard, one at a time, per project. Miss one and that notification silently
+@@ -210,6 +225,8 @@ The table is still worth having, because *what* notifies is a real question:
+ | `session_reports` | Update | Published to the family (and the author told), or sent back to the author with the note |
+ | `leave_requests` | Insert | A leave request: the in-charges of the requester's zone and the admins hear it |
+ | `leave_requests` | Update | The decision — approved or declined — answers the person who asked |
++| `lesson_report_drafts` | Insert | A report draft is ready for an online lesson, to the assigned teacher ("Your report draft is ready") |
++| `lesson_followups` | Update | A follow-up moved (column-scoped: only `status` writes fire it). A teacher's yes (proposed → approved) asks the room's in-charges to send it; done and dismissed are quiet |
+ 
+ The trigger posts the same `{type, table, schema, record, old_record}` envelope
+ the dashboard sent, so `send-push` cannot tell the two apart — which is exactly
+@@ -434,6 +451,13 @@ Supabase → **Authentication → URL Configuration → Redirect URLs**: add
+ department shows "Join online session"; tapping it lands in the room signed
+ in as the same person. Then:
+ 
++On the app side the build needs `EXPO_PUBLIC_ROOM_URL` (above) set to the
++same host. With it, Account → Departments carries a "Lesson platform" section
++with On / Off per room (calls `enable_lesson_platform`); a session whose
++`meeting_url` is on the room host joins on a ticket from `room-ticket` opened
++in the in-app browser, and falls back to the centre's Zoom link if the ticket
++cannot be had.
++
+ ```sql
+ select action, summary, created_at from public.audit_log
+  where action = 'lesson_ticket_redeemed' order by created_at desc limit 5;
+diff --git a/docs/GETTING_STARTED.md b/docs/GETTING_STARTED.md
+index b5a4696..06523be 100644
+--- a/docs/GETTING_STARTED.md
++++ b/docs/GETTING_STARTED.md
+@@ -198,6 +198,7 @@ expo.dev → your **mathvision** project → **Environment variables** →
+ | `EXPO_PUBLIC_PORTAL_URL` | your portal address (optional) |
+ | `EXPO_PUBLIC_SUPPORT_EMAIL` | shown on the Account screen (optional) |
+ | `EXPO_PUBLIC_SUPPORT_PHONE` | shown on the Account screen (optional; EAS builds get it from `eas.json`) |
++| `EXPO_PUBLIC_ROOM_URL` | the lesson room's address, e.g. https://room.mathvisionapp.com (optional; empty = lesson platform off in the build; must equal `edge_config.room_url`) |
+ 
+ Visibility **Plain text** is correct for all of these — they ship inside the
+ app by design; row-level security is what protects the data.
+diff --git a/docs/RUNBOOK.md b/docs/RUNBOOK.md
+index b6a502e..d21d381 100644
+--- a/docs/RUNBOOK.md
++++ b/docs/RUNBOOK.md
+@@ -150,7 +150,9 @@ are set, and it is switched on one department at a time.
+ 1. Once per project, set the room's address:
+    `update public.edge_config set room_url = 'https://room.mathvisionapp.com' where id = 1;`
+    Null means off everywhere; a trailing slash is tolerated.
+-2. Per department, as an admin, from the admin screen or the SQL editor:
++2. Per department, as an admin, from the app (Account → Departments →
++   "Lesson platform", On / Off per room; the section is drawn only on a build
++   with `EXPO_PUBLIC_ROOM_URL` set) or the SQL editor:
+    `select public.enable_lesson_platform('<department id>', true);`
+    It records the room in `lesson_platform_rooms` and stamps
+    `meeting_url = room_url || '/lesson/' || id` on that department's FUTURE
+@@ -170,3 +172,16 @@ are set, and it is switched on one department at a time.
+    (`import_portal_checkins` overwrites `arrived_at`).
+ 5. The hourly `mv-lesson-tickets` cron job (DEPLOYMENT.md, the pg_cron block)
+    deletes spent tickets; without it the table only grows, nothing breaks.
++6. What a finished online lesson leaves behind — `lesson_metrics`,
++   `lesson_feedback`, `lesson_report_drafts`, `lesson_followups` — is written
++   only by `worker_store_lesson_results` (service role, from lesson-finalize;
++   `p_quiet => true` for a lesson older than a day). A concern files a
++   `message_tasks` row in the room's pool at once (assigned_by = the teacher,
++   due tomorrow, note ending "AI-extracted from the lesson transcript; verify
++   before acting"); everything else waits for `approve_followup` by the room's
++   in-charge or an admin — a teacher's yes only marks it approved.
++   `dismiss_followup` says no. A second worker run replaces the draft and
++   metrics and proposes nothing twice; to re-propose, delete the session's
++   `proposed` rows first with the service role. `ai_usage` is the model bill:
++   `select kind, model, sum(tokens_in), sum(tokens_out) from public.ai_usage group by 1, 2;`
++   (admins read it in the app).
+diff --git a/docs/SCREENS.md b/docs/SCREENS.md
+index 9ebd901..1814854 100644
+--- a/docs/SCREENS.md
++++ b/docs/SCREENS.md
+@@ -135,6 +135,16 @@ in the app and reach into the materials portal are both intended later.
+ **Reachable screens:** `chat/[id]`, `reports/index`, `reports/new`,
+ `reports/[id]`, `sessions/[id]` (read-only, from a report), `account`.
+ 
++**My sessions also carries an "Online lessons" section** — the teacher's
++online sessions a fortnight each way (`my_online_lessons`), each row with
++the student, subject and topic, the time, and the report's state once the
++lesson is over (the same door as the rows below it). A **Join** button
++appears from fifteen minutes before the start to half an hour after the end.
++In a room whose lesson platform is on, Join opens the lesson room on a
++single-use ticket (`src/lib/lessons.ts`), and the breakout number is not
++shown; elsewhere it opens the centre's Zoom link and names the breakout room
++as before. If the room will not open, Join falls back to Zoom.
++
+ **Test that these do NOT appear:** Sessions tab, Queue tab, Tasks tab, any
+ `/admin/*` route, `calls`, `errand`.
+ 
+@@ -224,6 +234,15 @@ Sees every conversation and controls every account.
+ **Also:** `admin/announcement-approvals` (from `announcements/index`),
+ `admin/request/[id]`. Keeping in touch (`call-coverage`) is a tab.
+ 
++**The lesson platform, room by room:** `admin/departments` carries a
++"Lesson platform" section with an **On / Off** per room, calling
++`enable_lesson_platform`. It is drawn only when the build knows the room's
++address (`EXPO_PUBLIC_ROOM_URL`); on a build without it the section is
++absent, which is not a bug. On a session in a room that is on, the session
++page's Join opens the lesson room on a ticket and the office is not offered
++"Different link for this session only" — a cleared room link is never
++refilled.
++
+ **Every one of these refuses a non-admin outright** with an "Admins only"
+ banner — worth spot-checking two or three by signing in as support and
+ navigating directly, because the guard is per-screen rather than central.
+diff --git a/src/lib/env.ts b/src/lib/env.ts
+index d57ae97..a50b4e1 100644
+--- a/src/lib/env.ts
++++ b/src/lib/env.ts
+@@ -21,6 +21,8 @@ const extra = (Constants.expoConfig?.extra ?? {}) as {
+   sentryDsn?: string;
+   /** 'preview' or 'production' — which channel this binary takes updates on. */
+   channel?: string;
++  /** Where the lesson room is served. Empty = the lesson platform is off. */
++  roomUrl?: string;
+ };
+ 
+ if (!supabaseUrl || !supabaseAnonKey) {
+@@ -114,6 +116,20 @@ export const env = {
+    * which is a supported state, not a broken one.
+    */
+   sentryDsn: extra.sentryDsn ?? '',
++  /*
++   * The lesson room's host (room.mathvisionapp.com), from EXPO_PUBLIC_ROOM_URL.
++   * Empty means the lesson platform is off in this build: every online
++   * session keeps the centre's Zoom link and breakout room, exactly as before
++   * the room existed. When set, a session whose meeting_url sits on this host
++   * is a lesson-room session — the Join button asks room-ticket for a
++   * single-use ticket instead of opening the link bare, and the office is not
++   * offered the controls that would clear the room away (src/lib/lessons.ts).
++   * It must be the same value as edge_config.room_url, which is what the
++   * database stamps onto meeting_url; a mismatch makes every room session
++   * look like a Zoom override, which opens the room's sign-in page instead of
++   * the lesson.
++   */
++  roomUrl: (extra.roomUrl ?? '').trim().replace(/\/+$/, ''),
+   channel,
+   buildLabel,
+   /*
+diff --git a/src/lib/lessons.ts b/src/lib/lessons.ts
+new file mode 100644
+index 0000000..ec70daf
+--- /dev/null
++++ b/src/lib/lessons.ts
+@@ -0,0 +1,161 @@
++import { Alert, Linking } from 'react-native';
++import * as WebBrowser from 'expo-web-browser';
++
++import { env } from './env';
++import { supabase } from './supabase';
++import { colors } from '../theme';
++
++/**
++ * The app's side of the lesson room (room.mathvisionapp.com).
++ *
++ * An online session in a department whose room is switched on carries a
++ * meeting_url on the room's host — the database stamps it
++ * (enable_lesson_platform's backfill, the session_requests_the_room_link
++ * trigger). That link is never opened bare: the room is a different browser
++ * with no session of its own, so the app asks the room-ticket edge function
++ * for a single-use, two-minute ticket and opens THAT, and the room signs the
++ * person in as themself (docs/DEPLOYMENT.md §2c). Nothing secret rides in a
++ * URL the app builds; the token comes back from the function and goes
++ * straight to the browser.
++ *
++ * Two screens hold a Join button — the session page and the teacher's Write
++ * tab — and both ask these two functions rather than deciding for themselves,
++ * so "is this a room link" has one answer (#the-join-button-carries-a-ticket).
++ */
++
++/**
++ * Whether a session's link is the lesson room's, as opposed to Zoom or any
++ * other link somebody pasted.
++ *
++ * The host is matched as a prefix bounded by '/', '?', '#' or the end, so
++ * `https://room.mathvisionapp.com.evil.example/…` is not the room, and the
++ * origin is compared without regard to case because browsers do the same.
++ * An empty room URL — the platform off in this build — is never a match,
++ * whatever the link says: a phone that was not told about the room keeps
++ * opening links the old way.
++ */
++export function isRoomHostUrl(
++  url: string | null | undefined,
++  roomUrl: string = env.roomUrl,
++): boolean {
++  const base = (roomUrl ?? '').trim().replace(/\/+$/, '');
++  if (!base || !url) return false;
++  const link = url.trim();
++  if (link.slice(0, base.length).toLowerCase() !== base.toLowerCase()) return false;
++  const rest = link.slice(base.length);
++  return rest === '' || /^[/?#]/.test(rest);
++}
++
++type Ticket = { purpose: 'join'; session_id: string } | { purpose: 'page'; next: string };
++
++/**
++ * The function's own sentence, when it sent one.
++ *
++ * supabase-js reports every non-2xx as "Edge Function returned a non-2xx
++ * status code" and keeps the body on `context` — the same digging
++ * AuthContext.edgeFunctionMessage and lib/calling do, because the body is
++ * where "That lesson is not yours to join." lives.
++ */
++async function functionMessage(
++  error: unknown,
++): Promise<{ message: string | null; status: number | null }> {
++  const response = (error as { context?: Response } | null)?.context;
++  if (!response || typeof response.json !== 'function') return { message: null, status: null };
++  const status = typeof response.status === 'number' ? response.status : null;
++  try {
++    const body = (await response.json()) as { error?: unknown } | null;
++    const message = body?.error;
++    return { message: typeof message === 'string' && message ? message : null, status };
++  } catch {
++    return { message: null, status };
++  }
++}
++
++/**
++ * The room said no to THIS person — "That lesson is not yours to join.", a
++ * ticket asked for outside the lesson's window, a page the hand-off may not
++ * land on. Zoom is not the answer to that: the teacher is in the room, and a
++ * parent sent to an empty Zoom call has been told nothing. A refusal is
++ * shown in its own words; every other failure (the function down, the room
++ * not configured, the browser declining) still falls back to the link that
++ * exists.
++ */
++class RoomRefusal extends Error {}
++
++/**
++ * Mints a ticket and opens the room on it.
++ *
++ * The in-app browser (SFSafariViewController / Custom Tabs) rather than
++ * openAuthSessionAsync, for the same reason the Portal tab uses it: it keeps
++ * the room's cookie between opens, so the second join of the day is already
++ * signed in, and it does not put up iOS's "wants to sign in" alert every
++ * time. Opened as a sheet, in the app's colours, exactly as the portal is.
++ */
++async function openOnTicket(ticket: Ticket): Promise<void> {
++  const { data, error } = await supabase.functions.invoke('room-ticket', { body: ticket });
++  if (error) {
++    const { message, status } = await functionMessage(error);
++    const sentence = message ?? (error as Error).message;
++    throw status === 400 || status === 403 ? new RoomRefusal(sentence) : new Error(sentence);
++  }
++  const url = (data as { url?: unknown } | null)?.url;
++  if (typeof url !== 'string' || !url) {
++    throw new Error('The lesson room did not send a link to open.');
++  }
++  await WebBrowser.openBrowserAsync(url, {
++    presentationStyle: WebBrowser.WebBrowserPresentationStyle.PAGE_SHEET,
++    controlsColor: colors.brand,
++    toolbarColor: colors.bg,
++  });
++}
++
++/**
++ * Join a lesson: a ticket for this session, then the room.
++ *
++ * Whatever breaks — the function down, the room not set up, the browser
++ * declining to open — the person still has a lesson to get to, so when a
++ * Zoom link exists (the centre's, or the session's own override) it opens
++ * instead; a broken hand-off never cancels a lesson. A refusal is different
++ * (RoomRefusal above): the room's sentence is shown, and nothing else opens.
++ * With nothing to fall back on, the reason is said in a box rather than
++ * swallowed: a tap that does nothing is the one thing a Join button must
++ * never do.
++ */
++export async function openLessonRoom(
++  sessionId: string,
++  fallbackUrl?: string | null,
++): Promise<void> {
++  try {
++    await openOnTicket({ purpose: 'join', session_id: sessionId });
++  } catch (roomError) {
++    if (fallbackUrl && !(roomError instanceof RoomRefusal)) {
++      try {
++        await Linking.openURL(fallbackUrl);
++        return;
++      } catch {
++        // Both doors shut: say so below, naming the room's reason — it is the
++        // one with a sentence in it.
++      }
++    }
++    Alert.alert(
++      'Could not open the lesson room',
++      (roomError as Error)?.message || 'Check your connection and try again.',
++    );
++  }
++}
++
++/**
++ * One of the room's own pages — practice, progress, the bank, a test —
++ * signed in as this person. `next` is a path on the room's host; the function
++ * refuses anything outside the pages a hand-off may land on.
++ */
++export async function openRoomPage(next: string): Promise<void> {
++  try {
++    await openOnTicket({ purpose: 'page', next });
++  } catch (roomError) {
++    Alert.alert(
++      'Could not open the lesson room',
++      (roomError as Error)?.message || 'Check your connection and try again.',
++    );
++  }
++}
+-- 
+2.43.0
+

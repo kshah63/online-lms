@@ -1,0 +1,2837 @@
+From f52c3d49eec29ca5b26af6617a4587a1c28cc7ad Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 15:48:47 +0000
+Subject: [PATCH 2/9] An online session in a room that is on has a link and a
+ seat, and the room writes arrival and nothing else
+
+Two migrations, each with its probe and its RLS section.
+
+The first turns the lesson room on per department: edge_config.room_url,
+lesson_platform_rooms, enable_lesson_platform (admin only; backfills the
+link on future online sessions with none), a BEFORE INSERT trigger that
+stamps new online bookings and never touches an UPDATE, room_access (host,
+learner or observer, decided from the live booking inside its window),
+manages_course, and the single-use lesson_tickets that room-ticket and
+room-redeem spend.
+
+The second gives a lesson its rooms, notebooks, consents, course-to-
+materials mapping, transcripts, events and report drafts, and the RPCs the
+room calls: lesson_room_state, my_online_lessons, lesson_join, lesson_end,
+save_lesson_notebook, log_lesson_event, set_lesson_consent, and the
+service-role door import_lesson_room_facts, whose probe asserts by regex
+that it never names status, confirmed_start, requested_start,
+assigned_teacher_id or meeting_url. retire_seed_course_twins is re-emitted
+so the two new tables pointing at courses move with the rest.
+
+The RLS suite passes on a fresh database (273 sections) and the ledger
+says yes to all six new probes. RUNBOOK.md says how a room is switched on;
+DEPLOYMENT.md gains the hourly ticket sweep in the pg_cron block.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016Yf774TAZaYcnfPt2CdeHJ
+---
+ docs/DEPLOYMENT.md                            |   12 +-
+ docs/RUNBOOK.md                               |   29 +
+ ..._room_that_is_on_has_a_link_and_a_seat.sql |  352 ++++++
+ ...ture_onto_the_booking_and_nothing_else.sql | 1004 +++++++++++++++++
+ supabase/probes/20261013152315.sql            |   49 +
+ supabase/probes/20261013152316.sql            |   54 +
+ ..._room_that_is_on_has_a_link_and_a_seat.sql |  496 ++++++++
+ ...ture_onto_the_booking_and_nothing_else.sql |  727 ++++++++++++
+ 8 files changed, 2720 insertions(+), 3 deletions(-)
+ create mode 100644 supabase/migrations/20261013152315_an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+ create mode 100644 supabase/migrations/20261013152316_the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+ create mode 100644 supabase/probes/20261013152315.sql
+ create mode 100644 supabase/probes/20261013152316.sql
+ create mode 100644 supabase/tests/rls/20261013152317-an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+ create mode 100644 supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+
+diff --git a/docs/DEPLOYMENT.md b/docs/DEPLOYMENT.md
+index 7b4c762..543ec57 100644
+--- a/docs/DEPLOYMENT.md
++++ b/docs/DEPLOYMENT.md
+@@ -918,6 +918,11 @@ begin
+ 
+   -- Ten minutes later, so marking has finished before deleting starts. They
+   -- are separate because SQL cannot remove bytes from a bucket.
++  -- A lesson-room hand-off ticket lives two minutes; anything a day old is
++  -- a row with nothing left to say. Service role only.
++  perform cron.schedule('mv-lesson-tickets', '0 * * * *',
++    $$select public.sweep_lesson_tickets()$$);
++
+   perform cron.schedule('mv-storage-cleanup', '10 18 * * *',
+     $$select public.invoke_edge_function('storage-cleanup')$$);
+ 
+@@ -1018,10 +1023,11 @@ select jobname, active, command like '%invoke_edge_function%' as new_style
+   from cron.job order by jobname;
+ ```
+ 
+-Four of the thirteen must read `t`. `mv-sweep-retention`, `mv-due-reminders`,
++Four of the fourteen must read `t`. `mv-sweep-retention`, `mv-due-reminders`,
+ `mv-due-tasks`, `mv-stale-holds`, `mv-no-shows`, `mv-stale-threads`,
+-`mv-dead-rings`, `mv-call-coverage` and `mv-report-nudges` read `f` and that is
+-correct — all nine are plain function calls with no HTTP in them
++`mv-dead-rings`, `mv-call-coverage`, `mv-report-nudges` and
++`mv-lesson-tickets` read `f` and that is
++correct — all ten are plain function calls with no HTTP in them
+ (mv-call-coverage and
+ mv-report-nudges post through invoke_edge_function *inside* the function,
+ which the `command` column cannot see). Any of the other four reading `f` is
+diff --git a/docs/RUNBOOK.md b/docs/RUNBOOK.md
+index f6adf64..b6a502e 100644
+--- a/docs/RUNBOOK.md
++++ b/docs/RUNBOOK.md
+@@ -141,3 +141,32 @@ meanwhile.
+ - The portal's MySQL backups are the centre's own cPanel arrangement — the
+   app's originals (threads, messages, bookings held for approval) live only
+   in Supabase, which is why the drill above matters.
++
++## Turning the lesson platform on for a room
++
++The lesson room (room.mathvisionapp.com) is off everywhere until two things
++are set, and it is switched on one department at a time.
++
++1. Once per project, set the room's address:
++   `update public.edge_config set room_url = 'https://room.mathvisionapp.com' where id = 1;`
++   Null means off everywhere; a trailing slash is tolerated.
++2. Per department, as an admin, from the admin screen or the SQL editor:
++   `select public.enable_lesson_platform('<department id>', true);`
++   It records the room in `lesson_platform_rooms` and stamps
++   `meeting_url = room_url || '/lesson/' || id` on that department's FUTURE
++   online sessions that have no link yet — quietly: no push, nothing to the
++   portal. A Zoom link somebody pasted is never overwritten. New online
++   bookings in the department are stamped by the trigger
++   `session_requests_the_room_link` on INSERT only; a link a person clears is
++   never refilled.
++3. `select public.enable_lesson_platform('<department id>', false);` turns it
++   off: the row goes, every `meeting_url` stays as it is, and `room_access`
++   stops seating hosts and learners.
++4. Attendance for online lessons is written by the room — `lesson_join` as
++   the student, `import_lesson_room_facts` from the daily-webhook function —
++   onto `session_requests.arrived_at` / `departed_at` only. The booking's
++   status is never moved by the room: whatever closes online sessions today
++   keeps doing it, and a later portal sign-in still wins
++   (`import_portal_checkins` overwrites `arrived_at`).
++5. The hourly `mv-lesson-tickets` cron job (DEPLOYMENT.md, the pg_cron block)
++   deletes spent tickets; without it the table only grows, nothing breaks.
+diff --git a/supabase/migrations/20261013152315_an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql b/supabase/migrations/20261013152315_an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+new file mode 100644
+index 0000000..ddf0324
+--- /dev/null
++++ b/supabase/migrations/20261013152315_an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+@@ -0,0 +1,352 @@
++-- ---------------------------------------------------------------------------
++-- An online session in a room that is on has a link and a seat.
++--
++-- The lesson platform (docs in online-lms/docs/INTEGRATION.md, "Sessions
++-- seam"): the booking IS the lesson. Nothing here creates a session; this
++-- hands an existing online booking a room link and decides who may sit in
++-- that room. Stage 1 of the hand-off: the flag per department, the ticket
++-- table the edge functions mint and redeem, the seat helpers the room and
++-- the app both ask, and the link stamp.
++--
++-- WHERE THE FLAG LIVES. lesson_platform_rooms, a table of our own keyed by
++-- department: departments and courses are both upserted by the sync
++-- daemon's directory pass, so a column on either would be nulled by it. A
++-- department whose row exists has the platform on; edge_config.room_url is
++-- the one address every link is built from (null = off everywhere).
++--
++-- THE LINK IS STAMPED ONCE, ON INSERT, NEVER ON UPDATE. A cleared
++-- meeting_url is a person's decision and must not be silently refilled.
++-- enable_lesson_platform backfills the department's FUTURE online sessions
++-- whose link is empty, and the trigger stamps new ones the same way. A Zoom
++-- link somebody pasted before the flag is never overwritten by either.
++-- The trigger's name sorts after session_requests_apply_routing (triggers
++-- fire in name order) so department_id is already decided when it reads it.
++--
++-- meeting_url is not in enqueue_session_sync's change list, so neither the
++-- backfill nor the stamp tells the portal anything; the backfill still runs
++-- under app.push_quiet because it is a mirror catching up, not news.
++--
++-- SEATS. room_access(session, uid) is the one rule for who is in the room:
++-- 'host' for the assigned teacher and 'learner' for the student, both only
++-- while the lesson is live (fifteen minutes before, thirty after) and the
++-- room is on; 'observer' for an admin or the room's in-charge. A cancelled
++-- or in-person session has no seats at all. Every lesson_ policy and RPC
++-- after this re-asks this function rather than copying its clauses.
++--
++-- TICKETS. lesson_tickets carries the hash of a token the room-ticket edge
++-- function mints for a zero-login hand-off into the browser. RLS on with no
++-- policy and every privilege revoked from clients (the portal_session_notes
++-- pattern): only the service role, through redeem_lesson_ticket, ever reads
++-- one, and that read marks it redeemed in the same statement.
++-- ---------------------------------------------------------------------------
++
++alter table public.edge_config add column if not exists room_url text;
++
++comment on column public.edge_config.room_url is
++  'The lesson room''s origin (https://room.mathvisionapp.com). Every room link '
++  'is room_url || ''/lesson/'' || session id. Null means the lesson platform '
++  'is off everywhere, whatever lesson_platform_rooms says.';
++
++create table if not exists public.lesson_platform_rooms (
++  department_id uuid primary key references public.departments (id) on delete cascade,
++  enabled_at    timestamptz not null default now(),
++  enabled_by    uuid references public.profiles (id) on delete set null
++);
++
++comment on table public.lesson_platform_rooms is
++  'A department whose row is here runs its online sessions in the lesson '
++  'platform. Written only by enable_lesson_platform (admin).';
++
++alter table public.lesson_platform_rooms enable row level security;
++-- A stranger with the publishable key holds no write here (20260901060458):
++-- the default grant to anon is taken back on every new table.
++revoke insert, update, delete, truncate, references, trigger
++  on public.lesson_platform_rooms from anon;
++
++drop policy if exists lesson_platform_rooms_select on public.lesson_platform_rooms;
++create policy lesson_platform_rooms_select on public.lesson_platform_rooms
++  for select to authenticated using (true);
++
++create table if not exists public.lesson_tickets (
++  id          uuid primary key default gen_random_uuid(),
++  token_hash  text not null unique,
++  user_id     uuid not null references public.profiles (id) on delete cascade,
++  session_id  uuid references public.session_requests (id) on delete cascade,
++  purpose     text not null check (purpose in ('join', 'test', 'page')),
++  next_path   text,
++  attempt_id  uuid,
++  expires_at  timestamptz not null,
++  redeemed_at timestamptz,
++  created_at  timestamptz not null default now()
++);
++
++comment on table public.lesson_tickets is
++  'One-shot hand-off tickets into the lesson room: the hex sha256 of a token '
++  'the room-ticket edge function minted, who it is for, where it lands. '
++  'Service role only; redeemed once by redeem_lesson_ticket and swept by '
++  'sweep_lesson_tickets.';
++
++alter table public.lesson_tickets enable row level security;
++revoke all on public.lesson_tickets from public, anon, authenticated;
++
++-- ---------------------------------------------------------------------------
++-- Is the platform on for this department?
++--
++-- A department is on when its row exists. A session with NO department is
++-- on when the room has an address at all: room_access and the link stamp
++-- both ask this one function, so a null room cannot be a seat in one and
++-- not a link in the other.
++-- ---------------------------------------------------------------------------
++create or replace function public.lesson_platform_enabled(p_department_id uuid)
++returns boolean
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select case
++           when p_department_id is null
++             then exists (select 1 from public.edge_config ec
++                           where ec.id = 1 and ec.room_url is not null)
++           else exists (select 1 from public.lesson_platform_rooms r
++                         where r.department_id = p_department_id)
++         end;
++$$;
++
++comment on function public.lesson_platform_enabled(uuid) is
++  'True when the department runs online sessions in the lesson platform; for '
++  'a null department, when edge_config.room_url is set at all.';
++
++revoke all on function public.lesson_platform_enabled(uuid) from public;
++grant execute on function public.lesson_platform_enabled(uuid) to authenticated;
++
++-- The room link for a session, or null while the room has no address.
++create or replace function public.lesson_room_link(p_session_id uuid)
++returns text
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select rtrim(ec.room_url, '/') || '/lesson/' || p_session_id::text
++    from public.edge_config ec
++   where ec.id = 1 and ec.room_url is not null;
++$$;
++
++revoke all on function public.lesson_room_link(uuid) from public, anon, authenticated;
++
++-- ---------------------------------------------------------------------------
++-- room_access: the seat, or none.
++-- ---------------------------------------------------------------------------
++create or replace function public.room_access(p_session_id uuid, uid uuid default auth.uid())
++returns text
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select case
++           when s.assigned_teacher_id = uid and live.is_live then 'host'
++           when s.student_id = uid and live.is_live then 'learner'
++           when public.is_admin(uid)
++                or (s.department_id is not null
++                    and public.is_incharge_of(s.department_id, uid))
++             then 'observer'
++         end
++    from public.session_requests s
++    cross join lateral (
++      select now() between s.effective_start - interval '15 minutes'
++                       and coalesce(s.ends_at,
++                                    s.effective_start
++                                    + make_interval(mins => s.duration_minutes))
++                           + interval '30 minutes'
++             and public.lesson_platform_enabled(s.department_id) as is_live
++    ) live
++   where s.id = p_session_id
++     and uid is not null
++     -- A room is an online thing, and a cancelled, declined or still-held
++     -- booking has no room: no seat for anybody, observers included.
++     and s.mode = 'online'
++     and s.status in ('confirmed', 'completed');
++$$;
++
++comment on function public.room_access(uuid, uuid) is
++  'The caller''s seat in a lesson room: host (assigned teacher) or learner '
++  '(the student) while the online session is live and its department is on; '
++  'observer for an admin or the department''s in-charge; null otherwise. '
++  'The one rule every lesson_ policy and RPC asks.';
++
++revoke all on function public.room_access(uuid, uuid) from public;
++grant execute on function public.room_access(uuid, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- manages_course: who curates a course's materials, syllabus and bank.
++-- An admin, or an in-charge (role staff or support, still with the centre)
++-- of the course's own department or of any department a routing rule sends
++-- the course to.
++-- ---------------------------------------------------------------------------
++create or replace function public.manages_course(p_course_id uuid, uid uuid default auth.uid())
++returns boolean
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select public.is_admin(uid)
++      or exists (
++           select 1
++             from public.profiles p
++             join public.department_members dm on dm.user_id = p.id and dm.is_incharge
++            where p.id = uid
++              and p.role in ('staff', 'support')
++              and p.deactivated_at is null
++              and (dm.department_id = (select c.department_id
++                                         from public.courses c where c.id = p_course_id)
++                   or dm.department_id in (select rr.department_id
++                                             from public.routing_rules rr
++                                            where rr.course_id = p_course_id
++                                              and rr.is_active))
++         );
++$$;
++
++comment on function public.manages_course(uuid, uuid) is
++  'An admin, or an in-charge of the course''s department or of a department a '
++  'routing rule sends the course to.';
++
++revoke all on function public.manages_course(uuid, uuid) from public;
++grant execute on function public.manages_course(uuid, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- enable_lesson_platform: the admin's switch.
++-- ---------------------------------------------------------------------------
++create or replace function public.enable_lesson_platform(p_department_id uuid, p_on boolean)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  v_quiet text;
++begin
++  if not public.is_admin() then
++    raise exception 'only an admin turns the lesson platform on or off'
++      using errcode = '42501';
++  end if;
++  if p_department_id is null then
++    raise exception 'a department is needed' using errcode = '22023';
++  end if;
++
++  if not p_on then
++    -- Off leaves every meeting_url exactly as it is: a link already handed
++    -- to a family is theirs, and clearing it is a person's decision.
++    delete from public.lesson_platform_rooms where department_id = p_department_id;
++    return;
++  end if;
++
++  if not exists (select 1 from public.edge_config ec
++                  where ec.id = 1 and ec.room_url is not null) then
++    raise exception 'edge_config.room_url is not set, so there is no room to link to'
++      using errcode = 'P0001';
++  end if;
++
++  insert into public.lesson_platform_rooms (department_id, enabled_by)
++  values (p_department_id, auth.uid())
++  on conflict (department_id) do nothing;
++
++  -- The backfill is a mirror catching up, not news: quiet toward phones.
++  -- Saved and restored rather than cleared (20260901055516): the flag is
++  -- transaction-scoped and outlives this call.
++  v_quiet := coalesce(current_setting('app.push_quiet', true), '');
++  perform set_config('app.push_quiet', '1', true);
++  update public.session_requests s
++     set meeting_url = public.lesson_room_link(s.id)
++   where s.department_id = p_department_id
++     and s.mode = 'online'
++     and s.meeting_url is null
++     and s.effective_start > now();
++  perform set_config('app.push_quiet', v_quiet, true);
++end;
++$$;
++
++comment on function public.enable_lesson_platform(uuid, boolean) is
++  'Admin only. On: records the department in lesson_platform_rooms and stamps '
++  'the room link on its future online sessions that have no link yet. Off: '
++  'removes the row and leaves every meeting_url alone.';
++
++revoke all on function public.enable_lesson_platform(uuid, boolean) from public;
++grant execute on function public.enable_lesson_platform(uuid, boolean) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- The stamp: BEFORE INSERT only.
++-- ---------------------------------------------------------------------------
++create or replace function public.stamp_the_room_link()
++returns trigger
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++begin
++  if new.mode = 'online'
++     and new.meeting_url is null
++     and public.lesson_platform_enabled(new.department_id) then
++    -- lesson_room_link is null while edge_config.room_url is, so a room
++    -- with no address stamps nothing.
++    new.meeting_url := public.lesson_room_link(new.id);
++  end if;
++  return new;
++end;
++$$;
++
++revoke all on function public.stamp_the_room_link() from public, anon, authenticated;
++
++drop trigger if exists session_requests_the_room_link on public.session_requests;
++create trigger session_requests_the_room_link
++  before insert on public.session_requests
++  for each row execute function public.stamp_the_room_link();
++
++-- ---------------------------------------------------------------------------
++-- The ticket doors: service role only.
++-- ---------------------------------------------------------------------------
++create or replace function public.redeem_lesson_ticket(p_token_hash text)
++returns table(user_id uuid, session_id uuid, purpose text, next_path text, attempt_id uuid)
++language sql
++security definer
++set search_path to 'public'
++as $$
++  -- Single use: the read IS the redemption, in one statement, so two
++  -- redeemers racing on one token cannot both win.
++  update public.lesson_tickets t
++     set redeemed_at = now()
++   where t.token_hash = p_token_hash
++     and t.redeemed_at is null
++     and t.expires_at > now()
++  returning t.user_id, t.session_id, t.purpose, t.next_path, t.attempt_id;
++$$;
++
++comment on function public.redeem_lesson_ticket(text) is
++  'Service role only (room-redeem). Marks the live, unredeemed ticket with '
++  'this hash redeemed and returns who it was for; nothing for a spent, '
++  'expired or unknown one.';
++
++revoke all on function public.redeem_lesson_ticket(text) from public, anon, authenticated;
++grant execute on function public.redeem_lesson_ticket(text) to service_role;
++
++create or replace function public.sweep_lesson_tickets()
++returns integer
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  n int;
++begin
++  delete from public.lesson_tickets where created_at < now() - interval '1 day';
++  get diagnostics n = row_count;
++  return n;
++end;
++$$;
++
++comment on function public.sweep_lesson_tickets() is
++  'Deletes tickets older than a day (they live two minutes). Scheduled by hand '
++  'in the SQL editor as mv-lesson-tickets, hourly; see docs/RUNBOOK.md.';
++
++revoke all on function public.sweep_lesson_tickets() from public, anon, authenticated;
++grant execute on function public.sweep_lesson_tickets() to service_role;
++
++notify pgrst, 'reload schema';
+diff --git a/supabase/migrations/20261013152316_the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql b/supabase/migrations/20261013152316_the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+new file mode 100644
+index 0000000..293835f
+--- /dev/null
++++ b/supabase/migrations/20261013152316_the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+@@ -0,0 +1,1004 @@
++-- ---------------------------------------------------------------------------
++-- The room writes arrival and departure onto the booking, and nothing else.
++--
++-- Stage 2 of the lesson platform (online-lms/docs/INTEGRATION.md, "Sessions
++-- seam", "Data model"): what a live lesson leaves behind, and the doors the
++-- room and the app use to read and write it.
++--
++-- ATTENDANCE. Nothing in mv-app sets arrived_at for an online session today
++-- (sweep_no_shows skips them, and the check-in doors are for the building),
++-- so without this the teacher's Write tab never lists an online lesson and
++-- nobody is nudged for its report. Two doors write it, and both write only
++-- arrived_at / departed_at / no_show -- never status, never a time, never the
++-- teacher, never meeting_url:
++--
++--   lesson_join(session)   the learner, by their own hand, under room_access
++--   import_lesson_room_facts(rows)   the video provider's webhook, service
++--                          role only, under app.portal_import like every
++--                          other import door (the suite's "an import door
++--                          that writes where a push lives says so" covers it
++--                          by its import_ prefix). auth.uid() is null for it,
++--                          so every BEFORE UPDATE guard on session_requests
++--                          steps aside -- which is exactly why its body may
++--                          not name the columns above, and a probe reads
++--                          pg_proc.prosrc to hold it to that.
++--
++-- Both pass the seventeen BEFORE UPDATE triggers on session_requests because
++-- guard_session_edit only engages when a reschedule column moves and
++-- enqueue_session_sync compares none of these columns, so the portal hears
++-- nothing. The RLS section runs lesson_join as the student to prove it.
++--
++-- THE PORTAL STAYS THE RECORD. A later wp_enter keyed by the office for the
++-- same booking makes import_portal_checkins overwrite arrived_at, and status
++-- is not touched here at all: it is in enqueue_session_sync's change list
++-- and would push a row to the portal whose applier's acceptance of an
++-- app-side 'completed' is unverified. Whatever closes online sessions today
++-- keeps doing it.
++--
++-- WHO READS WHAT. Rooms, transcripts, events and report drafts: the assigned
++-- teacher of the session, the department's in-charge (is_incharge_of) and
++-- an admin, through one helper, reads_lesson(). Families read none of them
++-- on purpose (a transcript holds the teacher's every word). Notebooks: the
++-- student, the teacher assigned to a session for that student and course
++-- within a day, manages_course, admin. Consents: the household, the room's
++-- in-charges through room_reaches, admin. Never is_staff() alone.
++--
++-- lesson_report_drafts is created here because my_online_lessons reports
++-- draft_ready from it; stage 3 fills it (lesson-finalize) and wires its
++-- push trigger. Its two CHECKs mirror session_reports_prev_hw_check and the
++-- OTR bands, so a draft can never propose a value the report form refuses.
++-- ---------------------------------------------------------------------------
++
++create table if not exists public.lesson_rooms (
++  session_id             uuid primary key references public.session_requests (id) on delete cascade,
++  provider               text not null default 'daily',
++  room_name              text unique,
++  room_url               text,
++  created_at             timestamptz not null default now(),
++  opened_at              timestamptz,
++  closed_at              timestamptz,
++  recording_enabled      boolean not null default false,
++  transcript_status      text not null default 'none'
++                         check (transcript_status in ('none', 'pending', 'ready', 'failed')),
++  provider_transcript_id text,
++  provider_recording_id  text
++);
++
++comment on table public.lesson_rooms is
++  'The video room behind an online session: lesson-<session id> at the '
++  'provider, when it was first opened and last closed. Created by the '
++  'room-ticket edge function or by lesson_join, closed by lesson_end and '
++  'the provider''s webhook.';
++
++create table if not exists public.lesson_notebooks (
++  id              uuid primary key default gen_random_uuid(),
++  student_id      uuid not null references public.profiles (id) on delete cascade,
++  course_id       uuid not null references public.courses (id) on delete cascade,
++  tldraw_snapshot jsonb,
++  updated_at      timestamptz not null default now(),
++  unique (student_id, course_id)
++);
++
++comment on table public.lesson_notebooks is
++  'One shared whiteboard per student and course, carried from lesson to '
++  'lesson. Created lazily by lesson_room_state, saved by save_lesson_notebook.';
++
++create table if not exists public.lesson_consents (
++  student_id uuid not null references public.profiles (id) on delete cascade,
++  kind       text not null check (kind in ('recording', 'transcript', 'ai_analysis', 'integrity_camera')),
++  granted_by uuid references public.profiles (id) on delete set null,
++  granted_at timestamptz not null default now(),
++  revoked_at timestamptz,
++  primary key (student_id, kind)
++);
++
++comment on table public.lesson_consents is
++  'What a parent has agreed to for a child''s online lessons. A row with '
++  'revoked_at null is a consent in force. Written only by set_lesson_consent.';
++
++create table if not exists public.lesson_course_materials (
++  course_id           uuid primary key references public.courses (id) on delete cascade,
++  materials_course_id uuid not null,
++  mapped_by           uuid references public.profiles (id) on delete set null,
++  mapped_at           timestamptz not null default now()
++);
++
++comment on table public.lesson_course_materials is
++  'Which course on the materials portal an mv-app course is, picked by an '
++  'admin. Its own table rather than a column on courses, which the sync '
++  'daemon upserts.';
++
++create table if not exists public.lesson_transcripts (
++  session_id uuid primary key references public.session_requests (id) on delete cascade,
++  segments   jsonb not null default '[]'::jsonb,
++  word_count integer,
++  created_at timestamptz not null default now(),
++  updated_at timestamptz not null default now()
++);
++
++comment on table public.lesson_transcripts is
++  'The lesson''s transcript as the room held it: segments [{speaker, text, '
++  'at_ms, ...}]. Written by lesson_end; read by the teacher, the in-charge '
++  'and admins, never by a family.';
++
++create table if not exists public.lesson_events (
++  id         bigserial primary key,
++  session_id uuid not null references public.session_requests (id) on delete cascade,
++  at         timestamptz not null default now(),
++  kind       text not null,
++  payload    jsonb not null default '{}'::jsonb,
++  actor_id   uuid references public.profiles (id) on delete set null
++);
++
++create index if not exists lesson_events_session_idx
++  on public.lesson_events (session_id, at);
++
++comment on table public.lesson_events is
++  'Append-only log of what happened in a lesson room (teacher_note, '
++  'quick_check, ...): any seat may write through log_lesson_event.';
++
++create table if not exists public.lesson_report_drafts (
++  session_id uuid primary key references public.session_requests (id) on delete cascade,
++  draft      jsonb not null,
++  rationale  text,
++  source     text not null check (source in ('ai', 'heuristic')),
++  created_at timestamptz not null default now(),
++  used_at    timestamptz
++);
++
++comment on table public.lesson_report_drafts is
++  'A proposed report for an online lesson, in submit_report''s parameter '
++  'shape, for the teacher to confirm in the app''s form. Never a report '
++  'itself: the one door into session_reports stays submit_report.';
++
++-- The nine portal strings, exactly as session_reports_prev_hw_check holds them.
++alter table public.lesson_report_drafts drop constraint if exists lesson_report_drafts_prev_hw_check;
++alter table public.lesson_report_drafts add constraint lesson_report_drafts_prev_hw_check check (
++  (draft->>'prev_hw') is null
++  or (draft->>'prev_hw') in ('Yes', 'Most of it Done', 'Partially Done', 'Little Done',
++                             'Not Done', 'No Homework Given',
++                             'Did Not Bring / Did Not Send Through Email/Whatsapp',
++                             'Did Not Bring Exercise Book',
++                             'Done And Sent Through Email/Skype/Whatsapp'));
++
++-- OTR is offered to the teacher as bands, so the draft may only hold one.
++alter table public.lesson_report_drafts drop constraint if exists lesson_report_drafts_otr_check;
++alter table public.lesson_report_drafts add constraint lesson_report_drafts_otr_check check (
++  (draft->>'otr') is null
++  or ((draft->>'otr')::int between 5 and 95 and (draft->>'otr')::int % 5 = 0));
++
++alter table public.lesson_rooms            enable row level security;
++alter table public.lesson_notebooks        enable row level security;
++alter table public.lesson_consents         enable row level security;
++alter table public.lesson_course_materials enable row level security;
++alter table public.lesson_transcripts      enable row level security;
++alter table public.lesson_events           enable row level security;
++alter table public.lesson_report_drafts    enable row level security;
++
++-- A stranger with the publishable key holds no write on any of these
++-- (20260901060458): the default grant to anon is taken back on every new
++-- table.
++revoke insert, update, delete, truncate, references, trigger on public.lesson_rooms            from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_notebooks        from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_consents         from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_course_materials from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_transcripts      from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_events           from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_report_drafts    from anon;
++
++-- ---------------------------------------------------------------------------
++-- reads_lesson: the assigned teacher, the room's in-charge, an admin.
++-- ---------------------------------------------------------------------------
++create or replace function public.reads_lesson(p_session_id uuid, uid uuid default auth.uid())
++returns boolean
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select exists (
++    select 1
++      from public.session_requests s
++     where s.id = p_session_id
++       and uid is not null
++       and (s.assigned_teacher_id = uid
++            or public.is_admin(uid)
++            or (s.department_id is not null
++                and public.is_incharge_of(s.department_id, uid)))
++  );
++$$;
++
++comment on function public.reads_lesson(uuid, uuid) is
++  'Who reads what a lesson left behind (room, transcript, events, draft): '
++  'the session''s assigned teacher, the department''s in-charge, an admin. '
++  'Families, deliberately, never.';
++
++revoke all on function public.reads_lesson(uuid, uuid) from public;
++grant execute on function public.reads_lesson(uuid, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- lesson_notebook_access: the student, the teacher assigned to a session for
++-- that student and course within a day of now, manages_course, admin.
++-- ---------------------------------------------------------------------------
++create or replace function public.lesson_notebook_access(p_notebook_id uuid, uid uuid default auth.uid())
++returns boolean
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select exists (
++    select 1
++      from public.lesson_notebooks n
++     where n.id = p_notebook_id
++       and uid is not null
++       and (n.student_id = uid
++            or public.is_admin(uid)
++            or public.manages_course(n.course_id, uid)
++            or exists (select 1
++                         from public.session_requests s
++                        where s.student_id = n.student_id
++                          and s.course_id = n.course_id
++                          and s.assigned_teacher_id = uid
++                          and s.status not in ('cancelled', 'declined')
++                          and s.effective_start between now() - interval '1 day'
++                                                    and now() + interval '1 day'))
++  );
++$$;
++
++revoke all on function public.lesson_notebook_access(uuid, uuid) from public;
++grant execute on function public.lesson_notebook_access(uuid, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- Policies. Every write goes through an RPC below, so only reads are here
++-- (lesson_course_materials excepted: the admin's mapping screen writes it).
++-- ---------------------------------------------------------------------------
++drop policy if exists lesson_rooms_select on public.lesson_rooms;
++create policy lesson_rooms_select on public.lesson_rooms
++  for select to authenticated using (public.reads_lesson(session_id));
++
++drop policy if exists lesson_transcripts_select on public.lesson_transcripts;
++create policy lesson_transcripts_select on public.lesson_transcripts
++  for select to authenticated using (public.reads_lesson(session_id));
++
++drop policy if exists lesson_events_select on public.lesson_events;
++create policy lesson_events_select on public.lesson_events
++  for select to authenticated using (public.reads_lesson(session_id));
++
++drop policy if exists lesson_report_drafts_select on public.lesson_report_drafts;
++create policy lesson_report_drafts_select on public.lesson_report_drafts
++  for select to authenticated using (public.reads_lesson(session_id));
++
++drop policy if exists lesson_notebooks_select on public.lesson_notebooks;
++create policy lesson_notebooks_select on public.lesson_notebooks
++  for select to authenticated using (public.lesson_notebook_access(id));
++
++drop policy if exists lesson_consents_select on public.lesson_consents;
++create policy lesson_consents_select on public.lesson_consents
++  for select to authenticated using (
++    public.shares_family(student_id)
++    or public.is_admin()
++    or public.room_reaches(
++         (select p.family_id from public.profiles p where p.id = lesson_consents.student_id),
++         student_id, false)
++  );
++
++drop policy if exists lesson_course_materials_select on public.lesson_course_materials;
++create policy lesson_course_materials_select on public.lesson_course_materials
++  for select to authenticated using (true);
++drop policy if exists lesson_course_materials_insert on public.lesson_course_materials;
++create policy lesson_course_materials_insert on public.lesson_course_materials
++  for insert to authenticated with check (public.is_admin());
++drop policy if exists lesson_course_materials_update on public.lesson_course_materials;
++create policy lesson_course_materials_update on public.lesson_course_materials
++  for update to authenticated using (public.is_admin()) with check (public.is_admin());
++drop policy if exists lesson_course_materials_delete on public.lesson_course_materials;
++create policy lesson_course_materials_delete on public.lesson_course_materials
++  for delete to authenticated using (public.is_admin());
++
++-- ---------------------------------------------------------------------------
++-- lesson_room_state: everything the room page needs, one row or none.
++-- ---------------------------------------------------------------------------
++create or replace function public.lesson_room_state(p_session_id uuid)
++returns table(
++  session_id uuid, seat text, status public.request_status, mode public.session_mode,
++  effective_start timestamptz, ends_at timestamptz, duration_minutes integer,
++  time_zone text, topic text, subject text, course_id uuid, course_name text,
++  department_id uuid, department_name text, student_id uuid, student_name text,
++  student_grade text, teacher_id uuid, teacher_name text, family_id uuid,
++  arrived_at timestamptz, departed_at timestamptz, meeting_url text,
++  materials_course_id uuid, notebook_id uuid, room_opened_at timestamptz,
++  room_closed_at timestamptz, recording_enabled boolean, consents jsonb)
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++-- The OUT columns are plpgsql variables too, so an unqualified column name
++-- in a statement below (the ON CONFLICT target) would be "ambiguous";
++-- columns win, and every reference to a variable is spelled v_*.
++#variable_conflict use_column
++declare
++  v_seat     text;
++  v_s        public.session_requests%rowtype;
++  v_notebook uuid;
++begin
++  v_seat := public.room_access(p_session_id);
++  if v_seat is null then
++    return;
++  end if;
++
++  select * into v_s from public.session_requests s where s.id = p_session_id;
++
++  -- The notebook is per student and course, and exists from the first time
++  -- either of them opens the room.
++  if v_seat in ('host', 'learner')
++     and v_s.student_id is not null and v_s.course_id is not null then
++    insert into public.lesson_notebooks (student_id, course_id)
++    values (v_s.student_id, v_s.course_id)
++    on conflict (student_id, course_id) do nothing;
++  end if;
++  select n.id into v_notebook
++    from public.lesson_notebooks n
++   where n.student_id = v_s.student_id and n.course_id = v_s.course_id;
++
++  return query
++    select v_s.id, v_seat, v_s.status, v_s.mode,
++           v_s.effective_start, v_s.ends_at, v_s.duration_minutes,
++           v_s.time_zone, v_s.topic, v_s.subject, v_s.course_id, c.name,
++           v_s.department_id, d.name,
++           v_s.student_id,
++           coalesce(public.display_name(sp.full_name, sp.preferred_name), v_s.student_name),
++           sp.grade_level,
++           v_s.assigned_teacher_id,
++           public.display_name(tp.full_name, tp.preferred_name),
++           v_s.family_id, v_s.arrived_at, v_s.departed_at, v_s.meeting_url,
++           m.materials_course_id, v_notebook,
++           r.opened_at, r.closed_at, coalesce(r.recording_enabled, false),
++           (select jsonb_object_agg(k.kind,
++                     exists (select 1 from public.lesson_consents lc
++                              where lc.student_id = v_s.student_id
++                                and lc.kind = k.kind
++                                and lc.revoked_at is null))
++              from unnest(array['recording', 'transcript', 'ai_analysis', 'integrity_camera']) k(kind))
++      from (select 1) one
++      left join public.courses c                 on c.id = v_s.course_id
++      left join public.departments d             on d.id = v_s.department_id
++      left join public.profiles sp               on sp.id = v_s.student_id
++      left join public.profiles tp               on tp.id = v_s.assigned_teacher_id
++      left join public.lesson_course_materials m on m.course_id = v_s.course_id
++      left join public.lesson_rooms r            on r.session_id = v_s.id;
++end;
++$$;
++
++comment on function public.lesson_room_state(uuid) is
++  'The lesson room page''s one read: the booking, the people in it by '
++  'display name, the room, the materials mapping, the notebook (created on '
++  'first open by the host or learner) and the consents in force. One row for '
++  'a seat, none without one.';
++
++revoke all on function public.lesson_room_state(uuid) from public;
++grant execute on function public.lesson_room_state(uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- my_online_lessons: the caller's online sessions, a fortnight each way.
++-- ---------------------------------------------------------------------------
++create or replace function public.my_online_lessons(p_days integer default 14)
++returns table(
++  session_id uuid, student_id uuid, student_name text, subject text, topic text,
++  effective_start timestamptz, ends_at timestamptz, duration_minutes integer,
++  status public.request_status, mode public.session_mode,
++  arrived_at timestamptz, departed_at timestamptz, meeting_url text,
++  teacher_id uuid, teacher_name text, report_id uuid, report_status public.report_status,
++  draft_ready boolean, time_zone text, seat text)
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  with me as (
++    select p.id, p.role, p.family_id, public.is_admin(p.id) as admin
++      from public.profiles p
++     where p.id = auth.uid()
++  ),
++  span as (
++    select make_interval(days => greatest(coalesce(p_days, 14), 0)) as width
++  )
++  select s.id, s.student_id,
++         coalesce(public.display_name(sp.full_name, sp.preferred_name), s.student_name),
++         s.subject, s.topic, s.effective_start, s.ends_at, s.duration_minutes,
++         s.status, s.mode, s.arrived_at, s.departed_at, s.meeting_url,
++         s.assigned_teacher_id, public.display_name(tp.full_name, tp.preferred_name),
++         r.id, r.status,
++         exists (select 1 from public.lesson_report_drafts d where d.session_id = s.id),
++         s.time_zone,
++         case
++           when s.assigned_teacher_id = me.id then 'host'
++           when s.student_id = me.id then 'learner'
++           when me.role = 'parent' and s.family_id = me.family_id then 'family'
++           else 'observer'
++         end
++    from me
++    cross join span
++    join public.session_requests s
++      on s.mode = 'online'
++     and s.status not in ('cancelled', 'declined')
++     and s.effective_start between now() - span.width and now() + span.width
++     and (s.assigned_teacher_id = me.id
++          or s.student_id = me.id
++          or (me.role = 'parent' and me.family_id is not null and s.family_id = me.family_id)
++          or (s.department_id is not null and public.is_incharge_of(s.department_id, me.id))
++          or (me.admin and public.lesson_platform_enabled(s.department_id)))
++    left join public.profiles sp        on sp.id = s.student_id
++    left join public.profiles tp        on tp.id = s.assigned_teacher_id
++    left join public.session_reports r  on r.session_request_id = s.id
++   order by s.effective_start, s.id
++   limit 200;
++$$;
++
++comment on function public.my_online_lessons(integer) is
++  'Online sessions within p_days either side of now where the caller is the '
++  'teacher (host), the student (learner), a parent of the household (family), '
++  'an in-charge of the department (observer) or an admin (observer, rooms '
++  'that are on). Oldest first, at most 200.';
++
++revoke all on function public.my_online_lessons(integer) from public;
++grant execute on function public.my_online_lessons(integer) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- lesson_join: the learner arrives.
++-- ---------------------------------------------------------------------------
++create or replace function public.lesson_join(p_session_id uuid)
++returns timestamptz
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  v_quiet   text;
++  v_arrived timestamptz;
++begin
++  if public.room_access(p_session_id) is distinct from 'learner' then
++    raise exception 'only the student joins the lesson from here'
++      using errcode = '42501';
++  end if;
++
++  -- Quiet toward phones (no push builder fires on an arrival alone, but the
++  -- invocation would still cost); saved and restored, not cleared.
++  v_quiet := coalesce(current_setting('app.push_quiet', true), '');
++  perform set_config('app.push_quiet', '1', true);
++
++  update public.session_requests s
++     set arrived_at = coalesce(s.arrived_at, now()),
++         no_show    = false
++   where s.id = p_session_id;
++
++  insert into public.lesson_rooms (session_id, room_name, opened_at)
++  values (p_session_id, 'lesson-' || p_session_id::text, now())
++  on conflict (session_id) do update
++    set opened_at = coalesce(public.lesson_rooms.opened_at, excluded.opened_at);
++
++  perform set_config('app.push_quiet', v_quiet, true);
++
++  select s.arrived_at into v_arrived
++    from public.session_requests s where s.id = p_session_id;
++  return v_arrived;
++end;
++$$;
++
++comment on function public.lesson_join(uuid) is
++  'The student joining their own live online lesson: stamps arrived_at (once) '
++  'and clears no_show on the booking, opens the room. Returns arrived_at.';
++
++revoke all on function public.lesson_join(uuid) from public;
++grant execute on function public.lesson_join(uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- lesson_end: the host, the in-charge or an admin closes the lesson.
++-- ---------------------------------------------------------------------------
++create or replace function public.lesson_end(p_session_id uuid, p_segments jsonb default '[]'::jsonb)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  v_quiet text;
++  v_words integer;
++begin
++  if not public.reads_lesson(p_session_id)
++     or not exists (select 1 from public.session_requests s
++                     where s.id = p_session_id
++                       and s.mode = 'online'
++                       and s.status in ('confirmed', 'completed')) then
++    raise exception 'only the teacher, the room''s in-charge or an admin ends an online lesson'
++      using errcode = '42501';
++  end if;
++
++  v_quiet := coalesce(current_setting('app.push_quiet', true), '');
++  perform set_config('app.push_quiet', '1', true);
++
++  -- departed_at only. Not the booking's status: that is in
++  -- enqueue_session_sync's change list, and whatever closes online sessions
++  -- today keeps doing it.
++  update public.session_requests s
++     set departed_at = coalesce(s.departed_at, now())
++   where s.id = p_session_id;
++
++  insert into public.lesson_rooms (session_id, room_name, closed_at)
++  values (p_session_id, 'lesson-' || p_session_id::text, now())
++  on conflict (session_id) do update set closed_at = excluded.closed_at;
++
++  -- The transcript the room held. An end with no segments (a reconnect, a
++  -- second closer) leaves a transcript already written alone.
++  if jsonb_typeof(p_segments) = 'array' and jsonb_array_length(p_segments) > 0 then
++    select coalesce(sum(array_length(regexp_split_to_array(btrim(seg->>'text'), '\s+'), 1)), 0)::int
++      into v_words
++      from jsonb_array_elements(p_segments) seg
++     where nullif(btrim(coalesce(seg->>'text', '')), '') is not null;
++
++    insert into public.lesson_transcripts (session_id, segments, word_count)
++    values (p_session_id, p_segments, v_words)
++    on conflict (session_id) do update
++      set segments   = excluded.segments,
++          word_count = excluded.word_count,
++          updated_at = now();
++  end if;
++
++  perform set_config('app.push_quiet', v_quiet, true);
++end;
++$$;
++
++comment on function public.lesson_end(uuid, jsonb) is
++  'Closes an online lesson: departed_at on the booking (once, never the '
++  'status), closed_at on the room, and the transcript segments the room held '
++  'with their word count. The teacher, the department''s in-charge or an admin.';
++
++revoke all on function public.lesson_end(uuid, jsonb) from public;
++grant execute on function public.lesson_end(uuid, jsonb) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- save_lesson_notebook
++-- ---------------------------------------------------------------------------
++create or replace function public.save_lesson_notebook(p_notebook_id uuid, p_snapshot jsonb)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++begin
++  if not public.lesson_notebook_access(p_notebook_id) then
++    raise exception 'this notebook is not yours to write'
++      using errcode = '42501';
++  end if;
++  update public.lesson_notebooks n
++     set tldraw_snapshot = p_snapshot,
++         updated_at      = now()
++   where n.id = p_notebook_id;
++end;
++$$;
++
++revoke all on function public.save_lesson_notebook(uuid, jsonb) from public;
++grant execute on function public.save_lesson_notebook(uuid, jsonb) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- log_lesson_event: any seat appends.
++-- ---------------------------------------------------------------------------
++create or replace function public.log_lesson_event(p_session_id uuid, p_kind text, p_payload jsonb default '{}'::jsonb)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++begin
++  if nullif(btrim(coalesce(p_kind, '')), '') is null or length(p_kind) > 40 then
++    raise exception 'an event kind is one to forty characters'
++      using errcode = '22023';
++  end if;
++  if public.room_access(p_session_id) is null then
++    raise exception 'no seat in this lesson' using errcode = '42501';
++  end if;
++  insert into public.lesson_events (session_id, kind, payload, actor_id)
++  values (p_session_id, p_kind, coalesce(p_payload, '{}'::jsonb), auth.uid());
++end;
++$$;
++
++revoke all on function public.log_lesson_event(uuid, text, jsonb) from public;
++grant execute on function public.log_lesson_event(uuid, text, jsonb) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- import_lesson_room_facts: the provider's webhook, service role only.
++--
++-- Rows: [{room_name, event ('joined' | 'left' | 'ended'), user_id, at}].
++-- The student's own events land on the booking (arrival once, departure
++-- the latest); anybody else's touch the room's opened_at and closed_at and
++-- nothing more. A room nobody knows is skipped. Returns the rows applied.
++--
++-- Deliberately narrow: no signed-in user means no guard on session_requests
++-- engages, so this body names only the two columns it may write, and the
++-- probe reads it back to make sure.
++-- ---------------------------------------------------------------------------
++create or replace function public.import_lesson_room_facts(p_rows jsonb)
++returns integer
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  r         jsonb;
++  v_session uuid;
++  v_student uuid;
++  v_user    uuid;
++  v_at      timestamptz;
++  v_event   text;
++  v_import  text;
++  v_news    text;
++  n         integer := 0;
++begin
++  -- Quiet toward the portal and toward phones, the way every import door
++  -- is; restored afterwards rather than cleared.
++  v_import := coalesce(current_setting('app.portal_import', true), '');
++  v_news   := coalesce(current_setting('app.portal_news', true), '');
++  perform set_config('app.portal_import', '1', true);
++  perform set_config('app.portal_news', '', true);
++
++  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
++    v_event := r->>'event';
++    v_at    := nullif(r->>'at', '')::timestamptz;
++    v_user  := nullif(r->>'user_id', '')::uuid;
++    if v_event not in ('joined', 'left', 'ended') or v_at is null then
++      continue;
++    end if;
++
++    v_session := null;
++    select lr.session_id, s.student_id
++      into v_session, v_student
++      from public.lesson_rooms lr
++      join public.session_requests s on s.id = lr.session_id
++     where lr.room_name = r->>'room_name';
++    if v_session is null then
++      continue;
++    end if;
++
++    if v_user is not null and v_user = v_student then
++      if v_event = 'joined' then
++        update public.session_requests s
++           set arrived_at = coalesce(s.arrived_at, v_at)
++         where s.id = v_session;
++      else
++        update public.session_requests s
++           set departed_at = greatest(coalesce(s.departed_at, v_at), v_at)
++         where s.id = v_session;
++      end if;
++    else
++      if v_event = 'joined' then
++        update public.lesson_rooms lr
++           set opened_at = coalesce(lr.opened_at, v_at)
++         where lr.session_id = v_session;
++      else
++        update public.lesson_rooms lr
++           set closed_at = greatest(coalesce(lr.closed_at, v_at), v_at)
++         where lr.session_id = v_session;
++      end if;
++    end if;
++    n := n + 1;
++  end loop;
++
++  perform set_config('app.portal_import', v_import, true);
++  perform set_config('app.portal_news', v_news, true);
++  return n;
++end;
++$$;
++
++comment on function public.import_lesson_room_facts(jsonb) is
++  'Service role only (daily-webhook). The video provider''s joined/left/ended '
++  'events: the student''s land as arrived_at and departed_at on the booking, '
++  'anybody else''s as the room''s opened_at and closed_at. Writes nothing else.';
++
++revoke all on function public.import_lesson_room_facts(jsonb) from public, anon, authenticated;
++grant execute on function public.import_lesson_room_facts(jsonb) to service_role;
++
++-- ---------------------------------------------------------------------------
++-- set_lesson_consent: a parent in the household, or an admin.
++-- ---------------------------------------------------------------------------
++create or replace function public.set_lesson_consent(p_student_id uuid, p_kind text, p_granted boolean)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++begin
++  if p_kind is null
++     or p_kind not in ('recording', 'transcript', 'ai_analysis', 'integrity_camera') then
++    raise exception 'consent is one of recording, transcript, ai_analysis, integrity_camera'
++      using errcode = '22023';
++  end if;
++  if not (public.is_admin()
++          or (public.shares_family(p_student_id)
++              and exists (select 1 from public.profiles p
++                           where p.id = auth.uid() and p.role = 'parent'))) then
++    raise exception 'only a parent in the student''s household, or an admin, sets a consent'
++      using errcode = '42501';
++  end if;
++
++  if p_granted then
++    insert into public.lesson_consents (student_id, kind, granted_by, granted_at, revoked_at)
++    values (p_student_id, p_kind, auth.uid(), now(), null)
++    on conflict (student_id, kind) do update
++      set granted_by = excluded.granted_by,
++          granted_at = excluded.granted_at,
++          revoked_at = null
++      -- A consent already in force keeps who gave it and when.
++      where public.lesson_consents.revoked_at is not null;
++  else
++    update public.lesson_consents c
++       set revoked_at = now()
++     where c.student_id = p_student_id
++       and c.kind = p_kind
++       and c.revoked_at is null;
++  end if;
++end;
++$$;
++
++comment on function public.set_lesson_consent(uuid, text, boolean) is
++  'Grants (insert, or clear revoked_at) or revokes (stamp revoked_at) one '
++  'consent for a student. A parent sharing the student''s household, or an admin.';
++
++revoke all on function public.set_lesson_consent(uuid, text, boolean) from public;
++grant execute on function public.set_lesson_consent(uuid, text, boolean) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- Two more tables point at a course, so the twin merge learns them.
++--
++-- retire_seed_course_twins (20261006101925) moves every row that references
++-- a seed course onto its portal twin, and the RLS suite reads the list of
++-- foreign keys into courses out of the catalogue and fails when the
++-- function does not name one of them. lesson_notebooks (one per student and
++-- course) and lesson_course_materials (one per course) are moved under their
++-- own keys like student_courses is: a row the twin already has stays on the
++-- retired course and is counted among what was left behind.
++--
++-- Re-emitted from pg_get_functiondef() against a database with every
++-- migration applied; the two moves and their two lines in the leftover
++-- count are the only change.
++-- ---------------------------------------------------------------------------
++CREATE OR REPLACE FUNCTION public.retire_seed_course_twins()
++ RETURNS jsonb
++ LANGUAGE plpgsql
++ SET search_path TO 'public'
++AS $function$
++declare
++  locked  regclass[];
++  tbl     regclass;
++  n       int;
++  retired int   := 0;
++  revived int   := 0;
++  rooms   int   := 0;
++  names   text[] := '{}';
++  moved   jsonb := '{}';
++  skipped jsonb := '{}';
++begin
++  -- The pairs, once: every seed row beside a keyed row of its name, live or
++  -- not, and one portal row per seed (a live one first) so no row is asked
++  -- to move twice.
++  if to_regclass('pg_temp.course_twins') is not null then
++    drop table pg_temp.course_twins;
++  end if;
++  create temp table course_twins as
++    select distinct on (seed.id)
++           seed.id            as seed_id,
++           seed.name          as name,
++           seed.is_active     as seed_live,
++           seed.department_id as seed_room,
++           real.id            as portal_id
++      from public.courses seed
++      join public.courses real
++        on real.name = seed.name
++       and real.external_id is not null
++       and real.id <> seed.id
++     where seed.external_id is null
++     order by seed.id, real.is_active desc, real.id;
++
++  -- Nothing below is news to anybody (see the migration header). The flag
++  -- is what every import door sets and what the outbox, the pushes and the
++  -- guards read; the triggers that do not read it -- the schedule-change
++  -- stamp among them -- are switched off, on exactly the tables that carry
++  -- one. Both sets are read from the catalogue.
++  perform set_config('app.portal_import', '1', true);
++  select coalesce(array_agg(distinct c.conrelid::regclass), '{}')
++    into locked
++    from pg_constraint c
++    join pg_trigger t on t.tgrelid = c.conrelid and not t.tgisinternal
++   where c.contype = 'f' and c.confrelid = 'public.courses'::regclass;
++  foreach tbl in array locked loop
++    execute format('alter table %s disable trigger user', tbl);
++  end loop;
++
++  -- Plain moves: nothing on these tables is unique by course. One
++  -- statement per table, so the big one is read once, not once per pair.
++  update public.session_requests s set course_id = t.portal_id
++    from course_twins t where s.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('session_requests', n);
++
++  update public.booking_rules b set course_id = t.portal_id
++    from course_twins t where b.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('booking_rules', n);
++
++  update public.conversations c set course_id = t.portal_id
++    from course_twins t where c.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('conversations', n);
++
++  update public.announcements a set course_id = t.portal_id
++    from course_twins t where a.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('announcements', n);
++
++  update public.portal_attendance a set course_id = t.portal_id
++    from course_twins t where a.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('portal_attendance', n);
++
++  update public.portal_mismatches m set course_id = t.portal_id
++    from course_twins t where m.course_id = t.seed_id;
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('portal_mismatches', n);
++
++  -- Moves guarded by each table's own key: a row the portal twin already
++  -- has stays on the retired row and is counted as left behind.
++  update public.student_courses sc set course_id = t.portal_id
++    from course_twins t
++   where sc.course_id = t.seed_id
++     and not exists (select 1 from public.student_courses p
++                      where p.student_id = sc.student_id and p.course_id = t.portal_id);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('student_courses', n);
++
++  update public.routing_rules rr set course_id = t.portal_id
++    from course_twins t
++   where rr.course_id = t.seed_id
++     and not exists (select 1 from public.routing_rules p
++                      where p.course_id = t.portal_id
++                        and p.school_id   is not distinct from rr.school_id
++                        and p.grade_level is not distinct from rr.grade_level);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('routing_rules', n);
++
++  -- (course, grade, label), nulls not distinct: a year-11 Vectors beside an
++  -- all-years Vectors is two topics, not one.
++  update public.course_topics ct set course_id = t.portal_id
++    from course_twins t
++   where ct.course_id = t.seed_id
++     and not exists (select 1 from public.course_topics p
++                      where p.course_id = t.portal_id
++                        and p.grade_level is not distinct from ct.grade_level
++                        and p.label = ct.label);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('course_topics', n);
++
++  update public.department_hours dh set course_id = t.portal_id
++    from course_twins t
++   where dh.course_id = t.seed_id
++     and not exists (select 1 from public.department_hours p
++                      where p.course_id = t.portal_id
++                        and p.weekday = dh.weekday
++                        and p.open_minutes = dh.open_minutes
++                        and p.kind = dh.kind);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('department_hours', n);
++
++  -- One OPEN request per student and course; a decided one moves freely.
++  update public.enrolment_change_requests e set course_id = t.portal_id
++    from course_twins t
++   where e.course_id = t.seed_id
++     and not (e.status = 'pending'
++              and exists (select 1 from public.enrolment_change_requests p
++                           where p.student_id = e.student_id
++                             and p.course_id = t.portal_id
++                             and p.status = 'pending'));
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('enrolment_change_requests', n);
++
++  -- First-course history: where both twins hold a day, the portal row
++  -- takes the earlier; where only the seed does, the row moves.
++  update public.student_course_first p
++     set first_on        = least(p.first_on, s.first_on),
++         portal_first_on = least(p.portal_first_on, s.portal_first_on)
++    from public.student_course_first s
++    join course_twins t on t.seed_id = s.course_id
++   where p.course_id = t.portal_id
++     and p.student_id = s.student_id;
++  update public.student_course_first s set course_id = t.portal_id
++    from course_twins t
++   where s.course_id = t.seed_id
++     and not exists (select 1 from public.student_course_first p
++                      where p.student_id = s.student_id and p.course_id = t.portal_id);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('student_course_first', n);
++
++  -- One notebook per student and course (20261013152316): a student who
++  -- already has one on the portal twin keeps it; the seed's stays behind.
++  update public.lesson_notebooks ln set course_id = t.portal_id
++    from course_twins t
++   where ln.course_id = t.seed_id
++     and not exists (select 1 from public.lesson_notebooks p
++                      where p.student_id = ln.student_id and p.course_id = t.portal_id);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('lesson_notebooks', n);
++
++  -- One materials mapping per course: a twin already mapped keeps its own.
++  update public.lesson_course_materials lm set course_id = t.portal_id
++    from course_twins t
++   where lm.course_id = t.seed_id
++     and not exists (select 1 from public.lesson_course_materials p
++                      where p.course_id = t.portal_id);
++  get diagnostics n = row_count;
++  moved := moved || jsonb_build_object('lesson_course_materials', n);
++
++  -- The seed row's default room, only where the portal row has none.
++  update public.courses c set department_id = t.seed_room
++    from course_twins t
++   where c.id = t.portal_id and c.department_id is null and t.seed_room is not null;
++  get diagnostics rooms = row_count;
++
++  -- A live course must still have a live row: a portal twin somebody
++  -- switched off by hand (the twins were the symptom) comes back when the
++  -- seed row it replaces was the live one. The sync never writes is_active.
++  update public.courses c set is_active = true
++    from course_twins t
++   where c.id = t.portal_id and t.seed_live and not c.is_active;
++  get diagnostics revived = row_count;
++
++  update public.courses c set is_active = false
++    from course_twins t
++   where c.id = t.seed_id and c.is_active;
++  get diagnostics retired = row_count;
++  select coalesce(array_agg(t.name order by t.name), '{}') into names
++    from course_twins t where t.seed_live;
++
++  foreach tbl in array locked loop
++    execute format('alter table %s enable trigger user', tbl);
++  end loop;
++
++  -- What stayed behind on the rows this run retired, by table, so the
++  -- notice in the release log says it rather than leaving it to be found.
++  select coalesce(jsonb_object_agg(x.tbl, x.n) filter (where x.n > 0), '{}'::jsonb)
++    into skipped
++    from (
++      select 'student_courses' as tbl, count(*) as n
++        from public.student_courses r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'routing_rules', count(*)
++        from public.routing_rules r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'course_topics', count(*)
++        from public.course_topics r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'department_hours', count(*)
++        from public.department_hours r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'enrolment_change_requests', count(*)
++        from public.enrolment_change_requests r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'student_course_first', count(*)
++        from public.student_course_first r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'lesson_notebooks', count(*)
++        from public.lesson_notebooks r join course_twins t on t.seed_id = r.course_id
++      union all
++      select 'lesson_course_materials', count(*)
++        from public.lesson_course_materials r join course_twins t on t.seed_id = r.course_id
++    ) x;
++
++  drop table pg_temp.course_twins;
++
++  return jsonb_build_object(
++    'retired',       retired,
++    'names',         to_jsonb(names),
++    'revived',       revived,
++    'rooms_carried', rooms,
++    'moved',         moved,
++    'left_on_retired_rows', skipped
++  );
++end;
++$function$;
++
++notify pgrst, 'reload schema';
+diff --git a/supabase/probes/20261013152315.sql b/supabase/probes/20261013152315.sql
+new file mode 100644
+index 0000000..f0c314d
+--- /dev/null
++++ b/supabase/probes/20261013152315.sql
+@@ -0,0 +1,49 @@
++  -- The switch, the seat and the link stamp.
++  select '20261013152315', 'an online session in a room that is on has a link and a seat',
++         'edge_config.room_url, lesson_platform_rooms and lesson_tickets exist; tickets are closed to clients; room_access is STABLE and refuses nobody by accident',
++         exists (select 1 from information_schema.columns
++                  where table_schema = 'public' and table_name = 'edge_config'
++                    and column_name = 'room_url')
++           and to_regclass('public.lesson_platform_rooms') is not null
++           and to_regclass('public.lesson_tickets') is not null
++           and coalesce((select relrowsecurity from pg_class where oid = to_regclass('public.lesson_tickets')), false)
++           and not has_table_privilege('authenticated', to_regclass('public.lesson_tickets')::oid, 'select')
++           and not has_table_privilege('anon', to_regclass('public.lesson_tickets')::oid, 'select')
++           and (select provolatile = 's'
++                  from pg_proc where oid = to_regprocedure('public.room_access(uuid, uuid)'))
++           and to_regprocedure('public.manages_course(uuid, uuid)') is not null
++           and to_regprocedure('public.lesson_platform_enabled(uuid)') is not null
++           and to_regprocedure('public.enable_lesson_platform(uuid, boolean)') is not null
++
++  union all
++
++  -- The stamp fires on INSERT only (never refilling a cleared link), and
++  -- sorts after apply_routing so the department is already decided.
++  select '20261013152315', 'an online session in a room that is on has a link and a seat',
++         'session_requests_the_room_link is BEFORE INSERT only, after session_requests_apply_routing, and never fires on UPDATE',
++         exists (select 1 from pg_trigger t
++                  where t.tgrelid = to_regclass('public.session_requests')
++                    and t.tgname = 'session_requests_the_room_link'
++                    and t.tgfoid = to_regprocedure('public.stamp_the_room_link()')
++                    and not t.tgisinternal
++                    and t.tgenabled <> 'D'
++                    and (t.tgtype & 1) <> 0     -- BEFORE
++                    and (t.tgtype & 4) <> 0     -- INSERT
++                    and (t.tgtype & 16) = 0     -- not UPDATE
++                    and (t.tgtype & 8) = 0      -- not DELETE
++                    and t.tgname > 'session_requests_apply_routing')
++
++  union all
++
++  -- The ticket doors belong to the service role alone.
++  select '20261013152315', 'an online session in a room that is on has a link and a seat',
++         'redeem_lesson_ticket and sweep_lesson_tickets: service_role may execute, authenticated and anon may not',
++         has_function_privilege('service_role', to_regprocedure('public.redeem_lesson_ticket(text)'), 'execute')
++           and not has_function_privilege('authenticated', to_regprocedure('public.redeem_lesson_ticket(text)'), 'execute')
++           and not has_function_privilege('anon', to_regprocedure('public.redeem_lesson_ticket(text)'), 'execute')
++           and has_function_privilege('service_role', to_regprocedure('public.sweep_lesson_tickets()'), 'execute')
++           and not has_function_privilege('authenticated', to_regprocedure('public.sweep_lesson_tickets()'), 'execute')
++           and coalesce((select prosrc like '%redeemed_at is null%'
++                             and prosrc like '%expires_at > now()%'
++                           from pg_proc
++                          where oid = to_regprocedure('public.redeem_lesson_ticket(text)')), false)
+diff --git a/supabase/probes/20261013152316.sql b/supabase/probes/20261013152316.sql
+new file mode 100644
+index 0000000..3b8bf49
+--- /dev/null
++++ b/supabase/probes/20261013152316.sql
+@@ -0,0 +1,54 @@
++  -- What a lesson leaves behind: every table is there with row security on.
++  select '20261013152316', 'the room writes arrival and departure onto the booking and nothing else',
++         'lesson_rooms, lesson_notebooks, lesson_consents, lesson_course_materials, lesson_transcripts, lesson_events and lesson_report_drafts exist with RLS on, and the draft refuses a prev_hw or an OTR the report form would',
++         (select count(*) = 7 and bool_and(c.relrowsecurity)
++            from pg_class c
++            join pg_namespace n on n.oid = c.relnamespace
++           where n.nspname = 'public'
++             and c.relname in ('lesson_rooms', 'lesson_notebooks', 'lesson_consents',
++                               'lesson_course_materials', 'lesson_transcripts',
++                               'lesson_events', 'lesson_report_drafts'))
++           and exists (select 1 from pg_constraint
++                        where conname = 'lesson_report_drafts_prev_hw_check'
++                          and conrelid = to_regclass('public.lesson_report_drafts')
++                          and pg_get_constraintdef(oid) like '%Did Not Bring Exercise Book%')
++           and exists (select 1 from pg_constraint
++                        where conname = 'lesson_report_drafts_otr_check'
++                          and conrelid = to_regclass('public.lesson_report_drafts')
++                          and pg_get_constraintdef(oid) like '%% 5%')
++
++  union all
++
++  -- The webhook door is quiet, narrow and the service role's alone: its
++  -- body never names the columns a signed-out writer must not reach.
++  select '20261013152316', 'the room writes arrival and departure onto the booking and nothing else',
++         'import_lesson_room_facts sets app.portal_import, never names status, confirmed_start, requested_start, assigned_teacher_id or meeting_url, and authenticated cannot execute it',
++         coalesce((select prosrc like '%app.portal_import%'
++                       and prosrc !~ '\y(status|confirmed_start|requested_start|assigned_teacher_id|meeting_url)\y'
++                       and prosrc ~ '\yarrived_at\s*='
++                       and prosrc ~ '\ydeparted_at\s*='
++                     from pg_proc
++                    where oid = to_regprocedure('public.import_lesson_room_facts(jsonb)')), false)
++           and has_function_privilege('service_role', to_regprocedure('public.import_lesson_room_facts(jsonb)'), 'execute')
++           and not has_function_privilege('authenticated', to_regprocedure('public.import_lesson_room_facts(jsonb)'), 'execute')
++           and not has_function_privilege('anon', to_regprocedure('public.import_lesson_room_facts(jsonb)'), 'execute')
++
++  union all
++
++  -- The user-facing doors exist for signed-in callers, and neither of the
++  -- two that touch the booking ever assigns its status.
++  select '20261013152316', 'the room writes arrival and departure onto the booking and nothing else',
++         'lesson_room_state, my_online_lessons, lesson_join, lesson_end, save_lesson_notebook, log_lesson_event and set_lesson_consent are callable by authenticated; lesson_join and lesson_end never set status',
++         has_function_privilege('authenticated', to_regprocedure('public.lesson_room_state(uuid)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.my_online_lessons(integer)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.lesson_join(uuid)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.lesson_end(uuid, jsonb)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.save_lesson_notebook(uuid, jsonb)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.log_lesson_event(uuid, text, jsonb)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.set_lesson_consent(uuid, text, boolean)'), 'execute')
++           and coalesce((select prosrc !~ '\ystatus\s*=' and prosrc ~ '\yarrived_at\s*='
++                           from pg_proc where oid = to_regprocedure('public.lesson_join(uuid)')), false)
++           and coalesce((select prosrc !~ '\ystatus\s*=' and prosrc ~ '\ydeparted_at\s*='
++                           from pg_proc where oid = to_regprocedure('public.lesson_end(uuid, jsonb)')), false)
++           and pg_get_function_result(to_regprocedure('public.my_online_lessons(integer)'))
++                 like '%draft_ready boolean%seat text%'
+diff --git a/supabase/tests/rls/20261013152317-an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql b/supabase/tests/rls/20261013152317-an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+new file mode 100644
+index 0000000..470455a
+--- /dev/null
++++ b/supabase/tests/rls/20261013152317-an_online_session_in_a_room_that_is_on_has_a_link_and_a_seat.sql
+@@ -0,0 +1,496 @@
++-- ---------------------------------------------------------------------------
++-- An online session in a room that is on has a link and a seat
++-- (migration 20261013152315; online-lms/docs/INTEGRATION.md, "Sessions seam")
++--
++-- The switch is an admin's and nobody else's; turning a department on stamps
++-- the room link on its FUTURE online sessions that have none, and leaves a
++-- pasted Zoom link, an in-person session, a past session and the other room
++-- exactly as they were, quietly. The trigger stamps a new booking the same
++-- way -- after routing has decided its room -- and never refills a link a
++-- person cleared. room_access hands out seats only in the window, only in a
++-- room that is on, and to nobody a policy would not also admit. Tickets are
++-- the service role's: nobody signed in can read, redeem or sweep one, and
++-- one redeems exactly once.
++-- ---------------------------------------------------------------------------
++begin;
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++
++-- The room has an address (with a trailing slash the link must not double),
++-- Erin runs Maths, and Ben has a spread of bookings: 01 future with no link,
++-- 02 future with a Zoom link somebody pasted, 03 future in person, 04 two
++-- days ago, 05 future in Science, 06 live now (started ten minutes ago, an
++-- hour long), 07 tomorrow, 08 live but cancelled, 09 live in Science.
++update public.edge_config set room_url = 'https://room.test/' where id = 1;
++update public.department_members set is_incharge = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++create function pg_temp.fam() returns uuid language sql stable as $$
++  select family_id from public.profiles where id = '11111111-1111-1111-1111-111111111111'
++$$;
++
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   department_id, assigned_teacher_id, mode, status, requested_start, confirmed_start,
++   duration_minutes, meeting_url)
++values
++  ('ab1e5501-0000-0000-0000-000000000001', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   roll('2026-09-08 09:00:00+00'), roll('2026-09-08 09:00:00+00'), 60, null),
++  ('ab1e5501-0000-0000-0000-000000000002', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   roll('2026-09-08 11:00:00+00'), roll('2026-09-08 11:00:00+00'), 60, 'https://zoom.us/j/2'),
++  ('ab1e5501-0000-0000-0000-000000000003', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'in_person', 'confirmed',
++   roll('2026-09-08 13:00:00+00'), roll('2026-09-08 13:00:00+00'), 60, null),
++  ('ab1e5501-0000-0000-0000-000000000004', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '2 days', now() - interval '2 days', 60, null),
++  ('ab1e5501-0000-0000-0000-000000000005', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Physics HL', 'Waves',
++   'cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fd',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   roll('2026-09-08 15:00:00+00'), roll('2026-09-08 15:00:00+00'), 60, null),
++  ('ab1e5501-0000-0000-0000-000000000006', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60, null),
++  ('ab1e5501-0000-0000-0000-000000000007', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() + interval '1 day', now() + interval '1 day', 60, null),
++  ('ab1e5501-0000-0000-0000-000000000008', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'cancelled',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60, null),
++  ('ab1e5501-0000-0000-0000-000000000009', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Physics HL', 'Waves',
++   'cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fd',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60, null);
++
++create function pg_temp.link(p_id uuid) returns text language sql stable as $$
++  select meeting_url from public.session_requests where id = p_id
++$$;
++
++-- Where the listeners stand before the switch, so "quiet" can be measured.
++create temp table marks as
++  select (select count(*) from net.http_request_queue) as pushes,
++         (select count(*) from public.sync_outbox)      as outbox;
++
++-- ---------------------------------------------------------------------------
++-- Before the switch: a live Maths lesson has no host and no learner, however
++-- live it is, because the room is off. The in-charge and the admin may look.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, assigned
++select test_ok(
++  'a room that is off seats no host, even in the window',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'and no learner',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, in charge of Maths
++select test_ok(
++  'the in-charge observes whether or not the room is on',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') = 'observer'
++);
++select test_ok(
++  'the platform reads as off for Maths',
++  not public.lesson_platform_enabled('dddddddd-0000-0000-0000-0000000000fc')
++);
++
++-- ---------------------------------------------------------------------------
++-- The switch is an admin's.
++-- ---------------------------------------------------------------------------
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, support desk
++select test_ok(
++  'the support desk cannot turn the platform on',
++  raises_matching($$select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true)$$,
++                  'only an admin')
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, in charge
++select test_ok(
++  'nor can the in-charge of the room',
++  raises_matching($$select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true)$$,
++                  'only an admin')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'nor a parent',
++  raises_matching($$select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true)$$,
++                  'only an admin')
++);
++select test_ok(
++  'but anybody signed in may read which rooms are on (none yet)',
++  (select count(*) from public.lesson_platform_rooms) = 0
++);
++select test_ok(
++  'and nobody writes the list by hand',
++  raises($$insert into public.lesson_platform_rooms (department_id)
++           values ('dddddddd-0000-0000-0000-0000000000fc')$$)
++);
++
++set local role postgres;
++update public.edge_config set room_url = null where id = 1;
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal, admin
++select test_ok(
++  'with no room address there is nothing to turn on',
++  raises_matching($$select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true)$$,
++                  'room_url')
++);
++select test_ok(
++  'a null department is off while the room has no address',
++  not public.lesson_platform_enabled(null)
++);
++set local role postgres;
++update public.edge_config set room_url = 'https://room.test/' where id = 1;
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true);
++select test_ok(
++  'the admin turns Maths on',
++  public.lesson_platform_enabled('dddddddd-0000-0000-0000-0000000000fc')
++  and (select enabled_by from public.lesson_platform_rooms
++        where department_id = 'dddddddd-0000-0000-0000-0000000000fc')
++      = '88888888-8888-8888-8888-888888888888'
++);
++select test_ok(
++  'Science stays off',
++  not public.lesson_platform_enabled('dddddddd-0000-0000-0000-0000000000fd')
++);
++select test_ok(
++  'and a null department is on once the room has an address',
++  public.lesson_platform_enabled(null)
++);
++select test_ok(
++  'turning it on twice is not an error',
++  not raises($$select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', true)$$)
++);
++select test_ok(
++  'the quiet flag did not walk out of the switch',
++  coalesce(current_setting('app.push_quiet', true), '') = ''
++);
++
++-- ---------------------------------------------------------------------------
++-- The backfill: only future online sessions in Maths with no link, with no
++-- doubled slash, and nothing told to anybody.
++-- ---------------------------------------------------------------------------
++select test_ok(
++  'a future online Maths session with no link gets the room link',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000001')
++    = 'https://room.test/lesson/ab1e5501-0000-0000-0000-000000000001'
++);
++select test_ok(
++  'and so does tomorrow''s',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000007')
++    = 'https://room.test/lesson/ab1e5501-0000-0000-0000-000000000007'
++);
++select test_ok(
++  'a Zoom link somebody pasted is not overwritten',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000002') = 'https://zoom.us/j/2'
++);
++select test_ok(
++  'an in-person session gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000003') is null
++);
++select test_ok(
++  'a session two days ago gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000004') is null
++);
++select test_ok(
++  'a session already under way is not future and gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select test_ok(
++  'the other room''s session gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-000000000005') is null
++);
++set local role postgres;
++select test_ok(
++  'the backfill pushed nobody and told the portal nothing',
++  (select count(*) from net.http_request_queue) = (select pushes from marks)
++  and (select count(*) from public.sync_outbox) = (select outbox from marks)
++);
++
++-- ---------------------------------------------------------------------------
++-- Seats, with the room on.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, assigned
++select test_ok(
++  'the assigned teacher is the host of the live lesson',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') = 'host'
++);
++select test_ok(
++  'but not of tomorrow''s: outside the window there is no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000007') is null
++);
++select test_ok(
++  'nor of a cancelled one, however live',
++  public.room_access('ab1e5501-0000-0000-0000-000000000008') is null
++);
++select test_ok(
++  'nor of a live lesson in a room that is off',
++  public.room_access('ab1e5501-0000-0000-0000-000000000009') is null
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student is the learner of the live lesson',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') = 'learner'
++);
++select test_ok(
++  'and has no seat tomorrow',
++  public.room_access('ab1e5501-0000-0000-0000-000000000007') is null
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada, Ben's parent
++select test_ok(
++  'a parent has no seat in a one-to-one lesson',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo, another family
++select test_ok(
++  'a parent in another family has no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita, teacher, not assigned
++select test_ok(
++  'a teacher in the department who is not assigned has no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('cccc9999-9999-9999-9999-999999999999');   -- Tara, teaches Ben elsewhere
++select test_ok(
++  'a teacher who teaches the child but not this session has no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, support desk
++select test_ok(
++  'the support desk has no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'the in-charge observes the live lesson and tomorrow''s',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') = 'observer'
++  and public.room_access('ab1e5501-0000-0000-0000-000000000007') = 'observer'
++);
++select test_ok(
++  'but not a cancelled one, and not the other room''s',
++  public.room_access('ab1e5501-0000-0000-0000-000000000008') is null
++  and public.room_access('ab1e5501-0000-0000-0000-000000000009') is null
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok(
++  'an admin observes any online room, on or off',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') = 'observer'
++  and public.room_access('ab1e5501-0000-0000-0000-000000000009') = 'observer'
++);
++select test_ok(
++  'but an in-person session is not a room, and a cancelled one is not either',
++  public.room_access('ab1e5501-0000-0000-0000-000000000003') is null
++  and public.room_access('ab1e5501-0000-0000-0000-000000000008') is null
++);
++select test_ok(
++  'nobody at all has no seat',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006', null) is null
++);
++
++-- ---------------------------------------------------------------------------
++-- manages_course: the course's own room, or a room a rule sends it to.
++-- ---------------------------------------------------------------------------
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'the in-charge of Maths manages a Maths course and not a Science one',
++  public.manages_course('cccccccc-0000-0000-0000-0000000000fa')
++  and not public.manages_course('cccccccc-0000-0000-0000-0000000000fc')
++);
++set local role postgres;
++insert into public.routing_rules (course_id, department_id, note)
++values ('cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fc',
++        'Physics taught in the Maths room');
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'a routing rule into Maths makes the Science course Erin''s to manage',
++  public.manages_course('cccccccc-0000-0000-0000-0000000000fc')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, teacher in Maths
++select test_ok(
++  'a teacher in the department manages no course',
++  not public.manages_course('cccccccc-0000-0000-0000-0000000000fa')
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, support, not in charge
++select test_ok(
++  'support staff who are in charge of no room manage no course',
++  not public.manages_course('cccccccc-0000-0000-0000-0000000000fa')
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok(
++  'an admin manages every course',
++  public.manages_course('cccccccc-0000-0000-0000-0000000000fa')
++  and public.manages_course('cccccccc-0000-0000-0000-0000000000fc')
++);
++
++-- ---------------------------------------------------------------------------
++-- The stamp on a new booking: after routing, online only, in a room that is
++-- on, and never on UPDATE.
++-- ---------------------------------------------------------------------------
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada books for Ben
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   mode, requested_start, duration_minutes)
++values
++  ('ab1e5501-0000-0000-0000-00000000000a', public.my_family_id(),
++   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
++   'Ben Ashford', 'IB Math AA HL', 'Vectors', 'cccccccc-0000-0000-0000-0000000000fa',
++   'online', roll('2026-09-10 03:30:00+00'), 60);
++select test_ok(
++  'a family''s new online booking is routed to Maths and carries the room link',
++  (select department_id from public.session_requests
++    where id = 'ab1e5501-0000-0000-0000-00000000000a') = 'dddddddd-0000-0000-0000-0000000000fc'
++  and pg_temp.link('ab1e5501-0000-0000-0000-00000000000a')
++      = 'https://room.test/lesson/ab1e5501-0000-0000-0000-00000000000a'
++);
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   mode, requested_start, duration_minutes)
++values
++  ('ab1e5501-0000-0000-0000-00000000000b', public.my_family_id(),
++   '11111111-1111-1111-1111-111111111111', '22222222-2222-2222-2222-222222222222',
++   'Ben Ashford', 'IB Math AA HL', 'Vectors', 'cccccccc-0000-0000-0000-0000000000fa',
++   'in_person', roll('2026-09-10 06:30:00+00'), 60);
++select test_ok(
++  'an in-person booking in the same room gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-00000000000b') is null
++);
++
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal clears the link
++update public.session_requests set meeting_url = null
++ where id = 'ab1e5501-0000-0000-0000-00000000000a';
++select test_ok(
++  'a link a person cleared is not refilled: the stamp never runs on UPDATE',
++  pg_temp.link('ab1e5501-0000-0000-0000-00000000000a') is null
++);
++
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   department_id, mode, status, requested_start, confirmed_start, duration_minutes, meeting_url)
++values
++  ('ab1e5501-0000-0000-0000-00000000000c', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Physics HL', 'Waves',
++   'cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fd',
++   'online', 'confirmed', roll('2026-09-10 09:00:00+00'), roll('2026-09-10 09:00:00+00'), 60, null),
++  ('ab1e5501-0000-0000-0000-00000000000d', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   'online', 'confirmed', roll('2026-09-10 11:00:00+00'), roll('2026-09-10 11:00:00+00'), 60,
++   'https://zoom.us/j/13');
++select test_ok(
++  'an online booking in a room that is off gets no link',
++  pg_temp.link('ab1e5501-0000-0000-0000-00000000000c') is null
++);
++select test_ok(
++  'and a booking that arrives with its own link keeps it',
++  pg_temp.link('ab1e5501-0000-0000-0000-00000000000d') = 'https://zoom.us/j/13'
++);
++
++-- ---------------------------------------------------------------------------
++-- Tickets: the service role's alone, and spent on first use.
++-- ---------------------------------------------------------------------------
++insert into public.lesson_tickets (token_hash, user_id, session_id, purpose, next_path, expires_at, created_at)
++values
++  ('hash-live',    '22222222-2222-2222-2222-222222222222', 'ab1e5501-0000-0000-0000-000000000006',
++   'join', '/lesson/ab1e5501-0000-0000-0000-000000000006', now() + interval '2 minutes', now()),
++  ('hash-expired', '22222222-2222-2222-2222-222222222222', 'ab1e5501-0000-0000-0000-000000000006',
++   'join', '/lesson/ab1e5501-0000-0000-0000-000000000006', now() - interval '1 minute', now() - interval '3 minutes'),
++  ('hash-stale',   '22222222-2222-2222-2222-222222222222', null,
++   'page', '/home/progress', now() - interval '2 days', now() - interval '2 days');
++
++set local role authenticated;
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben, whose ticket it is
++select test_ok(
++  'nobody signed in reads tickets, not even their own',
++  raises_matching($$select count(*) from public.lesson_tickets$$, 'permission denied')
++);
++select test_ok(
++  'nor redeems one',
++  raises_matching($$select * from public.redeem_lesson_ticket('hash-live')$$, 'permission denied')
++);
++select test_ok(
++  'nor sweeps them',
++  raises_matching($$select public.sweep_lesson_tickets()$$, 'permission denied')
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok(
++  'an admin signed in through the app cannot redeem one either',
++  raises_matching($$select * from public.redeem_lesson_ticket('hash-live')$$, 'permission denied')
++);
++
++set local role service_role;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok(
++  'the service role redeems a live ticket and learns who it was for',
++  (select r.user_id = '22222222-2222-2222-2222-222222222222'
++          and r.session_id = 'ab1e5501-0000-0000-0000-000000000006'
++          and r.purpose = 'join'
++          and r.next_path = '/lesson/ab1e5501-0000-0000-0000-000000000006'
++     from public.redeem_lesson_ticket('hash-live') r)
++);
++select test_ok(
++  'a ticket does not redeem twice',
++  not exists (select 1 from public.redeem_lesson_ticket('hash-live'))
++);
++select test_ok(
++  'an expired ticket does not redeem',
++  not exists (select 1 from public.redeem_lesson_ticket('hash-expired'))
++);
++select test_ok(
++  'nor a hash nobody minted',
++  not exists (select 1 from public.redeem_lesson_ticket('hash-nobody'))
++);
++-- Captured first: the operands of an AND have no promised order, and the
++-- count would otherwise be taken before the sweep ran.
++create temp table swept as select public.sweep_lesson_tickets() as n;
++select test_ok(
++  'the sweep removes tickets older than a day and leaves today''s, spent or not',
++  (select n = 1 from swept)
++  and (select count(*) from public.lesson_tickets) = 2
++  and not exists (select 1 from public.lesson_tickets where token_hash = 'hash-stale')
++);
++
++-- ---------------------------------------------------------------------------
++-- Off again: the row goes, the links stay, the seats go.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select public.enable_lesson_platform('dddddddd-0000-0000-0000-0000000000fc', false);
++select test_ok(
++  'turning Maths off removes the row and leaves every link where it was',
++  not public.lesson_platform_enabled('dddddddd-0000-0000-0000-0000000000fc')
++  and pg_temp.link('ab1e5501-0000-0000-0000-000000000001')
++      = 'https://room.test/lesson/ab1e5501-0000-0000-0000-000000000001'
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'and the host''s seat is gone with it',
++  public.room_access('ab1e5501-0000-0000-0000-000000000006') is null
++);
++rollback;
+diff --git a/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql b/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+new file mode 100644
+index 0000000..1fca013
+--- /dev/null
++++ b/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+@@ -0,0 +1,727 @@
++-- ---------------------------------------------------------------------------
++-- The room writes arrival and departure onto the booking, and nothing else
++-- (migration 20261013152316; online-lms/docs/INTEGRATION.md, "Attendance
++-- write-back")
++--
++-- The learner's own join stamps arrived_at and clears no_show, through every
++-- BEFORE UPDATE guard on session_requests, as the student, quietly; the host
++-- or the in-charge ends it with departed_at and the transcript, and the
++-- booking's status is never theirs to move. The webhook door is the service
++-- role's and writes the same two columns and the room's own clock. Every
++-- reader is a role a policy already admits -- the assigned teacher, the
++-- room's in-charge, an admin -- and a family, a sibling, a parent in another
++-- family, a teacher who is not assigned and the support desk read nothing.
++-- ---------------------------------------------------------------------------
++begin;
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++
++update public.edge_config set room_url = 'https://room.test' where id = 1;
++insert into public.lesson_platform_rooms (department_id)
++values ('dddddddd-0000-0000-0000-0000000000fc')
++on conflict (department_id) do nothing;
++update public.department_members set is_incharge = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++create function pg_temp.fam() returns uuid language sql stable as $$
++  select family_id from public.profiles where id = '11111111-1111-1111-1111-111111111111'
++$$;
++
++-- 01 live now in Maths with Frank; 02 live now in Science (a room that is
++-- off) with Frank; 03 tomorrow in Maths with Frank; 04 live now in Maths
++-- with Frank and a room the ticket function already made.
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   department_id, assigned_teacher_id, mode, status, requested_start, confirmed_start,
++   duration_minutes)
++values
++  ('ab1e5502-0000-0000-0000-000000000001', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60),
++  ('ab1e5502-0000-0000-0000-000000000002', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Physics HL', 'Waves',
++   'cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fd',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60),
++  ('ab1e5502-0000-0000-0000-000000000003', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() + interval '1 day', now() + interval '1 day', 60),
++  ('ab1e5502-0000-0000-0000-000000000004', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '10 minutes', now() - interval '10 minutes', 60);
++
++insert into public.lesson_rooms (session_id, room_name, room_url)
++values ('ab1e5502-0000-0000-0000-000000000004',
++        'lesson-ab1e5502-0000-0000-0000-000000000004',
++        'https://daily.test/lesson-ab1e5502-0000-0000-0000-000000000004');
++
++create function pg_temp.booking(p_id uuid) returns public.session_requests
++language sql stable as $$
++  select * from public.session_requests where id = p_id
++$$;
++
++-- Where the listeners stand, so "quiet" is measured rather than assumed.
++create temp table marks (what text, pushes bigint, outbox bigint);
++create function pg_temp.mark(p_what text) returns void language sql as $$
++  insert into marks
++  select p_what, (select count(*) from net.http_request_queue),
++         (select count(*) from public.sync_outbox)
++$$;
++create function pg_temp.quiet_since(p_what text) returns boolean language sql stable as $$
++  select (select count(*) from net.http_request_queue) = m.pushes
++     and (select count(*) from public.sync_outbox) = m.outbox
++    from marks m where m.what = p_what
++$$;
++select pg_temp.mark('before join');
++
++-- ---------------------------------------------------------------------------
++-- lesson_join: the learner, in the window, in a room that is on.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, the host
++select test_ok(
++  'the teacher cannot join as the learner',
++  raises_matching($$select public.lesson_join('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the student')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a parent cannot join for the child',
++  raises_matching($$select public.lesson_join('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the student')
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'a parent in another family cannot join',
++  raises_matching($$select public.lesson_join('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the student')
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student cannot join tomorrow''s lesson today',
++  raises_matching($$select public.lesson_join('ab1e5502-0000-0000-0000-000000000003')$$,
++                  'only the student')
++);
++select test_ok(
++  'nor a live lesson in a room that is off',
++  raises_matching($$select public.lesson_join('ab1e5502-0000-0000-0000-000000000002')$$,
++                  'only the student')
++);
++create temp table joined as
++  select public.lesson_join('ab1e5502-0000-0000-0000-000000000001') as at;
++select test_ok(
++  'the student joins the live lesson and is arrived, through every guard on the booking',
++  (select at is not null from joined)
++  and (select b.arrived_at = (select at from joined) and b.no_show = false
++         from pg_temp.booking('ab1e5502-0000-0000-0000-000000000001') b)
++);
++select test_ok(
++  'the booking''s status, time and teacher did not move',
++  (select b.status = 'confirmed'
++          and b.confirmed_start = now() - interval '10 minutes'
++          and b.assigned_teacher_id = '66666666-6666-6666-6666-666666666666'
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000001') b)
++);
++select test_ok(
++  'joining again returns the first arrival',
++  public.lesson_join('ab1e5502-0000-0000-0000-000000000001') = (select at from joined)
++);
++set local role postgres;
++select test_ok(
++  'the join opened the room under its own name',
++  (select r.room_name = 'lesson-ab1e5502-0000-0000-0000-000000000001' and r.opened_at is not null
++     from public.lesson_rooms r where r.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++);
++select test_ok(
++  'and pushed nobody and told the portal nothing',
++  pg_temp.quiet_since('before join')
++);
++select test_ok(
++  'the quiet flag did not walk out of the join',
++  coalesce(current_setting('app.push_quiet', true), '') = ''
++);
++
++-- ---------------------------------------------------------------------------
++-- lesson_room_state: one row for a seat, none without.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the learner reads the room: the people by name, the room, the consents, a notebook',
++  (select s.seat = 'learner'
++          and s.student_name = 'Ben Ashford'
++          and s.teacher_name = 'Frank Teach'
++          and s.department_name = 'Mathematics'
++          and s.course_name = 'IB Math AA HL'
++          and s.room_opened_at is not null
++          and s.arrived_at is not null
++          and s.notebook_id is not null
++          and s.consents = '{"recording": false, "transcript": false, "ai_analysis": false, "integrity_camera": false}'::jsonb
++     from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++);
++select test_ok(
++  'the notebook is the student''s for this course, made on first open',
++  exists (select 1 from public.lesson_notebooks n
++           where n.student_id = '22222222-2222-2222-2222-222222222222'
++             and n.course_id = 'cccccccc-0000-0000-0000-0000000000fa'
++             and n.id = (select notebook_id
++                           from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001')))
++);
++select test_ok(
++  'a room that is off has no state for the learner',
++  not exists (select 1 from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000002'))
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the host reads the same room with the same notebook',
++  (select s.seat = 'host' and s.notebook_id is not null
++     from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++  and (select count(*) from public.lesson_notebooks n
++        where n.student_id = '22222222-2222-2222-2222-222222222222'
++          and n.course_id = 'cccccccc-0000-0000-0000-0000000000fa') = 1
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'the in-charge observes',
++  (select s.seat = 'observer'
++     from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a parent gets no room state',
++  not exists (select 1 from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001'))
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'nor a parent in another family',
++  not exists (select 1 from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001'))
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'nor a teacher who is not assigned',
++  not exists (select 1 from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001'))
++);
++
++-- ---------------------------------------------------------------------------
++-- Consents: a parent in the household, or an admin.
++-- ---------------------------------------------------------------------------
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'a parent in another family cannot consent for Ben',
++  raises_matching($$select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', true)$$,
++                  'only a parent')
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student cannot consent for themselves',
++  raises_matching($$select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', true)$$,
++                  'only a parent')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'nor can the teacher',
++  raises_matching($$select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', true)$$,
++                  'only a parent')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a consent is one of the four kinds',
++  raises_matching($$select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'homework', true)$$,
++                  'one of')
++);
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', true);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the parent''s consent reaches the room',
++  (select s.consents->>'recording' = 'true' and s.consents->>'transcript' = 'false'
++     from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', false);
++select test_ok(
++  'revoking it keeps the row, stamped',
++  (select c.revoked_at is not null from public.lesson_consents c
++     where c.student_id = '22222222-2222-2222-2222-222222222222' and c.kind = 'recording')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'and the room no longer has the consent',
++  (select s.consents->>'recording' = 'false'
++     from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'transcript', true);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'transcript', true);
++select test_ok(
++  'an admin may consent, and re-granting a consent in force keeps who gave it',
++  (select c.granted_by = '88888888-8888-8888-8888-888888888888' and c.revoked_at is null
++     from public.lesson_consents c
++    where c.student_id = '22222222-2222-2222-2222-222222222222' and c.kind = 'transcript')
++);
++select test_ok(
++  'the household reads its own consents',
++  (select count(*) from public.lesson_consents) = 2
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'another family reads none',
++  (select count(*) from public.lesson_consents) = 0
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, whose room Ben is in
++select test_ok(
++  'the in-charge whose room reaches the child reads them',
++  (select count(*) from public.lesson_consents) = 2
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'a teacher reads none',
++  (select count(*) from public.lesson_consents) = 0
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, support desk
++select test_ok(
++  'the support desk, whose room does not reach the child, reads none',
++  (select count(*) from public.lesson_consents) = 0
++);
++
++-- ---------------------------------------------------------------------------
++-- Events: any seat appends; teacher, in-charge and admin read.
++-- ---------------------------------------------------------------------------
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select public.log_lesson_event('ab1e5502-0000-0000-0000-000000000001', 'hand_raised');
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select public.log_lesson_event('ab1e5502-0000-0000-0000-000000000001', 'teacher_note',
++                               '{"text": "struggled with dot products"}');
++select test_ok(
++  'an event kind is at most forty characters',
++  raises_matching($$select public.log_lesson_event('ab1e5502-0000-0000-0000-000000000001',
++                     'a_kind_that_goes_on_and_on_and_on_and_on_1')$$, 'forty')
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'no seat, no event',
++  raises_matching($$select public.log_lesson_event('ab1e5502-0000-0000-0000-000000000001', 'hand_raised')$$,
++                  'no seat')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the teacher reads the lesson''s events, with who wrote them',
++  (select count(*) from public.lesson_events
++    where session_id = 'ab1e5502-0000-0000-0000-000000000001') = 2
++  and exists (select 1 from public.lesson_events
++               where kind = 'hand_raised'
++                 and actor_id = '22222222-2222-2222-2222-222222222222')
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student reads no events, not even their own',
++  (select count(*) from public.lesson_events) = 0
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'nor does a teacher who is not assigned',
++  (select count(*) from public.lesson_events) = 0
++);
++
++-- ---------------------------------------------------------------------------
++-- The notebook: the student, the assigned teacher within a day, the course's
++-- in-charge, an admin.
++-- ---------------------------------------------------------------------------
++set local role postgres;
++create temp table nb as
++  select n.id from public.lesson_notebooks n
++   where n.student_id = '22222222-2222-2222-2222-222222222222'
++     and n.course_id = 'cccccccc-0000-0000-0000-0000000000fa';
++grant select on nb to authenticated;
++set local role authenticated;
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select public.save_lesson_notebook((select id from nb), '{"shapes": 1}');
++select test_ok(
++  'the student saves their own notebook',
++  (select n.tldraw_snapshot = '{"shapes": 1}'::jsonb from public.lesson_notebooks n
++     where n.id = (select id from nb))
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, assigned today
++select test_ok(
++  'the teacher assigned to today''s lesson saves it too',
++  not raises($$select public.save_lesson_notebook((select id from nb), '{"shapes": 2}')$$)
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'a teacher who is not assigned cannot',
++  raises_matching($$select public.save_lesson_notebook((select id from nb), '{"shapes": 3}')$$,
++                  'not yours')
++);
++select act_as('cccc9999-9999-9999-9999-999999999999');   -- Tara, teaches Ben elsewhere
++select test_ok(
++  'nor a teacher who teaches the child but has no session for this course today',
++  raises_matching($$select public.save_lesson_notebook((select id from nb), '{"shapes": 3}')$$,
++                  'not yours')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'nor a parent',
++  raises_matching($$select public.save_lesson_notebook((select id from nb), '{"shapes": 3}')$$,
++                  'not yours')
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, manages the course
++select test_ok(
++  'the in-charge who manages the course can',
++  not raises($$select public.save_lesson_notebook((select id from nb), '{"shapes": 4}')$$)
++);
++select test_ok(
++  'a notebook nobody made is not yours either',
++  raises_matching($$select public.save_lesson_notebook('ab1e5502-0000-0000-0000-0000000000ff', '{}')$$,
++                  'not yours')
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'another family reads no notebook',
++  (select count(*) from public.lesson_notebooks) = 0
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student reads their own',
++  (select count(*) from public.lesson_notebooks where id = (select id from nb)) = 1
++);
++
++-- ---------------------------------------------------------------------------
++-- lesson_end: the host, the in-charge or an admin; departed_at, the room's
++-- close, the transcript -- never the status.
++-- ---------------------------------------------------------------------------
++set local role postgres;
++select pg_temp.mark('before end');
++set local role authenticated;
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student cannot end the lesson',
++  raises_matching($$select public.lesson_end('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the teacher')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'nor a parent',
++  raises_matching($$select public.lesson_end('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the teacher')
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'nor a teacher who is not assigned',
++  raises_matching($$select public.lesson_end('ab1e5502-0000-0000-0000-000000000001')$$,
++                  'only the teacher')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select public.lesson_end('ab1e5502-0000-0000-0000-000000000001',
++  '[{"speaker": "teacher", "text": "Hello there Ben", "at_ms": 0},
++    {"speaker": "student", "text": "  two words ", "at_ms": 2100},
++    {"speaker": "teacher", "text": "", "at_ms": 4000}]');
++select test_ok(
++  'the host ends it: departed, status untouched',
++  (select b.departed_at is not null and b.status = 'confirmed'
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000001') b)
++);
++select test_ok(
++  'the transcript is kept with its word count',
++  (select t.word_count = 5 and jsonb_array_length(t.segments) = 3
++     from public.lesson_transcripts t
++    where t.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin ends it again, empty-handed
++select public.lesson_end('ab1e5502-0000-0000-0000-000000000001');
++select test_ok(
++  'a second end by the in-charge keeps the first departure and the transcript',
++  (select t.word_count = 5 from public.lesson_transcripts t
++    where t.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++  and (select b.departed_at <= now() from pg_temp.booking('ab1e5502-0000-0000-0000-000000000001') b)
++);
++set local role postgres;
++select test_ok(
++  'the room is closed',
++  (select r.closed_at is not null from public.lesson_rooms r
++     where r.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++);
++select test_ok(
++  'ending pushed nobody and told the portal nothing',
++  pg_temp.quiet_since('before end')
++);
++
++-- Who reads what the lesson left behind.
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the assigned teacher reads the transcript and the room',
++  (select count(*) from public.lesson_transcripts) = 1
++  and (select count(*) from public.lesson_rooms
++        where session_id = 'ab1e5502-0000-0000-0000-000000000001') = 1
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'so does the in-charge of the room',
++  (select count(*) from public.lesson_transcripts) = 1
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok(
++  'and an admin',
++  (select count(*) from public.lesson_transcripts) = 1
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'a teacher who is not assigned reads no transcript and no room',
++  (select count(*) from public.lesson_transcripts) = 0
++  and (select count(*) from public.lesson_rooms) = 0
++);
++select act_as('cccc9999-9999-9999-9999-999999999999');   -- Tara
++select test_ok(
++  'nor does a teacher who teaches the child elsewhere',
++  (select count(*) from public.lesson_transcripts) = 0
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student reads no transcript and no room',
++  (select count(*) from public.lesson_transcripts) = 0
++  and (select count(*) from public.lesson_rooms) = 0
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'nor the parent',
++  (select count(*) from public.lesson_transcripts) = 0
++  and (select count(*) from public.lesson_rooms) = 0
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'nor a parent in another family',
++  (select count(*) from public.lesson_transcripts) = 0
++  and (select count(*) from public.lesson_rooms) = 0
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana
++select test_ok(
++  'nor the support desk',
++  (select count(*) from public.lesson_transcripts) = 0
++  and (select count(*) from public.lesson_rooms) = 0
++);
++
++-- ---------------------------------------------------------------------------
++-- my_online_lessons: each caller's seat, and only their sessions.
++-- ---------------------------------------------------------------------------
++create function pg_temp.listed(p_id uuid) returns text language sql stable as $$
++  select seat from public.my_online_lessons() where session_id = p_id
++$$;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the teacher lists the lesson as host, with no report and no draft yet',
++  (select l.seat = 'host' and l.report_id is null and l.draft_ready = false
++          and l.arrived_at is not null and l.departed_at is not null
++          and l.student_name = 'Ben Ashford' and l.teacher_name = 'Frank Teach'
++     from public.my_online_lessons() l
++    where l.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++  and pg_temp.listed('ab1e5502-0000-0000-0000-000000000003') = 'host'
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok(
++  'the student lists it as learner',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') = 'learner'
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'the parent lists it as family',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') = 'family'
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'another family does not list it',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') is null
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'the in-charge lists her room''s lesson as observer and not the other room''s',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') = 'observer'
++  and pg_temp.listed('ab1e5502-0000-0000-0000-000000000002') is null
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok(
++  'an admin lists the rooms that are on and not the one that is off',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') = 'observer'
++  and pg_temp.listed('ab1e5502-0000-0000-0000-000000000002') is null
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'a teacher who is not assigned lists nothing of it',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') is null
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana
++select test_ok(
++  'nor does the support desk',
++  pg_temp.listed('ab1e5502-0000-0000-0000-000000000001') is null
++);
++
++set local role postgres;
++select test_ok(
++  'a draft cannot propose a prev_hw the report form refuses',
++  raises($$insert into public.lesson_report_drafts (session_id, draft, source)
++           values ('ab1e5502-0000-0000-0000-000000000001', '{"prev_hw": "Maybe"}', 'ai')$$)
++);
++select test_ok(
++  'nor an OTR off the bands',
++  raises($$insert into public.lesson_report_drafts (session_id, draft, source)
++           values ('ab1e5502-0000-0000-0000-000000000001', '{"otr": 7}', 'ai')$$)
++);
++insert into public.lesson_report_drafts (session_id, draft, source)
++values ('ab1e5502-0000-0000-0000-000000000001',
++        '{"topic": "Vectors", "understanding": 7, "otr": 60, "prev_hw": "Partially Done"}', 'ai');
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'once a draft lands the teacher''s list says so, and the teacher reads it',
++  (select l.draft_ready from public.my_online_lessons() l
++     where l.session_id = 'ab1e5502-0000-0000-0000-000000000001')
++  and (select count(*) from public.lesson_report_drafts) = 1
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a parent reads no draft',
++  (select count(*) from public.lesson_report_drafts) = 0
++);
++
++-- ---------------------------------------------------------------------------
++-- lesson_course_materials: anybody signed in reads the mapping, an admin
++-- writes it, and the room carries it.
++-- ---------------------------------------------------------------------------
++select test_ok(
++  'a parent cannot map a course to the materials portal',
++  raises($$insert into public.lesson_course_materials (course_id, materials_course_id, mapped_by)
++           values ('cccccccc-0000-0000-0000-0000000000fa',
++                   'ab1e5502-0000-0000-0000-0000000000aa', '11111111-1111-1111-1111-111111111111')$$)
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++insert into public.lesson_course_materials (course_id, materials_course_id, mapped_by)
++values ('cccccccc-0000-0000-0000-0000000000fa',
++        'ab1e5502-0000-0000-0000-0000000000aa', '88888888-8888-8888-8888-888888888888');
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the mapping is readable and reaches the room',
++  (select count(*) from public.lesson_course_materials
++    where course_id = 'cccccccc-0000-0000-0000-0000000000fa') = 1
++  and (select s.materials_course_id = 'ab1e5502-0000-0000-0000-0000000000aa'
++         from public.lesson_room_state('ab1e5502-0000-0000-0000-000000000001') s)
++);
++
++-- ---------------------------------------------------------------------------
++-- import_lesson_room_facts: the service role's, quiet, and narrow.
++-- ---------------------------------------------------------------------------
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal, signed in
++select test_ok(
++  'nobody signed in may call the webhook door, admin included',
++  raises_matching($$select public.import_lesson_room_facts('[]')$$, 'permission denied')
++);
++
++set local role postgres;
++select pg_temp.mark('before import');
++create function pg_temp.t(p_minutes int) returns timestamptz language sql stable as $$
++  select date_trunc('second', now()) + make_interval(mins => p_minutes)
++$$;
++
++set local role service_role;
++select set_config('request.jwt.claim.sub', '', true);
++create temp table applied as
++  select public.import_lesson_room_facts(jsonb_build_array(
++    jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                       'event', 'joined', 'user_id', '66666666-6666-6666-6666-666666666666',
++                       'at', pg_temp.t(-6)),
++    jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                       'event', 'joined', 'user_id', '22222222-2222-2222-2222-222222222222',
++                       'at', pg_temp.t(-5)),
++    jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                       'event', 'left', 'user_id', '22222222-2222-2222-2222-222222222222',
++                       'at', pg_temp.t(-1)),
++    jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                       'event', 'ended', 'user_id', null,
++                       'at', pg_temp.t(-1)),
++    jsonb_build_object('room_name', 'lesson-nobody-knows',
++                       'event', 'joined', 'user_id', '22222222-2222-2222-2222-222222222222',
++                       'at', pg_temp.t(0)),
++    jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                       'event', 'waved', 'user_id', '22222222-2222-2222-2222-222222222222',
++                       'at', pg_temp.t(0))
++  )) as n;
++set local role postgres;
++select test_ok(
++  'the door applies the rows it recognises and skips an unknown room and an unknown event',
++  (select n = 4 from applied)
++);
++select test_ok(
++  'the student''s join and leave land on the booking',
++  (select b.arrived_at = pg_temp.t(-5) and b.departed_at = pg_temp.t(-1)
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000004') b)
++);
++select test_ok(
++  'and nothing else on it moved',
++  (select b.status = 'confirmed' and b.no_show = false
++          and b.confirmed_start = now() - interval '10 minutes'
++          and b.assigned_teacher_id = '66666666-6666-6666-6666-666666666666'
++          -- the link the stamp gave it on insert, room on, untouched
++          and b.meeting_url = 'https://room.test/lesson/ab1e5502-0000-0000-0000-000000000004'
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000004') b)
++);
++select test_ok(
++  'the teacher''s join and the end are the room''s clock',
++  (select r.opened_at = pg_temp.t(-6) and r.closed_at = pg_temp.t(-1)
++     from public.lesson_rooms r where r.session_id = 'ab1e5502-0000-0000-0000-000000000004')
++);
++select test_ok(
++  'the webhook pushed nobody and told the portal nothing',
++  pg_temp.quiet_since('before import')
++);
++select test_ok(
++  'and left the import flags as it found them',
++  coalesce(current_setting('app.portal_import', true), '') = ''
++  and coalesce(current_setting('app.portal_news', true), '') = ''
++);
++
++set local role service_role;
++select public.import_lesson_room_facts(jsonb_build_array(
++  -- An earlier join replayed: the first arrival stands.
++  jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                     'event', 'joined', 'user_id', '22222222-2222-2222-2222-222222222222',
++                     'at', pg_temp.t(-9)),
++  -- A leave before the one already known: the latest departure stands.
++  jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                     'event', 'left', 'user_id', '22222222-2222-2222-2222-222222222222',
++                     'at', pg_temp.t(-3)),
++  -- A later leave moves it.
++  jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                     'event', 'left', 'user_id', '22222222-2222-2222-2222-222222222222',
++                     'at', pg_temp.t(2)),
++  -- Somebody who is not the student joining is the room's business only.
++  jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000004',
++                     'event', 'joined', 'user_id', '77777777-7777-7777-7777-777777777777',
++                     'at', pg_temp.t(-8)),
++  -- The learner who joined through the app: the app's stamp stands.
++  jsonb_build_object('room_name', 'lesson-ab1e5502-0000-0000-0000-000000000001',
++                     'event', 'joined', 'user_id', '22222222-2222-2222-2222-222222222222',
++                     'at', pg_temp.t(-30))
++));
++set local role postgres;
++select test_ok(
++  'an arrival is written once and a departure is the latest',
++  (select b.arrived_at = pg_temp.t(-5) and b.departed_at = pg_temp.t(2)
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000004') b)
++);
++select test_ok(
++  'a join by somebody other than the student leaves the booking alone and does not reopen the room',
++  (select r.opened_at = pg_temp.t(-6)
++     from public.lesson_rooms r where r.session_id = 'ab1e5502-0000-0000-0000-000000000004')
++);
++select test_ok(
++  'the join the student made in the app is not moved by a later-arriving webhook',
++  (select b.arrived_at = (select at from joined)
++     from pg_temp.booking('ab1e5502-0000-0000-0000-000000000001') b)
++);
++rollback;
+-- 
+2.43.0
+

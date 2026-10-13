@@ -1,0 +1,738 @@
+From e675076ee2ade43d9a3de87c59c41cca7ab9b153 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 17:53:16 +0000
+Subject: [PATCH 9/9] A lesson knows when its host arrived
+
+A student who arrives first opens the room; that is not a teacher being
+there. The host's own arrival is its own fact (lesson_host_join from the
+room, or Daily's word for a participant who is not the student), and the
+no-join sweep reads it, so a student waiting alone is finally a task.
+With it, the stage's docs: the three cron jobs, the two push rows, the
+lesson-room secrets, the runbook's new sections, and the lessons this
+branch taught CLAUDE.md.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016Yf774TAZaYcnfPt2CdeHJ
+---
+ CLAUDE.md                                     |  23 +++
+ ...the-schedule-check-names-every-job.test.ts |   9 +-
+ docs/DEPLOYMENT.md                            |  59 +++++-
+ docs/RUNBOOK.md                               | 117 ++++++++++++
+ ...3_a_lesson_knows_when_its_host_arrived.sql | 174 ++++++++++++++++++
+ supabase/probes/20261013174253.sql            |  15 ++
+ ...3-a_lesson_knows_when_its_host_arrived.sql | 145 +++++++++++++++
+ supabase/tests/schedule-check.sql             |  21 ++-
+ 8 files changed, 542 insertions(+), 21 deletions(-)
+ create mode 100644 supabase/migrations/20261013174253_a_lesson_knows_when_its_host_arrived.sql
+ create mode 100644 supabase/probes/20261013174253.sql
+ create mode 100644 supabase/tests/rls/20261013174253-a_lesson_knows_when_its_host_arrived.sql
+
+diff --git a/CLAUDE.md b/CLAUDE.md
+index 3063d22..6766bd8 100644
+--- a/CLAUDE.md
++++ b/CLAUDE.md
+@@ -353,3 +353,26 @@ change. Hand-copying loses a clause nobody notices.
+ gaining a column needs `drop function` first — and the new column must sit in
+ the same position in the SELECT as in the RETURNS TABLE, or the mismatch
+ surfaces as a type error about some unrelated column.
++
++**Two rules read the catalogue, so a new table trips them with nothing named
++by hand.** Every table in `public` must have anon's insert, update, delete,
++truncate, references and trigger revoked (probe 20260901060458 scans them
++all), and every foreign key into `courses` must be a table
++`retire_seed_course_twins` moves (the RLS section of 20261006101926 reads the
++catalogue). Revoke per table in the migration that creates it, and re-emit
++the function from `pg_get_functiondef` with the new move — never hand-copy.
++Three more that cost an hour each on the lesson-platform branch: a plpgsql
++function with `RETURNS TABLE` turns every OUT column into a variable, so an
++unqualified column name anywhere inside it (an `ON CONFLICT` target included)
++fails as ambiguous; a `count(*)` subquery beside a volatile call in the same
++`test_ok(...)` may run first as an InitPlan, so read a write in its own
++statement; and a boolean derived from a function that can return NULL
++(`room_access(s) = 'host'`) slips through `if not (...)` unless it is
++coalesced to false — which only a negative assertion catches.
++
++**A function the database calls answers before it works.** `pg_net` gives
++`invoke_edge_function`'s request about five seconds, so lesson-finalize
++returns 200 at once and does its work under `EdgeRuntime.waitUntil`; the
++database never reads the response. And a new kind of push needs a branch in
++the app's tap router (`app/(tabs)/_layout.tsx`), or its tap opens the app on
++whatever screen it was on — a quiet failure nobody reports.
+diff --git a/__smoke__/the-schedule-check-names-every-job.test.ts b/__smoke__/the-schedule-check-names-every-job.test.ts
+index 60935ac..272e771 100644
+--- a/__smoke__/the-schedule-check-names-every-job.test.ts
++++ b/__smoke__/the-schedule-check-names-every-job.test.ts
+@@ -67,17 +67,18 @@ test('and says how many that is, in words a reader can count against', () => {
+   const check = readFileSync(join(ROOT, 'supabase', 'tests', 'schedule-check.sql'), 'utf8');
+   const count = scheduled().length;
+   const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight',
+-    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen'][count];
++    'nine', 'ten', 'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen',
++    'seventeen', 'eighteen', 'nineteen', 'twenty'][count];
+   expect({ count, saysSo: check.includes(`Expect ${words} rows:`) }).toEqual({ count, saysSo: true });
+ });
+ 
+-test('the deployment doc schedules the fourteen it says it does', () => {
++test('the deployment doc schedules the seventeen it says it does', () => {
+   // The doc counts them in its own prose ("Four of the thirteen must read t"),
+   // which is a third copy and drifts too. Cheap to hold to the setup block.
+   const jobs = scheduled();
+   const doc = readFileSync(join(ROOT, 'docs', 'DEPLOYMENT.md'), 'utf8');
+   const usesInvoke = jobs.filter((j) => j.usesInvokeEdgeFunction).length;
+ 
+-  expect({ total: jobs.length, usesInvoke }).toEqual({ total: 14, usesInvoke: 4 });
+-  expect(doc).toContain('Four of the fourteen must read `t`');
++  expect({ total: jobs.length, usesInvoke }).toEqual({ total: 17, usesInvoke: 5 });
++  expect(doc).toContain('Five of the seventeen must read `t`');
+ });
+diff --git a/docs/DEPLOYMENT.md b/docs/DEPLOYMENT.md
+index ae0b721..aae15b0 100644
+--- a/docs/DEPLOYMENT.md
++++ b/docs/DEPLOYMENT.md
+@@ -181,10 +181,10 @@ either way.
+ ### What notifies, and how
+ 
+ **Nothing to wire up. It is in the migrations.** `notify_push()` is attached to
+-twenty-eight table+event pairs — the first thirteen by
++thirty table+event pairs — the first thirteen by
+ `20260809000100_thirteen_webhooks_become_one_trigger.sql`, `calls` by
+ `20260811000300_a_missed_call_says_so.sql`, the rest by the migrations that
+-added their tables since — so a fresh project gets all twenty-eight from
++added their tables since — so a fresh project gets all thirty from
+ `supabase db push` and staging and production cannot drift apart. The table
+ below is the list; `__smoke__/push-triggers.test.ts` holds it equal to the
+ migrations and to send-push's header.
+@@ -227,6 +227,8 @@ The table is still worth having, because *what* notifies is a real question:
+ | `leave_requests` | Update | The decision — approved or declined — answers the person who asked |
+ | `lesson_report_drafts` | Insert | A report draft is ready for an online lesson, to the assigned teacher ("Your report draft is ready") |
+ | `lesson_followups` | Update | A follow-up moved (column-scoped: only `status` writes fire it). A teacher's yes (proposed → approved) asks the room's in-charges to send it; done and dismissed are quiet |
++| `practice_assignments` | Insert | A practice set to do at home ("New practice: <set>"), to the student and the household's parents; a set for the room is inserted under `app.push_quiet` by assign_practice and is quiet |
++| `practice_attempts` | Update | An at-home set finished (column-scoped: only `status` writes fire it; in_progress → submitted or marked), to the teacher who set it — "<student> finished <set>: <score>/<out of>", with " · flagged" when the integrity summary said so |
+ 
+ The trigger posts the same `{type, table, schema, record, old_record}` envelope
+ the dashboard sent, so `send-push` cannot tell the two apart — which is exactly
+@@ -410,6 +412,10 @@ supabase secrets set ROOM_REDEEM_SECRET="$(openssl rand -hex 32)" # the same val
+ supabase functions deploy room-ticket
+ supabase functions deploy room-redeem
+ supabase functions deploy daily-webhook --no-verify-jwt
++supabase secrets set ANTHROPIC_API_KEY=sk-ant-...   # lesson-finalize: the three model passes (coaching, follow-ups, report draft). Without it every lesson gets the heuristic draft, source = 'heuristic'
++supabase secrets set DAILY_API_KEY=...              # lesson-finalize (Daily's stored transcript) and recordings-cleanup (the purge). Without it the room's own segments are the transcript
++supabase functions deploy lesson-finalize
++supabase functions deploy recordings-cleanup
+ ```
+ 
+ `--no-verify-jwt` on daily-webhook is required: Daily has no Supabase
+@@ -495,6 +501,21 @@ DEPLOYMENT.md §2c. A dead webhook loses the teacher's opened_at/closed_at and
+ the recording and transcript status, not attendance: the student's own
+ lesson_join writes arrived_at as well.
+ 
++**lesson-finalize is the database's door.** `lesson_end` asks for it through `invoke_edge_function('lesson-finalize', {session_id, reason: 'end'})` after its writes (20261013163945), and daily-webhook asks again with `reason: 'transcript'` when Daily's stored WebVTT is ready; both carry the service-role key as bearer and the function compares it to SUPABASE_SERVICE_ROLE_KEY in constant time — a signed-in person's token is a 401. It answers 200 at once and does the work under `EdgeRuntime.waitUntil`, because pg_net gives the database's call about five seconds. What one run writes, all through `worker_store_lesson_results`: `lesson_transcripts` (the room's segments merged with Daily's WebVTT, only with the family's `transcript` consent), `lesson_metrics` (always), `lesson_feedback` (only with `ai_analysis` consent — without it nothing of the lesson reaches Anthropic), `lesson_report_drafts` (`source` ai or heuristic; its INSERT is the "Your report draft is ready" push, and a second run replaces the draft without pushing again), `lesson_followups` (proposed, once per session), and `ai_usage` (one row per model call: kind analyze | followup_extract | report_draft, model as served, tokens). A lesson that started more than a day ago stores quietly (`p_quiet`) — backfill, not news. The OTR on a draft is the band the host recorded in the room (lesson_events kind quick_check_result) or nothing; it is never inferred from the talk.
++
++**No new push pair.** The "What notifies, and how" table is unchanged by this function: it writes through the two pairs 20261013155425 already wired (lesson_report_drafts INSERT, lesson_followups UPDATE OF status). No pg_cron entry: it is invoked, never scheduled.
++
++**Check it took.** End an online lesson from the room, then:
++
++```sql
++select session_id, source, left(rationale, 60) as rationale, created_at
++  from public.lesson_report_drafts order by created_at desc limit 5;
++select session_id, kind, model, tokens_in, tokens_out, at
++  from public.ai_usage order by at desc limit 10;            -- three rows per lesson with ai_analysis consent and a key
++select session_id, payload->>'error' as why, at
++  from public.lesson_events where kind = 'finalize_not_asked' order by at desc limit 5;   -- should be empty
++```
++
+ ## 3. Builds and the stores
+ 
+ ### Prerequisites
+@@ -799,7 +820,7 @@ that only one of the two evaluations had.
+ 
+ ## Background workers
+ 
+-Four edge functions do work that is not triggered by somebody tapping
++Five edge functions do work that is not triggered by somebody tapping
+ something. None of them run on their own — Supabase does not schedule
+ functions for you — so each needs a cron entry. Without one they simply never
+ run, and the symptom is quiet: files nobody can open, announcements that never
+@@ -812,6 +833,7 @@ supabase functions deploy scan-attachment
+ supabase functions deploy drain-push
+ supabase functions deploy export-conversations
+ supabase functions deploy storage-cleanup
++supabase functions deploy recordings-cleanup
+ ```
+ 
+ ### Scheduling them
+@@ -950,6 +972,27 @@ begin
+   perform cron.schedule('mv-storage-cleanup', '10 18 * * *',
+     $$select public.invoke_edge_function('storage-cleanup')$$);
+ 
++  -- A recording the retention sweep (sweep_lesson_retention) marked deleted
++  -- still has its bytes at Daily. This removes them — Daily's 404 counts as
++  -- gone — and stamps purged_at; fifty a run, every half hour, so a backlog
++  -- drains inside a day. Service bearer through invoke_edge_function, like
++  -- mv-storage-cleanup.
++  perform cron.schedule('mv-recordings-cleanup', '*/30 * * * *',
++    $$select public.invoke_edge_function('recordings-cleanup')$$);
++
++  -- A live online lesson somebody has not joined, ten minutes in: a task in
++  -- the room's pool, once per session (20261013163422). Plain function
++  -- call, no HTTP; the pool's own push tells the room's in-charges.
++  perform cron.schedule('mv-lesson-no-joins', '*/5 * * * *',
++    'select public.sweep_lesson_no_joins();');
++
++  -- Recordings older than retention_settings.recording_months are marked
++  -- deleted here; recordings-cleanup removes the bytes at the provider and
++  -- stamps purged_at. 18:05 UTC, between the retention sweep and the
++  -- storage cleanup.
++  perform cron.schedule('mv-lesson-retention', '5 18 * * *',
++    'select public.sweep_lesson_retention();');
++
+   -- Reminders somebody set for themselves. No HTTP here either: the sweep just
+   -- stamps notified_at, and that UPDATE fires the student_notes webhook, which
+   -- send-push turns into a notification. Every minute, because a reminder set
+@@ -1047,14 +1090,14 @@ select jobname, active, command like '%invoke_edge_function%' as new_style
+   from cron.job order by jobname;
+ ```
+ 
+-Four of the fourteen must read `t`. `mv-sweep-retention`, `mv-due-reminders`,
++Five of the seventeen must read `t`. `mv-sweep-retention`, `mv-due-reminders`,
+ `mv-due-tasks`, `mv-stale-holds`, `mv-no-shows`, `mv-stale-threads`,
+-`mv-dead-rings`, `mv-call-coverage`, `mv-report-nudges` and
+-`mv-lesson-tickets` read `f` and that is
+-correct — all ten are plain function calls with no HTTP in them
++`mv-dead-rings`, `mv-call-coverage`, `mv-report-nudges`,
++`mv-lesson-tickets`, `mv-lesson-no-joins` and `mv-lesson-retention` read `f`
++and that is correct — all twelve are plain function calls with no HTTP in them
+ (mv-call-coverage and
+ mv-report-nudges post through invoke_edge_function *inside* the function,
+-which the `command` column cannot see). Any of the other four reading `f` is
++which the `command` column cannot see). Any of the other five reading `f` is
+ still on the old inline command, which works and cannot report a failure, so
+ re-run the block.
+ 
+diff --git a/docs/RUNBOOK.md b/docs/RUNBOOK.md
+index d21d381..98e18f2 100644
+--- a/docs/RUNBOOK.md
++++ b/docs/RUNBOOK.md
+@@ -185,3 +185,120 @@ are set, and it is switched on one department at a time.
+    `proposed` rows first with the service role. `ai_usage` is the model bill:
+    `select kind, model, sum(tokens_in), sum(tokens_out) from public.ai_usage group by 1, 2;`
+    (admins read it in the app).
++7. Practice and tests (20261013170702) need nothing switched on: a course's
++   question bank is written by whoever manages the course (an in-charge whose
++   room it routes to, or an admin) through `store_extracted_questions`,
++   `upsert_question`, `approve_question` and `retire_question`; students and
++   families never read `practice_questions` — a question reaches a student
++   only through `attempt_questions`, which hides the key until the attempt
++   is submitted. A quick check in the lesson is made and given out by the
++   host (`create_practice_set` with the session, `assign_practice` in
++   `in_session` mode, quiet); a set to do at home pushes the student and the
++   household once per student. To see what a lesson's attempts look like:
++   `select public.live_attempts('<session id>');` as the host, the room's
++   in-charge or an admin. A flagged test is reviewed with
++   `select public.flagged_attempt_review('<attempt id>');` (the assigner, the
++   course's in-charge or an admin); camera frames live in the private
++   `test-snapshots` bucket under `<uid>/<attempt>/`, readable by the same
++   people and by the student who took them; question pictures live in
++   `practice-images` under `<course id>/`. An attempt is struck out with
++   `select public.void_attempt('<attempt id>');`. The room's teacher view
++   listens to `practice_attempts` on `supabase_realtime`.
++
++### A course's syllabus
++
++The room's syllabus editor (`/syllabus/<course id>`, for whoever manages the
++course — an admin, or an in-charge of its department or of a department a
++routing rule sends it to) starts from the portal's topic list:
++`seed_syllabus_from_course_topics(course)` adds one topic per `course_topics`
++row the syllabus does not have yet, carrying the portal's label, order and
++is_active, and is safe to run again (it returns how many it added; a second
++run says 0). Topics added by hand (`upsert_syllabus_topic`) live only here.
++A teacher marks where a child stands on a topic from the activity panel or
++the brief (`set_topic_status`), which needs a session with that child on that
++course within a week either way, or `manages_course`, or admin. A report's
++topics are linked by its author, the in-charge of its department or an admin
++(`link_report_topics`), and a second link replaces the first.
++
++### A lesson nobody joined
++
++`mv-lesson-no-joins` (every five minutes) files one task in the room's pool
++for a confirmed online lesson 10–30 minutes past its start, in a room that is
++on, that the student has not joined ("Student has not joined the online
++lesson"), or that the student is waiting in and nobody else has opened
++("Teacher has not joined the online lesson"). Once per session, ever: the
++sweep remembers in `lesson_events` (kind `no_join_task`, payload
++`{task_id, note}`), so a task marked done is not filed again. Nothing is filed
++for a room that is off, an in-person booking, a held or cancelled booking, or
++a session with no department (no pool to wait in). The task is news, so the
++pool's push goes out as it does for a handover.
++
++### How long recordings are kept
++
++`retention_settings.recording_months` (default 3; until the app's Files and
++retention screen offers it as a list, set it in the SQL editor:
++`update public.retention_settings set recording_months = 6 where id = 1;`). `mv-lesson-retention` (daily)
++marks `lesson_recordings.deleted_at` on anything recorded longer ago than
++that; `recordings-cleanup` then removes the bytes at Daily and stamps
++`purged_at`. A row already marked keeps its date. What the next sweep would
++mark:
++
++```sql
++select count(*)
++  from public.lesson_recordings r, public.retention_settings s
++ where s.id = 1 and r.deleted_at is null
++   and r.recorded_at < now() - make_interval(months => s.recording_months);
++```
++
++## A lesson ended and no draft arrived
++
++**From your phone:** the teacher ended the lesson and never got "Your report draft is ready", or the draft is the heuristic one (`source = 'heuristic'`) on a project with a key set.
++
++**Developer, in order:**
++
++1. `select payload->>'error', at from public.lesson_events where kind = 'finalize_not_asked' order by at desc limit 5;` A row here means the database could not ask at all: `edge_config.functions_url` is unset or the Vault `service_role_key` is missing — the same two things every push depends on, so pushes will be failing too (see "Pushes are not arriving").
++2. Supabase → Edge Functions → **lesson-finalize** → logs. `unauthorised` (401) means the bearer the database sent is not the project's SUPABASE_SERVICE_ROLE_KEY — the Vault row holds a stale key. `no such session` is a booking that was deleted between the end and the ask. `[edge] lesson-finalize <pass> fell back to the heuristic: http — 401` is a wrong ANTHROPIC_API_KEY; `… no_key` is an unset one; `… network — …` is a pass that timed out (110 s each) or could not reach Anthropic; `… parse — …` is a reply that was not the JSON asked for. Each of these costs that one pass only — the other two still land — and none throws the run away. `lesson-finalize/transcript` means Daily's access-link or download failed (DAILY_API_KEY, or the transcript id Daily sent): the lesson was finalised on the room's own segments and merges on the next `transcript` ask.
++3. `select source, rationale from public.lesson_report_drafts where session_id = '<id>';` `heuristic` with a key set and no log line means the family has no `ai_analysis` consent (`select kind, revoked_at from public.lesson_consents where student_id = '<student>'`); `select kind, model, at from public.ai_usage where session_id = '<id>'` says which calls were made at all.
++4. To run it again by hand, in the SQL editor: `select public.invoke_edge_function('lesson-finalize', jsonb_build_object('session_id', '<id>', 'reason', 'end'));` — idempotent: metrics, coaching and the draft are replaced, follow-ups are proposed only once, a replaced draft pushes nobody, and a lesson older than a day pushes nobody at all.
++
++## A lesson recording is still at Daily after its retention
++
++**Developer:** retention is two halves. `sweep_lesson_retention` (cron
++`mv-lesson-retention`) marks `lesson_recordings.deleted_at` once a recording is
++older than `retention_settings.recording_months`; `recordings-cleanup` (cron
++`mv-recordings-cleanup`, every half hour) deletes the bytes at Daily and stamps
++`purged_at`. Rows waiting between the two:
++
++```sql
++select session_id, deleted_at, purged_at, provider_recording_id
++  from public.lesson_recordings
++ where deleted_at is not null and purged_at is null
++ order by deleted_at limit 20;
++```
++
++A row older than an hour here means the function is not running: `cron.job`
++has no `mv-recordings-cleanup` (re-run the schedule block in DEPLOYMENT.md), or
++DAILY_API_KEY is not set — the function logs `recordings-cleanup has no
++DAILY_API_KEY set. Nothing is purged.` once and answers 503. A row whose
++`provider_recording_id` is null never had bytes at Daily and is nobody's job.
++A Daily refusal (401 is the key, 5xx is Daily) leaves the row for the next run
++and reaches the error sink under `recordings-cleanup`; Daily answering 404 is
++counted as purged, on purpose. Each run logs one line: `recordings-cleanup:
++purged N, kept M` and `, batch full` when fifty rows were waiting, so a backlog
++never reads as an all-clear.
++
++## A follow-up was approved and nobody heard
++
++**Developer:** the teacher's yes moves `lesson_followups.status` from proposed
++to approved and the push goes to the in-charge seats of the lesson's department
++— `department_members.is_incharge`, an office role, an open account — never to
++the whole zone and never to the teacher who said yes. A department with no
++in-charge seat buzzes nobody:
++
++```sql
++select dm.user_id, p.role, p.deactivated_at
++  from public.department_members dm join public.profiles p on p.id = dm.user_id
++ where dm.department_id = '<the follow-up''s department_id>' and dm.is_incharge;
++```
++
++Done and dismissed are quiet by design: done was done BY an in-charge.
+diff --git a/supabase/migrations/20261013174253_a_lesson_knows_when_its_host_arrived.sql b/supabase/migrations/20261013174253_a_lesson_knows_when_its_host_arrived.sql
+new file mode 100644
+index 0000000..101472a
+--- /dev/null
++++ b/supabase/migrations/20261013174253_a_lesson_knows_when_its_host_arrived.sql
+@@ -0,0 +1,174 @@
++-- A lesson knows when its host arrived.
++--
++-- lesson_join (the student's door) and the Daily webhook both set
++-- lesson_rooms.opened_at, so "the room was opened" never meant "the teacher
++-- is here" -- and sweep_lesson_no_joins' teacher branch, gated on opened_at,
++-- could not fire for the common case it exists for: a student waiting in a
++-- room nobody is teaching in. The room now records the host's own arrival
++-- (host_joined_at), written by the host from the room (lesson_host_join) and
++-- by the webhook when Daily sees a participant who is not the student, and
++-- the sweep asks that column instead. opened_at keeps its meaning: anybody
++-- was in the room. Run-twice: add column if not exists; functions are
++-- create or replace (privileges survive), re-emitted from
++-- pg_get_functiondef with the one change each.
++
++alter table public.lesson_rooms add column if not exists host_joined_at timestamptz;
++comment on column public.lesson_rooms.host_joined_at is
++  'When the teacher first arrived in the room: lesson_host_join from the room, or Daily''s '
++  'participant.joined for somebody who is not the student. Null while the student waits alone.';
++
++-- The host says they arrived. room_access decides who the host is (the
++-- assigned teacher, inside the window, in a room that is on); a learner, an
++-- observer or a stranger is refused. Idempotent: the first arrival stands.
++create or replace function public.lesson_host_join(p_session_id uuid)
++returns timestamptz
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  v_at timestamptz;
++begin
++  if coalesce(public.room_access(p_session_id) = 'host', false) is not true then
++    raise exception 'only the lesson''s host says they have arrived' using errcode = '42501';
++  end if;
++
++  insert into public.lesson_rooms (session_id, room_name, opened_at, host_joined_at)
++  values (p_session_id, 'lesson-' || p_session_id::text, now(), now())
++  on conflict (session_id) do update
++    set opened_at      = coalesce(public.lesson_rooms.opened_at, excluded.opened_at),
++        host_joined_at = coalesce(public.lesson_rooms.host_joined_at, excluded.host_joined_at)
++  returning host_joined_at into v_at;
++  return v_at;
++end;
++$$;
++
++comment on function public.lesson_host_join(uuid) is
++  'The host''s own arrival in the lesson room, stamped once; room_access says who the host is.';
++revoke all on function public.lesson_host_join(uuid) from public;
++grant execute on function public.lesson_host_join(uuid) to authenticated;
++
++-- import_lesson_room_facts: re-emitted from pg_get_functiondef; the one change
++-- is that a 'joined' by somebody who is not the student also stamps
++-- host_joined_at. It still never names status, confirmed_start,
++-- requested_start, assigned_teacher_id or meeting_url.
++CREATE OR REPLACE FUNCTION public.import_lesson_room_facts(p_rows jsonb)
++ RETURNS integer
++ LANGUAGE plpgsql
++ SECURITY DEFINER
++ SET search_path TO 'public'
++AS $function$
++declare
++  r         jsonb;
++  v_session uuid;
++  v_student uuid;
++  v_user    uuid;
++  v_at      timestamptz;
++  v_event   text;
++  v_import  text;
++  v_news    text;
++  n         integer := 0;
++begin
++  -- Quiet toward the portal and toward phones, the way every import door
++  -- is; restored afterwards rather than cleared.
++  v_import := coalesce(current_setting('app.portal_import', true), '');
++  v_news   := coalesce(current_setting('app.portal_news', true), '');
++  perform set_config('app.portal_import', '1', true);
++  perform set_config('app.portal_news', '', true);
++
++  for r in select * from jsonb_array_elements(coalesce(p_rows, '[]'::jsonb)) loop
++    v_event := r->>'event';
++    v_at    := nullif(r->>'at', '')::timestamptz;
++    v_user  := nullif(r->>'user_id', '')::uuid;
++    if v_event not in ('joined', 'left', 'ended') or v_at is null then
++      continue;
++    end if;
++
++    v_session := null;
++    select lr.session_id, s.student_id
++      into v_session, v_student
++      from public.lesson_rooms lr
++      join public.session_requests s on s.id = lr.session_id
++     where lr.room_name = r->>'room_name';
++    if v_session is null then
++      continue;
++    end if;
++
++    if v_user is not null and v_user = v_student then
++      if v_event = 'joined' then
++        update public.session_requests s
++           set arrived_at = coalesce(s.arrived_at, v_at)
++         where s.id = v_session;
++      else
++        update public.session_requests s
++           set departed_at = greatest(coalesce(s.departed_at, v_at), v_at)
++         where s.id = v_session;
++      end if;
++    else
++      if v_event = 'joined' then
++        update public.lesson_rooms lr
++           set opened_at = coalesce(lr.opened_at, v_at),
++               host_joined_at = coalesce(lr.host_joined_at, v_at)
++         where lr.session_id = v_session;
++      else
++        update public.lesson_rooms lr
++           set closed_at = greatest(coalesce(lr.closed_at, v_at), v_at)
++         where lr.session_id = v_session;
++      end if;
++    end if;
++    n := n + 1;
++  end loop;
++
++  perform set_config('app.portal_import', v_import, true);
++  perform set_config('app.portal_news', v_news, true);
++  return n;
++end;
++$function$;
++
++-- sweep_lesson_no_joins: re-emitted; the teacher branch now asks
++-- host_joined_at instead of opened_at.
++CREATE OR REPLACE FUNCTION public.sweep_lesson_no_joins()
++ RETURNS integer
++ LANGUAGE plpgsql
++ SECURITY DEFINER
++ SET search_path TO 'public'
++AS $function$
++declare
++  r      record;
++  v_note text;
++  v_task uuid;
++  n      integer := 0;
++begin
++  for r in
++    select s.id, s.department_id, s.student_id, s.family_id, s.arrived_at, lr.host_joined_at
++      from public.session_requests s
++      left join public.lesson_rooms lr on lr.session_id = s.id
++     where s.mode = 'online'
++       and s.status = 'confirmed'
++       and s.department_id is not null
++       and s.effective_start between now() - interval '30 minutes'
++                               and now() - interval '10 minutes'
++       and public.lesson_platform_enabled(s.department_id)
++       and (s.arrived_at is null or lr.host_joined_at is null)
++       and not exists (select 1 from public.lesson_events e
++                        where e.session_id = s.id and e.kind = 'no_join_task')
++     order by s.effective_start, s.id
++  loop
++    v_note := case when r.arrived_at is null
++                   then 'Student has not joined the online lesson'
++                   else 'Teacher has not joined the online lesson' end;
++
++    insert into public.message_tasks (department_id, student_id, family_id, note, due_at)
++    values (r.department_id, r.student_id, r.family_id, v_note, now())
++    returning id into v_task;
++
++    insert into public.lesson_events (session_id, kind, payload)
++    values (r.id, 'no_join_task', jsonb_build_object('task_id', v_task, 'note', v_note));
++
++    n := n + 1;
++  end loop;
++  return n;
++end;
++$function$;
++
++notify pgrst, 'reload schema';
+diff --git a/supabase/probes/20261013174253.sql b/supabase/probes/20261013174253.sql
+new file mode 100644
+index 0000000..18bd054
+--- /dev/null
++++ b/supabase/probes/20261013174253.sql
+@@ -0,0 +1,15 @@
++  -- The host's arrival is its own fact, the sweep reads it, and the webhook
++  -- door writes it while still naming nothing it must not.
++  select '20261013174253', 'a lesson knows when its host arrived',
++         'lesson_rooms.host_joined_at exists; lesson_host_join is callable by authenticated and not anon; sweep_lesson_no_joins gates its teacher branch on host_joined_at, never on opened_at; import_lesson_room_facts stamps host_joined_at and still never names status, confirmed_start, requested_start, assigned_teacher_id or meeting_url',
++         exists (select 1 from information_schema.columns
++                  where table_schema = 'public' and table_name = 'lesson_rooms' and column_name = 'host_joined_at')
++           and to_regprocedure('public.lesson_host_join(uuid)') is not null
++           and has_function_privilege('authenticated', to_regprocedure('public.lesson_host_join(uuid)'), 'execute')
++           and not has_function_privilege('anon', to_regprocedure('public.lesson_host_join(uuid)'), 'execute')
++           and coalesce((select prosrc like '%lr.host_joined_at is null%'
++                            and prosrc not like '%lr.opened_at is null%'
++                           from pg_proc where oid = to_regprocedure('public.sweep_lesson_no_joins()')), false)
++           and coalesce((select prosrc like '%host_joined_at = coalesce(lr.host_joined_at, v_at)%'
++                            and prosrc !~ '\y(status|confirmed_start|requested_start|assigned_teacher_id|meeting_url)\y'
++                           from pg_proc where oid = to_regprocedure('public.import_lesson_room_facts(jsonb)')), false)
+diff --git a/supabase/tests/rls/20261013174253-a_lesson_knows_when_its_host_arrived.sql b/supabase/tests/rls/20261013174253-a_lesson_knows_when_its_host_arrived.sql
+new file mode 100644
+index 0000000..2a6a4e9
+--- /dev/null
++++ b/supabase/tests/rls/20261013174253-a_lesson_knows_when_its_host_arrived.sql
+@@ -0,0 +1,145 @@
++-- ---------------------------------------------------------------------------
++-- A lesson knows when its host arrived
++-- (migration 20261013174253)
++--
++-- A student who arrives first opens the room; that is not a teacher being
++-- there. The host's own arrival is its own fact: said by the host alone
++-- (the student, a teacher who is not the host and the in-charge watching
++-- are refused), stamped once, and also stamped by Daily's word when the
++-- participant who joined is not the student. The no-join sweep reads it:
++-- a student waiting alone is "Teacher has not joined", a teacher waiting
++-- alone is "Student has not joined", each once.
++-- ---------------------------------------------------------------------------
++begin;
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++
++update public.edge_config set room_url = 'https://room.test' where id = 1;
++insert into public.lesson_platform_rooms (department_id)
++values ('dddddddd-0000-0000-0000-0000000000fc')
++on conflict (department_id) do nothing;
++update public.department_members set is_incharge = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++create function pg_temp.hj_fam() returns uuid language sql stable as $$
++  select family_id from public.profiles where id = '11111111-1111-1111-1111-111111111111'
++$$;
++
++-- Three SAT Math lessons of Ben's with Frank in a room that is on: 01 and 02
++-- a quarter of an hour in (01 the student arrives first and waits; 02 the
++-- teacher arrives first and waits); 03 five minutes in, outside the sweep's
++-- window, for Daily to report on.
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, course_id,
++   department_id, assigned_teacher_id, mode, status, requested_start, confirmed_start,
++   duration_minutes)
++select ('b7057a5e-0000-0000-0000-0000000000' || x.n)::uuid, pg_temp.hj_fam(), '11111111-1111-1111-1111-111111111111',
++       '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'SAT Math',
++       'cccccccc-0000-0000-0000-0000000000fb', 'dddddddd-0000-0000-0000-0000000000fc',
++       '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++       now() - x.ago, now() - x.ago, 60
++  from (values ('01', interval '15 minutes'), ('02', interval '15 minutes'), ('03', interval '5 minutes')) as x(n, ago);
++
++-- Earlier sections leave online lessons inside the sweep's window; marked as
++-- already filed, by the sweep's own rule, so the counts below are this
++-- section's.
++insert into public.lesson_events (session_id, kind, payload)
++select s.id, 'no_join_task', '{"note": "fixture from an earlier section"}'::jsonb
++  from public.session_requests s
++ where s.mode = 'online'
++   and s.id::text not like 'b7057a5e-%'
++   and s.effective_start between now() - interval '1 hour' and now()
++   and not exists (select 1 from public.lesson_events e
++                    where e.session_id = s.id and e.kind = 'no_join_task');
++
++create function pg_temp.hj_task(p_session uuid) returns text language sql stable security definer as $$
++  select t.note
++    from public.lesson_events e
++    join public.message_tasks t on t.id = (e.payload ->> 'task_id')::uuid
++   where e.session_id = p_session and e.kind = 'no_join_task'
++   limit 1
++$$;
++create function pg_temp.host_at(p_session uuid) returns timestamptz language sql stable security definer as $$
++  select host_joined_at from public.lesson_rooms where session_id = p_session
++$$;
++create function pg_temp.opened_at(p_session uuid) returns timestamptz language sql stable security definer as $$
++  select opened_at from public.lesson_rooms where session_id = p_session
++$$;
++
++-- ---------------------------------------------------------------------------
++-- The student arrives in 01: the room is open, and nobody is teaching in it.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('22222222-2222-2222-2222-222222222222');
++select test_ok('the student arrives in the room',
++  public.lesson_join('b7057a5e-0000-0000-0000-000000000001') is not null);
++select test_ok('the room is open', pg_temp.opened_at('b7057a5e-0000-0000-0000-000000000001') is not null);
++select test_ok('and no host has arrived', pg_temp.host_at('b7057a5e-0000-0000-0000-000000000001') is null);
++
++-- ---------------------------------------------------------------------------
++-- Only the host says the host arrived.
++-- ---------------------------------------------------------------------------
++select test_ok('the student cannot say the host arrived',
++  raises_matching($$select public.lesson_host_join('b7057a5e-0000-0000-0000-000000000001')$$, 'host says'));
++select act_as('cccc9999-9999-9999-9999-999999999999');   -- Tara: a teacher, not this lesson's
++select test_ok('nor can a teacher who is not the host',
++  raises_matching($$select public.lesson_host_join('b7057a5e-0000-0000-0000-000000000001')$$, 'host says'));
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin: in charge, watching
++select test_ok('nor the in-charge watching',
++  raises_matching($$select public.lesson_host_join('b7057a5e-0000-0000-0000-000000000001')$$, 'host says'));
++select test_ok('and still no host has arrived', pg_temp.host_at('b7057a5e-0000-0000-0000-000000000001') is null);
++
++-- ---------------------------------------------------------------------------
++-- The teacher arrives first in 02, then the sweep looks at both.
++-- ---------------------------------------------------------------------------
++select act_as('66666666-6666-6666-6666-666666666666');
++select test_ok('the host arrives in 02',
++  public.lesson_host_join('b7057a5e-0000-0000-0000-000000000002') is not null);
++select test_ok('which opens the room too', pg_temp.opened_at('b7057a5e-0000-0000-0000-000000000002') is not null);
++
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok('the sweep files for both lessons', public.sweep_lesson_no_joins() = 2);
++select test_ok('a student waiting in an open room is a teacher who has not joined',
++  pg_temp.hj_task('b7057a5e-0000-0000-0000-000000000001') = 'Teacher has not joined the online lesson');
++select test_ok('a teacher waiting is a student who has not joined',
++  pg_temp.hj_task('b7057a5e-0000-0000-0000-000000000002') = 'Student has not joined the online lesson');
++
++-- ---------------------------------------------------------------------------
++-- The host arrives in 01, once.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');
++select test_ok('the host arrives in 01',
++  public.lesson_host_join('b7057a5e-0000-0000-0000-000000000001') is not null);
++create temp table hj_first as select pg_temp.host_at('b7057a5e-0000-0000-0000-000000000001') as at;
++select test_ok('and a second arrival keeps the first',
++  public.lesson_host_join('b7057a5e-0000-0000-0000-000000000001') = (select at from hj_first));
++
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok('a second pass files nothing', public.sweep_lesson_no_joins() = 0);
++
++-- ---------------------------------------------------------------------------
++-- Daily's word on 03: the teacher's joined stamps the host's arrival, the
++-- student's stamps the booking's — and nothing the door must not name.
++-- ---------------------------------------------------------------------------
++insert into public.lesson_rooms (session_id, room_name)
++values ('b7057a5e-0000-0000-0000-000000000003', 'lesson-b7057a5e-0000-0000-0000-000000000003');
++select test_ok('the teacher''s joined is applied',
++  public.import_lesson_room_facts(jsonb_build_array(jsonb_build_object(
++    'room_name', 'lesson-b7057a5e-0000-0000-0000-000000000003', 'event', 'joined',
++    'user_id', '66666666-6666-6666-6666-666666666666', 'at', now()))) = 1);
++select test_ok('and stamps the host''s arrival', pg_temp.host_at('b7057a5e-0000-0000-0000-000000000003') is not null);
++select test_ok('but not the student''s',
++  (select arrived_at is null from public.session_requests where id = 'b7057a5e-0000-0000-0000-000000000003'));
++select test_ok('the student''s joined is applied',
++  public.import_lesson_room_facts(jsonb_build_array(jsonb_build_object(
++    'room_name', 'lesson-b7057a5e-0000-0000-0000-000000000003', 'event', 'joined',
++    'user_id', '22222222-2222-2222-2222-222222222222', 'at', now()))) = 1);
++select test_ok('and stamps the booking''s arrival',
++  (select arrived_at is not null from public.session_requests where id = 'b7057a5e-0000-0000-0000-000000000003'));
++select test_ok('with both there, the sweep has nothing to say about 03', public.sweep_lesson_no_joins() = 0);
++
++commit;
+diff --git a/supabase/tests/schedule-check.sql b/supabase/tests/schedule-check.sql
+index f218c59..f72818b 100644
+--- a/supabase/tests/schedule-check.sql
++++ b/supabase/tests/schedule-check.sql
+@@ -42,15 +42,18 @@ select
+ from cron.job
+ order by jobname;
+ 
+--- Expect fourteen rows:
++-- Expect seventeen rows:
+ --   mv-call-coverage     0 4 * * 1-4   t   f
+ --   mv-dead-rings        * * * * *     t   f
+ --   mv-drain-push        * * * * *     t   t
+ --   mv-due-reminders     * * * * *     t   f
+ --   mv-due-tasks         * * * * *     t   f
+ --   mv-exports           */5 * * * *   t   t
++--   mv-lesson-no-joins   */5 * * * *   t   f
++--   mv-lesson-retention  5 18 * * *    t   f
+ --   mv-lesson-tickets    0 * * * *     t   f
+ --   mv-no-shows          */5 * * * *   t   f
++--   mv-recordings-cleanup */30 * * * *  t   t
+ --   mv-report-nudges     30 3 * * 1-5  t   f
+ --   mv-scan-attachments  * * * * *     t   t
+ --   mv-stale-holds       */10 * * * *  t   f
+@@ -67,14 +70,14 @@ order by jobname;
+ -- else in this file can see that — every query below reports happily on the
+ -- jobs that ARE there.
+ --
+--- An f IN THE LAST COLUMN is only wrong for the four that reach an edge
+--- function over HTTP: mv-drain-push, mv-exports, mv-scan-attachments and
+--- mv-storage-cleanup. One of those reading f is still on the old inline
+--- command, which works and cannot report a failure — re-run the setup block
+--- from docs/DEPLOYMENT.md. The other eight are plain function calls with no
+--- HTTP in the command, so f is correct for them; mv-call-coverage and
+--- mv-report-nudges do post through invoke_edge_function, but from INSIDE the
+--- function, where the `command` column cannot see it.
++-- An f IN THE LAST COLUMN is only wrong for the five that reach an edge
++-- function over HTTP: mv-drain-push, mv-exports, mv-scan-attachments,
++-- mv-storage-cleanup and mv-recordings-cleanup. One of those reading f is
++-- still on the old inline command, which works and cannot report a failure —
++-- re-run the setup block from docs/DEPLOYMENT.md. The other twelve are plain
++-- function calls with no HTTP in the command, so f is correct for them;
++-- mv-call-coverage and mv-report-nudges do post through invoke_edge_function,
++-- but from INSIDE the function, where the `command` column cannot see it.
+ 
+ 
+ -- ---------------------------------------------------------------------------
+-- 
+2.43.0
+

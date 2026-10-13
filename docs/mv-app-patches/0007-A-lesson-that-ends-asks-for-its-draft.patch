@@ -1,0 +1,3178 @@
+From ce65460db374d81b37d8e1c52d7fa27fe618c452 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 17:53:16 +0000
+Subject: [PATCH 7/9] A lesson that ends asks for its draft
+
+lesson_end now asks lesson-finalize, the database's door: it merges the
+room's segments with Daily's stored transcript (with the family's
+transcript consent), computes the lesson's metrics, and with the family's
+ai_analysis consent runs three Claude passes ported from the room's own
+modules (coaching feedback, follow-ups under the centre's rules, the
+report draft in the form's exact vocabulary), falling back to the
+heuristic per pass rather than losing the run. Everything lands through
+worker_store_lesson_results; a lesson older than a day stores quietly.
+A project that cannot ask still closes the lesson and says so on the
+lesson's log.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016Yf774TAZaYcnfPt2CdeHJ
+---
+ ...s-proposed-under-the-centres-rules.test.ts | 183 ++++++
+ ...-draft-speaks-the-forms-vocabulary.test.ts | 209 +++++++
+ ...script-and-the-live-one-become-one.test.ts | 166 ++++++
+ ...son-finalize-is-the-databases-door.test.ts | 197 +++++++
+ supabase/functions/_shared/claudeJson.ts      | 167 ++++++
+ supabase/functions/_shared/lessonAnalysis.ts  | 209 +++++++
+ supabase/functions/_shared/lessonFollowups.ts | 330 +++++++++++
+ supabase/functions/_shared/lessonMetrics.ts   | 180 ++++++
+ supabase/functions/_shared/lessonNews.ts      |  31 +
+ supabase/functions/_shared/reportDraft.ts     | 330 +++++++++++
+ supabase/functions/_shared/transcript.ts      | 151 +++++
+ supabase/functions/lesson-finalize/index.ts   | 541 ++++++++++++++++++
+ ..._a_lesson_that_ends_asks_for_its_draft.sql | 108 ++++
+ supabase/probes/20261013163945.sql            |  17 +
+ ...ture_onto_the_booking_and_nothing_else.sql |  14 +-
+ ...-a_lesson_that_ends_asks_for_its_draft.sql | 189 ++++++
+ 16 files changed, 3019 insertions(+), 3 deletions(-)
+ create mode 100644 __smoke__/a-follow-up-is-proposed-under-the-centres-rules.test.ts
+ create mode 100644 __smoke__/a-lesson-report-draft-speaks-the-forms-vocabulary.test.ts
+ create mode 100644 __smoke__/a-stored-transcript-and-the-live-one-become-one.test.ts
+ create mode 100644 __smoke__/lesson-finalize-is-the-databases-door.test.ts
+ create mode 100644 supabase/functions/_shared/claudeJson.ts
+ create mode 100644 supabase/functions/_shared/lessonAnalysis.ts
+ create mode 100644 supabase/functions/_shared/lessonFollowups.ts
+ create mode 100644 supabase/functions/_shared/lessonMetrics.ts
+ create mode 100644 supabase/functions/_shared/lessonNews.ts
+ create mode 100644 supabase/functions/_shared/reportDraft.ts
+ create mode 100644 supabase/functions/_shared/transcript.ts
+ create mode 100644 supabase/functions/lesson-finalize/index.ts
+ create mode 100644 supabase/migrations/20261013163945_a_lesson_that_ends_asks_for_its_draft.sql
+ create mode 100644 supabase/probes/20261013163945.sql
+ create mode 100644 supabase/tests/rls/20261013163946-a_lesson_that_ends_asks_for_its_draft.sql
+
+diff --git a/__smoke__/a-follow-up-is-proposed-under-the-centres-rules.test.ts b/__smoke__/a-follow-up-is-proposed-under-the-centres-rules.test.ts
+new file mode 100644
+index 0000000..0f14d5f
+--- /dev/null
++++ b/__smoke__/a-follow-up-is-proposed-under-the-centres-rules.test.ts
+@@ -0,0 +1,183 @@
++import { readFileSync, readdirSync } from 'node:fs';
++import { join } from 'node:path';
++
++import {
++  FOLLOWUP_ACTIONS,
++  FOLLOWUP_FORMAT,
++  FOLLOWUP_KINDS,
++  FOLLOWUP_PRIORITIES,
++  FOLLOWUP_SYSTEM,
++  atMs,
++  heuristicFollowups,
++  parseFollowups,
++  similarTitles,
++  toFollowupRow,
++} from '../supabase/functions/_shared/lessonFollowups';
++
++/**
++ * A follow-up is proposed under the centre's rules, whatever the model said.
++ *
++ * lesson-finalize reads the transcript for what the office should know and
++ * what a parent should hear, and proposes rows on lesson_followups for a
++ * person to approve. Four rules hold regardless of the model's answer: a
++ * concern about a child's wellbeing never becomes an automatic message --
++ * it goes to a staff call; a share always carries the words a parent would
++ * read; a deadline follows the priority; and an item already open for the
++ * student is not proposed twice. These are online-lms's own tests
++ * (tests/followups-extract.test.ts) against the ported module, plus the
++ * one thing this side adds: the kinds and actions are held equal to
++ * lesson_followups' CHECKs, read out of the migration, because the port
++ * renamed one action (call_parent became staff_call) and the next rename
++ * must not drift either side quietly.
++ */
++
++const MIGRATIONS = join(__dirname, '..', 'supabase', 'migrations');
++
++/** The strings a CHECK on `column` admits, read from the migration that created lesson_followups. */
++function checkListFor(column: 'kind' | 'action' | 'priority'): string[] {
++  const file = readdirSync(MIGRATIONS).find((f) => f.endsWith('.sql') && readFileSync(join(MIGRATIONS, f), 'utf8').includes('create table if not exists public.lesson_followups'));
++  expect(file).toBeDefined();
++  const sql = readFileSync(join(MIGRATIONS, file!), 'utf8');
++  const table = sql.slice(sql.indexOf('create table if not exists public.lesson_followups'));
++  const match = new RegExp(String.raw`\b${column}\s+text[^,]*?check\s*\(${column}\s+in\s*\(([^)]*)\)`, 's').exec(table);
++  expect(match).not.toBeNull();
++  return [...match![1].matchAll(/'([^']+)'/g)].map((m) => m[1]);
++}
++
++describe('the vocabulary is the table\'s', () => {
++  it('every kind, action and priority the extractor can emit is one the CHECKs admit, and vice versa', () => {
++    expect([...FOLLOWUP_KINDS].sort()).toEqual(checkListFor('kind').sort());
++    expect([...FOLLOWUP_ACTIONS].sort()).toEqual(checkListFor('action').sort());
++    expect([...FOLLOWUP_PRIORITIES].sort()).toEqual(checkListFor('priority').sort());
++  });
++
++  it('the schema the model is held to names the same lists, and the prompt never says call_parent', () => {
++    const items = (FOLLOWUP_FORMAT.schema.properties as { items: { items: { properties: Record<string, { enum?: string[] }> } } }).items.items.properties;
++    expect(items.kind.enum).toEqual([...FOLLOWUP_KINDS]);
++    expect(items.action.enum).toEqual([...FOLLOWUP_ACTIONS]);
++    expect(items.priority.enum).toEqual([...FOLLOWUP_PRIORITIES]);
++    expect(FOLLOWUP_SYSTEM).not.toMatch(/call_parent/);
++    for (const action of ['note_for_next_lesson', 'staff_task', 'share_with_parent']) expect(FOLLOWUP_SYSTEM).toContain(action);
++  });
++});
++
++describe('parseFollowups', () => {
++  const item = (o: Partial<Record<string, unknown>> = {}) => ({
++    kind: 'win',
++    action: 'share_with_parent',
++    priority: 'normal',
++    title: 'Solved quadratics alone',
++    detail: 'First time unaided.',
++    quote: 'I did it!',
++    at: '12:34',
++    suggested_parent_message: null,
++    due_in_days: 3,
++    ...o,
++  });
++
++  it('applies policy: concerns go to a staff call, misconceptions to the next lesson, shares carry a message', () => {
++    const r = parseFollowups({
++      items: [
++        item(),
++        item({ kind: 'concern', action: 'share_with_parent', priority: 'low', title: 'Seemed exhausted', detail: 'Yawning throughout.' }),
++        item({ kind: 'misconception', action: 'share_with_parent', title: 'Sign errors when expanding', detail: 'Three times.' }),
++      ],
++      nothing_notable: false,
++    });
++    expect(r.errors).toEqual([]);
++    const byTitle = Object.fromEntries(r.items.map((i) => [i.title, i]));
++    expect(byTitle['Solved quadratics alone']).toMatchObject({ action: 'share_with_parent', suggested_parent_message: 'First time unaided.', due_in_days: 3 });
++    expect(byTitle['Seemed exhausted']).toMatchObject({ kind: 'concern', action: 'staff_call', priority: 'normal' });
++    expect(byTitle['Sign errors when expanding']).toMatchObject({ action: 'note_for_next_lesson' });
++  });
++
++  it('drops duplicates of open items and within the batch, and sorts by priority', () => {
++    const r = parseFollowups(
++      { items: [item({ priority: 'low' }), item({ title: 'solved quadratics alone!' }), item({ title: 'Exam next Friday', kind: 'exam_upcoming', action: 'staff_task', priority: 'high', due_in_days: 5 })], nothing_notable: false },
++      ['Exam next friday'],
++    );
++    expect(r.items).toHaveLength(1);
++    expect(r.items[0]!.title).toBe('Solved quadratics alone');
++  });
++
++  it('caps due dates by priority and validates timestamps', () => {
++    const r = parseFollowups({ items: [item({ priority: 'high', due_in_days: 9, at: 'bad' })], nothing_notable: false });
++    expect(r.items[0]).toMatchObject({ due_in_days: 1, at: null });
++  });
++
++  it('reports schema errors', () => {
++    expect(parseFollowups({ items: [{ kind: 'nope' }] }).errors.length).toBeGreaterThan(0);
++    expect(parseFollowups({ items: [item({ action: 'call_parent' })] }).errors).toEqual(['items.0.action: Invalid enum value']);
++    expect(parseFollowups('not even an object').errors).toEqual(['Expected object']);
++    expect(parseFollowups({ nothing_notable: true }).errors).toEqual(['items: Expected array']);
++  });
++
++  it('fills the optional fields the way the original schema defaulted them', () => {
++    const r = parseFollowups({ items: [{ kind: 'win', action: 'share_with_parent', priority: 'normal', title: 'A', detail: 'B' }] });
++    expect(r.errors).toEqual([]);
++    expect(r.items[0]).toMatchObject({ quote: null, at: null, suggested_parent_message: 'B', due_in_days: 3 });
++  });
++});
++
++describe('similarTitles', () => {
++  it('matches containment and shared-word overlap', () => {
++    expect(similarTitles('Exam next Friday', 'exam next friday!')).toBe(true);
++    expect(similarTitles('Student mentioned an upcoming test', 'Upcoming test mentioned by student')).toBe(true);
++    expect(similarTitles('Holiday in June', 'Sign errors')).toBe(false);
++  });
++});
++
++describe('heuristicFollowups', () => {
++  it('finds exam mentions, tiredness, logistics and repeated confusion in student speech only', () => {
++    const seg = (speaker: 'teacher' | 'student', text: string, s: number) => ({ speaker, text, start_ms: s * 1000, end_ms: s * 1000 + 2000 });
++    const items = heuristicFollowups([
++      seg('student', 'I have a maths test next Thursday', 60),
++      seg('teacher', 'I have a test next week too', 70),
++      seg('student', "I'm so tired, I didn't sleep", 120),
++      seg('student', "we're on holiday the week after", 180),
++      seg('student', "I don't get it", 200),
++      seg('student', "I'm confused", 210),
++      seg('student', 'no idea', 220),
++    ]);
++    const kinds = items.map((i) => i.kind).sort();
++    expect(kinds).toEqual(['concern', 'exam_upcoming', 'logistics', 'misconception']);
++    expect(items.find((i) => i.kind === 'exam_upcoming')?.at).toBe('01:00');
++    expect(items.find((i) => i.kind === 'concern')?.action).toBe('staff_call');
++  });
++
++  it('proposes nothing from an empty transcript', () => {
++    expect(heuristicFollowups([])).toEqual([]);
++  });
++});
++
++describe('the row the worker takes', () => {
++  it('carries the marker as milliseconds, under the names worker_store_lesson_results reads', () => {
++    expect(atMs('12:34')).toBe(754_000);
++    expect(atMs('01:00')).toBe(60_000);
++    expect(atMs(null)).toBeNull();
++    expect(atMs('bad')).toBeNull();
++    const row = toFollowupRow({
++      kind: 'win',
++      action: 'share_with_parent',
++      priority: 'normal',
++      title: 'Cracked the cross product',
++      detail: 'Got every example right unaided',
++      quote: 'oh, I see it now',
++      at: '30:20',
++      suggested_parent_message: 'Ben cracked the cross product today.',
++      due_in_days: 3,
++    });
++    expect(row).toEqual({
++      kind: 'win',
++      action: 'share_with_parent',
++      priority: 'normal',
++      title: 'Cracked the cross product',
++      detail: 'Got every example right unaided',
++      quote: 'oh, I see it now',
++      at_ms: 1_820_000,
++      suggested_parent_message: 'Ben cracked the cross product today.',
++    });
++    expect(Object.keys(row)).not.toContain('due_in_days');
++    expect(Object.keys(row)).not.toContain('at');
++  });
++});
+diff --git a/__smoke__/a-lesson-report-draft-speaks-the-forms-vocabulary.test.ts b/__smoke__/a-lesson-report-draft-speaks-the-forms-vocabulary.test.ts
+new file mode 100644
+index 0000000..da5e6b2
+--- /dev/null
++++ b/__smoke__/a-lesson-report-draft-speaks-the-forms-vocabulary.test.ts
+@@ -0,0 +1,209 @@
++import {
++  GP_OPTIONS,
++  OTR_BANDS,
++  PREV_HW_OPTIONS,
++  heuristicSessionReport,
++  normaliseDraft,
++  normaliseGp,
++  normaliseOtr,
++  normalisePrevHw,
++  normaliseUnderstanding,
++  normaliseWrittenTests,
++  signsReports,
++  testPercent,
++  validateReportDraft,
++  type SessionReportDraft,
++} from '../supabase/functions/_shared/reportDraft';
++
++/**
++ * A draft speaks the report form's vocabulary before the database sees it.
++ *
++ * lesson_report_drafts holds the draft lesson-finalize writes, with a CHECK
++ * on prev_hw (exactly the nine portal strings) and on otr (bands of five,
++ * 5..95). A model asked for prev_hw says "partly"; asked for an OTR it says
++ * 83. Both are coerced here -- "partly" to Partially Done, 83 to 85 -- so
++ * what reaches the database is a value the form would offer, and a draft
++ * is never lost to a constraint for a word the model chose. These are
++ * online-lms's tests (tests/mvapp-template.test.ts and
++ * draft-session-report.test.ts) against the ported module, so the port is
++ * held to the original's answers rather than to its own.
++ */
++
++const base: SessionReportDraft = {
++  topic: 'Quadratics — completing the square',
++  topic_completed: true,
++  topics_not_done: null,
++  understanding: 8,
++  otr: 85,
++  gp: 6.25,
++  prev_hw: 'Yes',
++  homework: 'Ex 4B 1-8',
++  remarks: 'Good session.',
++  written_tests: [],
++  has_upcoming_tests: false,
++};
++
++describe('the vocabulary is the form\'s', () => {
++  it("has the portal's option lists", () => {
++    expect(GP_OPTIONS[0]).toBe(7);
++    expect(GP_OPTIONS[GP_OPTIONS.length - 1]).toBe(1);
++    expect(GP_OPTIONS).toHaveLength(25);
++    expect(OTR_BANDS[0]).toEqual({ lower: 95, label: '95% to 100%' });
++    expect(OTR_BANDS).toHaveLength(19);
++  });
++
++  it('holds exactly the nine prev_hw strings the app\'s own form offers', () => {
++    // One rule, two places (the app's chips and the worker's normaliser) --
++    // so a test that fails when they diverge.
++    // eslint-disable-next-line @typescript-eslint/no-require-imports
++    const fields = require('../src/lib/reportFields');
++    const appList: string[] = fields.PREV_HW_OPTIONS ?? fields.PREV_HW ?? fields.prevHwOptions;
++    expect(Array.isArray(appList)).toBe(true);
++    expect([...PREV_HW_OPTIONS]).toEqual(appList.map((o: string | { value: string }) => (typeof o === 'string' ? o : o.value)));
++    expect(PREV_HW_OPTIONS).toHaveLength(9);
++  });
++
++  it('snaps GP to quarters and OTR to bands', () => {
++    expect(normaliseGp(6.3)).toBe(6.25);
++    expect(normaliseGp('5.9')).toBe(6);
++    expect(normaliseGp(9)).toBe(7);
++    expect(normaliseGp(null)).toBeNull();
++    expect(normaliseOtr(83)).toBe(85);
++    expect(normaliseOtr(0)).toBeNull();
++    expect(normaliseOtr(120)).toBe(95);
++    expect(normaliseUnderstanding(7.6)).toBe(8);
++    expect(normaliseUnderstanding(0)).toBe(1);
++  });
++
++  it('every OTR the normaliser can produce passes lesson_report_drafts_otr_check', () => {
++    for (let n = -5; n <= 130; n += 1) {
++      const otr = normaliseOtr(n);
++      if (otr === null) continue;
++      expect(otr % 5).toBe(0);
++      expect(otr).toBeGreaterThanOrEqual(5);
++      expect(otr).toBeLessThanOrEqual(95);
++    }
++  });
++
++  it('maps loose homework phrases onto the nine options', () => {
++    expect(normalisePrevHw('yes')).toBe('Yes');
++    expect(normalisePrevHw('Partly done')).toBe('Partially Done');
++    expect(normalisePrevHw('mostly complete')).toBe('Most of it Done');
++    expect(normalisePrevHw('none was given')).toBe('No Homework Given');
++    expect(normalisePrevHw('forgot his exercise book')).toBe('Did Not Bring Exercise Book');
++    expect(normalisePrevHw('not done')).toBe('Not Done');
++    expect(normalisePrevHw('sent it by whatsapp, done')).toBe('Done And Sent Through Email/Skype/Whatsapp');
++    expect(normalisePrevHw('unclear')).toBeNull();
++  });
++
++  it('derives written-test percentages from marks only', () => {
++    expect(testPercent(17, 20)).toBe(85);
++    expect(testPercent(21, 20)).toBeNull();
++    expect(normaliseWrittenTests([{ name: ' Topic test ', score: 17, out_of: 20 }, { name: '', score: 1, out_of: 2 }])).toEqual([
++      { name: 'Topic test', score: 17, out_of: 20, percent: 85 },
++    ]);
++  });
++
++  it('validates what submit_report would refuse', () => {
++    expect(validateReportDraft(base, { signs: true })).toEqual([]);
++    expect(validateReportDraft({ ...base, gp: null }, { signs: true })).toContain('A report needs a GP before it goes to the family.');
++    expect(validateReportDraft(base, { signs: false })).toContain('The GP is set by the in-charge for this report.');
++    expect(validateReportDraft({ ...base, gp: null }, { signs: false })).toEqual([]);
++    expect(validateReportDraft({ ...base, topic: ' ' }, { signs: true })).toContain('A report needs the topic that was taught.');
++    expect(validateReportDraft({ ...base, understanding: 11 }, { signs: true }).length).toBe(1);
++    expect(validateReportDraft({ ...base, topic_completed: true, topics_not_done: 'surds' }, { signs: true }).length).toBe(1);
++    expect(validateReportDraft({ ...base, otr: 83 }, { signs: true }).length).toBe(1);
++  });
++});
++
++const draftBase = {
++  notes: 'Good focus. Struggled with negative coefficients.',
++  segments: [],
++  metrics: null,
++  studentName: 'Aarav Sharma',
++  course: 'IGCSE Maths',
++  topicOptions: ['Quadratics', 'Surds'],
++  bookedTopic: 'Quadratics',
++  signs: true,
++};
++
++describe('the heuristic draft', () => {
++  it('produces a valid signed draft from notes and results', () => {
++    const { draft } = heuristicSessionReport({
++      ...draftBase,
++      testResults: [{ name: 'Quick check', score: 8, out_of: 10 }],
++      previousHomework: 'Ex 4B',
++      previousHomeworkStatus: 'verified',
++    });
++    expect(validateReportDraft(draft, { signs: true })).toEqual([]);
++    expect(draft).toMatchObject({ topic: 'Quadratics', understanding: 8, prev_hw: 'Yes', written_tests: [{ name: 'Quick check', score: 8, out_of: 10, percent: 80 }] });
++    expect(draft.remarks).toMatch(/^Aarav/);
++    expect(draft.gp).not.toBeNull();
++  });
++
++  it('leaves the GP for the in-charge when the author does not sign', () => {
++    const { draft } = heuristicSessionReport({ ...draftBase, signs: false });
++    expect(draft.gp).toBeNull();
++    expect(validateReportDraft(draft, { signs: false })).toEqual([]);
++  });
++
++  it('says it was no model', () => {
++    expect(heuristicSessionReport(draftBase).rationale).toMatch(/no AI pass was run/);
++  });
++});
++
++describe('what the model said, coerced', () => {
++  it('coerces model output into the template vocabulary', () => {
++    const draft = normaliseDraft(
++      {
++        topic: 'quadratics',
++        topic_completed: false,
++        topics_not_done: 'completing the square',
++        understanding: 7.4,
++        otr: 82,
++        gp: 5.9,
++        prev_hw: 'partly',
++        homework: 'Ex 5A',
++        remarks: 'Well done.',
++        written_tests: [{ name: 'Quick check', score: 8, out_of: 10 }],
++        has_upcoming_tests: 'yes',
++      },
++      { signs: true, topicOptions: ['Quadratics'], bookedTopic: null, testResults: [{ name: 'quick check', score: 8, out_of: 10 }] },
++    );
++    expect(draft).toMatchObject({ topic: 'Quadratics', topic_completed: false, topics_not_done: 'completing the square', understanding: 7, otr: 80, gp: 6, prev_hw: 'Partially Done', has_upcoming_tests: true });
++    expect(draft.written_tests).toHaveLength(1);
++    expect(validateReportDraft(draft, { signs: true })).toEqual([]);
++  });
++
++  it('drops the GP and topics_not_done when they are not allowed', () => {
++    const draft = normaliseDraft({ topic: 'X', topic_completed: true, topics_not_done: 'y', understanding: 5, gp: 6 }, { signs: false, topicOptions: [], bookedTopic: null, testResults: [] });
++    expect(draft.gp).toBeNull();
++    expect(draft.topics_not_done).toBeNull();
++  });
++
++  it('whatever the model says for prev_hw, the draft holds one of the nine or null -- never its own words', () => {
++    // 'Sometimes' reads as Partially Done (the normaliser is loose on
++    // purpose); 'Sort of' reads as nothing. Neither reaches the database as
++    // the word the model chose, which is what lesson_report_drafts_prev_hw_check
++    // would refuse.
++    for (const said of ['Sometimes', 'Sort of', 'Did it on the bus', 'TBD', '???', 'Yes!!', 'None was set this week']) {
++      const draft = normaliseDraft({ topic: 'X', understanding: 5, prev_hw: said }, { signs: false, topicOptions: [], bookedTopic: null, testResults: [] });
++      expect(draft.prev_hw === null || (PREV_HW_OPTIONS as readonly string[]).includes(draft.prev_hw)).toBe(true);
++      expect(draft.prev_hw).not.toBe(said === 'Yes!!' ? 'Yes!!' : said);
++    }
++    expect(normaliseDraft({ topic: 'X', understanding: 5, prev_hw: 'Sort of' }, { signs: false, topicOptions: [], bookedTopic: null, testResults: [] }).prev_hw).toBeNull();
++  });
++});
++
++describe('who signs a report', () => {
++  // submit_report's v_signs_it, read the same way: whoever's word is final
++  // on the report sets the GP, and nobody else is offered one.
++  it('staff, support and admin sign; a teacher only with report_auto_approve', () => {
++    expect(signsReports({ full_name: 'Dana', role: 'staff', report_auto_approve: false })).toBe(true);
++    expect(signsReports({ full_name: 'Hal', role: 'admin', report_auto_approve: null })).toBe(true);
++    expect(signsReports({ full_name: 'Frank', role: 'teacher', report_auto_approve: true })).toBe(true);
++    expect(signsReports({ full_name: 'Gita', role: 'teacher', report_auto_approve: false })).toBe(false);
++    expect(signsReports({ full_name: 'Ada', role: 'parent', report_auto_approve: true })).toBe(false);
++    expect(signsReports(null)).toBe(false);
++  });
++});
+diff --git a/__smoke__/a-stored-transcript-and-the-live-one-become-one.test.ts b/__smoke__/a-stored-transcript-and-the-live-one-become-one.test.ts
+new file mode 100644
+index 0000000..db1f9c8
+--- /dev/null
++++ b/__smoke__/a-stored-transcript-and-the-live-one-become-one.test.ts
+@@ -0,0 +1,166 @@
++import { computeMetrics, segmentsFrom, wordCount, type TranscriptSegment } from '../supabase/functions/_shared/lessonMetrics';
++import { dedupeSegments, mergeTranscripts, parseVtt, segmentKey, speakerRole, transcriptSpanSeconds, vttToSegments } from '../supabase/functions/_shared/transcript';
++
++/**
++ * A lesson's transcript has two witnesses, and its numbers one arithmetic.
++ *
++ * The browsers in the call stream segments live; Daily's stored WebVTT
++ * arrives after the call, authoritative but late and sometimes missing the
++ * first seconds or the tail after a drop. lesson-finalize merges the two
++ * into one transcript with one copy of each utterance, and computes
++ * lesson_metrics from it with the same function the room's live coach ran
++ * -- so the nudge a teacher saw in the room and the row stored afterwards
++ * are the same sums. These are online-lms's own tests
++ * (tests/daily-pipeline.test.ts and metrics.test.ts) run against the
++ * ported modules.
++ */
++
++describe('WebVTT parsing', () => {
++  const vtt = `WEBVTT
++
++1
++00:00:01.000 --> 00:00:04.500
++<v Maya Chen>Let's start with the first question.
++
++00:00:05.000 --> 00:00:07.000
++<v Aarav Sharma>Okay, I think we expand first?
++
++NOTE a comment
++
++00:01:02.250 --> 00:01:03.000
++Teacher: Good thinking.
++`;
++
++  it('reads cues, voice tags and colon labels', () => {
++    const cues = parseVtt(vtt);
++    expect(cues).toHaveLength(3);
++    expect(cues[0]).toEqual({ start_ms: 1000, end_ms: 4500, speaker: 'Maya Chen', text: "Let's start with the first question." });
++    expect(cues[1]!.speaker).toBe('Aarav Sharma');
++    expect(cues[2]).toMatchObject({ start_ms: 62250, speaker: 'Teacher', text: 'Good thinking.' });
++  });
++
++  it('maps speakers to roles, defaulting unknown voices to the student', () => {
++    const names = { teacher: 'Maya Chen', student: 'Aarav Sharma' };
++    expect(speakerRole('Maya Chen', names)).toBe('teacher');
++    expect(speakerRole('Maya', names)).toBe('teacher');
++    expect(speakerRole('Teacher', names)).toBe('teacher');
++    expect(speakerRole('Aarav', names)).toBe('student');
++    expect(speakerRole(null, names)).toBe('student');
++    const segs = vttToSegments(vtt, names);
++    expect(segs.map((s) => s.speaker)).toEqual(['teacher', 'student', 'teacher']);
++  });
++});
++
++describe('transcript merging', () => {
++  const seg = (speaker: 'teacher' | 'student', text: string, s: number, e: number) => ({ speaker, text, start_ms: s, end_ms: e });
++
++  it('dedupes the same utterance seen from two browsers', () => {
++    const a = seg('teacher', "Let's start with the first question.", 1000, 4500);
++    const b = seg('teacher', 'Lets start with the first question', 1200, 4400);
++    expect(segmentKey(a)).toBe(segmentKey(b));
++    expect(dedupeSegments([a, b])).toHaveLength(1);
++  });
++
++  it('keeps different utterances close in time', () => {
++    const d = dedupeSegments([seg('teacher', 'Yes.', 1000, 1500), seg('student', 'Yes.', 1200, 1600), seg('teacher', 'And the next one?', 1800, 3000)]);
++    expect(d).toHaveLength(3);
++  });
++
++  it('merges a stored transcript with the live stream, filling gaps either way', () => {
++    const live = [seg('teacher', 'Hello there', 0, 1000), seg('student', 'Hi', 1200, 1500), seg('teacher', 'Tail after a drop', 90_000, 92_000)];
++    const stored = [seg('student', 'Hi', 1250, 1500), seg('teacher', 'Middle part only in storage', 30_000, 33_000)];
++    const merged = mergeTranscripts(live, stored);
++    expect(merged.map((s) => s.text)).toEqual(['Hello there', 'Hi', 'Middle part only in storage', 'Tail after a drop']);
++    expect(transcriptSpanSeconds(merged)).toBe(92);
++  });
++});
++
++describe('the segments a jsonb column holds', () => {
++  it('reads the room\'s shape, the host as the teacher, and drops what is not a segment', () => {
++    const segs = segmentsFrom([
++      { speaker: 'teacher', text: 'How?', start_ms: 0, end_ms: 1000 },
++      { speaker: 'host', text: 'Why?', start_ms: '2000', end_ms: '3000' },
++      { speaker: 'learner', text: 'Because', start_ms: 4000, end_ms: 3500 },
++      { speaker: 'student', text: '   ', start_ms: 5000, end_ms: 6000 },
++      { text: 'no speaker', start_ms: 7000, end_ms: 8000 },
++      'not a segment',
++      null,
++      { speaker: 'student', text: 'no times' },
++    ]);
++    expect(segs).toEqual([
++      { speaker: 'teacher', text: 'How?', start_ms: 0, end_ms: 1000 },
++      { speaker: 'teacher', text: 'Why?', start_ms: 2000, end_ms: 3000 },
++      { speaker: 'student', text: 'Because', start_ms: 4000, end_ms: 4000 },
++      { speaker: 'student', text: 'no speaker', start_ms: 7000, end_ms: 8000 },
++    ]);
++    expect(segmentsFrom(null)).toEqual([]);
++    expect(segmentsFrom('[]')).toEqual([]);
++  });
++
++  it('counts words the way lesson_end does: whitespace-split, blank segments left out', () => {
++    expect(wordCount([{ speaker: 'teacher', text: ' How do we  expand this? ', start_ms: 0, end_ms: 1 }, { speaker: 'student', text: '', start_ms: 1, end_ms: 2 }])).toBe(5);
++  });
++});
++
++function seg(speaker: 'teacher' | 'student', text: string, startS: number, endS: number): TranscriptSegment {
++  return { speaker, text, start_ms: startS * 1000, end_ms: endS * 1000 };
++}
++
++describe('the lesson\'s numbers', () => {
++  it('returns all-zero metrics for an empty transcript', () => {
++    const m = computeMetrics([]);
++    expect(m.teacher_talk_pct).toBe(0);
++    expect(m.student_talk_pct).toBe(0);
++    expect(m.question_count).toBe(0);
++    expect(m.student_turns).toBe(0);
++  });
++
++  it('splits talk time between teacher and student', () => {
++    const m = computeMetrics([
++      seg('teacher', 'Today we factor quadratics.', 0, 30),
++      seg('student', 'Okay, I remember some of this.', 31, 41),
++    ]);
++    // 30s teacher vs 10s student of 40s total speech
++    expect(m.teacher_talk_pct).toBeCloseTo(0.75, 5);
++    expect(m.student_talk_pct).toBeCloseTo(0.25, 5);
++    expect(m.teacher_talk_pct + m.student_talk_pct).toBeCloseTo(1, 5);
++  });
++
++  it('counts teacher questions and classifies open ones', () => {
++    const m = computeMetrics([
++      seg('teacher', 'How would you start this problem?', 0, 4), // open
++      seg('student', 'Maybe expand the bracket first.', 5, 9),
++      seg('teacher', 'Is that a quadratic?', 10, 12), // closed
++      seg('student', 'Yes.', 13, 14),
++    ]);
++    expect(m.question_count).toBe(2);
++    expect(m.open_question_pct).toBeCloseTo(0.5, 5);
++  });
++
++  it('counts praise moments', () => {
++    const m = computeMetrics([
++      seg('teacher', "Well done, that's exactly the idea.", 0, 3),
++      seg('student', 'Thanks!', 4, 5),
++      seg('teacher', 'Now try the next one.', 6, 8),
++    ]);
++    expect(m.praise_count).toBeGreaterThanOrEqual(1);
++  });
++
++  it('counts student turns', () => {
++    const m = computeMetrics([
++      seg('teacher', 'What is x?', 0, 2),
++      seg('student', 'Two?', 3, 4),
++      seg('teacher', 'Why two?', 5, 6),
++      seg('student', 'Because both factors are x minus two.', 7, 11),
++    ]);
++    expect(m.student_turns).toBe(2);
++    expect(m.avg_student_turn_ms).toBeGreaterThan(0);
++  });
++
++  it('the seven columns lesson_metrics holds are exactly the ones computed', () => {
++    const m = computeMetrics([seg('teacher', 'What is x?', 0, 2), seg('student', 'Two?', 3, 4)]);
++    for (const column of ['teacher_talk_pct', 'student_talk_pct', 'question_count', 'open_question_pct', 'avg_wait_ms', 'student_turns', 'praise_count']) {
++      expect(typeof (m as unknown as Record<string, unknown>)[column]).toBe('number');
++    }
++  });
++});
+diff --git a/__smoke__/lesson-finalize-is-the-databases-door.test.ts b/__smoke__/lesson-finalize-is-the-databases-door.test.ts
+new file mode 100644
+index 0000000..008c6e4
+--- /dev/null
++++ b/__smoke__/lesson-finalize-is-the-databases-door.test.ts
+@@ -0,0 +1,197 @@
++import { webcrypto } from 'node:crypto';
++import { readFileSync } from 'node:fs';
++import { join } from 'node:path';
++
++import {
++  CLAUDE_MODEL,
++  askClaudeForJson,
++  claudeJsonBody,
++  extractJson,
++  jsonOnlyInstruction,
++} from '../supabase/functions/_shared/claudeJson';
++import { FEEDBACK_FORMAT, heuristicFeedback, parseFeedback } from '../supabase/functions/_shared/lessonAnalysis';
++import { OLD_NEWS_MS, isOldNews } from '../supabase/functions/_shared/lessonNews';
++
++/**
++ * lesson-finalize is the database's door, and it loses nothing it can help.
++ *
++ * It is called by lesson_end (through invoke_edge_function) and by
++ * daily-webhook, both carrying the service-role key -- so the bearer is
++ * compared to that key in constant time, and a signed-in person's JWT,
++ * which the gateway admits, is a 401 here. What it computes lands through
++ * worker_store_lesson_results alone, quiet when the lesson is a day old,
++ * and every model call is billed to ai_usage whether or not it answered.
++ *
++ * The three passes are independent: a refusal, a 4xx, a reply that is not
++ * JSON or a timeout in one falls to that pass's heuristic and never throws
++ * away the other two. That half is run for real against a stubbed fetch;
++ * the rest is read off index.ts, which Deno.serve keeps out of jest.
++ */
++
++if (!globalThis.crypto?.subtle) {
++  Object.defineProperty(globalThis, 'crypto', { value: webcrypto, configurable: true });
++}
++
++const SOURCE = readFileSync(join(__dirname, '..', 'supabase', 'functions', 'lesson-finalize', 'index.ts'), 'utf8');
++
++describe('the door is the service role\'s', () => {
++  it('compares the bearer to SUPABASE_SERVICE_ROLE_KEY in constant time, before reading the body', () => {
++    expect(SOURCE).toMatch(/const bearer = \(req\.headers\.get\('Authorization'\) \?\? ''\)\.replace\(\/\^Bearer\\s\+\/i, ''\);/);
++    expect(SOURCE).toMatch(/if \(!\(await secretMatches\(bearer, SERVICE_ROLE_KEY\)\)\) \{\s*return json\(\{ error: 'unauthorised' \}, 401\);/);
++    expect(SOURCE.indexOf('secretMatches(bearer')).toBeLessThan(SOURCE.indexOf('await req.json()'));
++  });
++
++  it('answers before the work, and the work runs under waitUntil', () => {
++    expect(SOURCE).toMatch(/runtime\.waitUntil\(work\);\s*return json\(\{ ok: true, accepted: true/);
++  });
++
++  it('takes session_id as a uuid only, and reason as end or transcript', () => {
++    expect(SOURCE).toMatch(/if \(!isUuid\(body\.session_id\)\) return json\(\{ error: 'session_id is required' \}, 400\);/);
++    expect(SOURCE).toMatch(/const reason: Reason = body\.reason === 'transcript' \? 'transcript' : 'end';/);
++  });
++});
++
++describe('what it stores, and through which door', () => {
++  it('stores everything through worker_store_lesson_results, quiet when the lesson is old news', () => {
++    const call = SOURCE.slice(SOURCE.indexOf("admin.rpc('worker_store_lesson_results'"));
++    const args = call.slice(0, call.indexOf('});'));
++    for (const name of ['p_session_id', 'p_metrics', 'p_feedback', 'p_draft', 'p_draft_rationale', 'p_draft_source', 'p_followups']) {
++      expect(args).toContain(`${name}:`);
++    }
++    expect(args).toMatch(/p_quiet: isOldNews\(session, Date\.now\(\)\)/);
++    // No other write to the five result tables: the worker is the one door.
++    for (const table of ['lesson_metrics', 'lesson_feedback', 'lesson_report_drafts', 'lesson_followups']) {
++      expect(SOURCE).not.toMatch(new RegExp(`\\.from\\('${table}'\\)\\s*\\.(insert|upsert|update|delete)`));
++    }
++  });
++
++  it('a day is the line between news and backfill', () => {
++    expect(OLD_NEWS_MS).toBe(24 * 60 * 60 * 1000);
++    const now = Date.UTC(2026, 9, 13, 12, 0, 0);
++    const at = (hoursAgo: number) => new Date(now - hoursAgo * 60 * 60 * 1000).toISOString();
++    expect(isOldNews({ effective_start: at(1), confirmed_start: null, requested_start: null }, now)).toBe(false);
++    expect(isOldNews({ effective_start: at(23), confirmed_start: null, requested_start: null }, now)).toBe(false);
++    expect(isOldNews({ effective_start: at(25), confirmed_start: null, requested_start: null }, now)).toBe(true);
++    // effective_start is the start that counts; the others are fallbacks.
++    expect(isOldNews({ effective_start: at(1), confirmed_start: at(72), requested_start: null }, now)).toBe(false);
++    expect(isOldNews({ effective_start: null, confirmed_start: at(72), requested_start: at(1) }, now)).toBe(true);
++    expect(isOldNews({ effective_start: null, confirmed_start: null, requested_start: at(72) }, now)).toBe(true);
++    // No start at all is news: a notification about an odd row beats a silence nobody reports.
++    expect(isOldNews({ effective_start: null, confirmed_start: null, requested_start: null }, now)).toBe(false);
++    expect(isOldNews({ effective_start: 'not a date', confirmed_start: null, requested_start: null }, now)).toBe(false);
++  });
++
++  it("without the family's ai_analysis consent nothing goes to the model and the coaching stays empty", () => {
++    expect(SOURCE).toMatch(/const useAi = aiConsent && Boolean\(anthropicKey\?\.trim\(\)\);/);
++    expect(SOURCE).toMatch(/if \(!aiConsent\) return null;/);
++    expect(SOURCE).toMatch(/const aiConsent = consents\.has\('ai_analysis'\);/);
++    expect(SOURCE).toMatch(/const transcriptConsent = consents\.has\('transcript'\);/);
++    expect(SOURCE).toMatch(/if \(transcriptConsent && room\?\.transcript_status === 'ready' && room\.provider_transcript_id && dailyKey\?\.trim\(\)\)/);
++    expect(SOURCE).toMatch(/\.is\('revoked_at', null\)/);
++  });
++
++  it('bills every call to ai_usage, by pass, whether or not it answered', () => {
++    const bill = SOURCE.slice(SOURCE.indexOf("admin.from('ai_usage').insert("));
++    const row = bill.slice(0, bill.indexOf('});'));
++    expect(row).toMatch(/kind,/);
++    expect(row).toMatch(/model: result\.model \?\? CLAUDE_MODEL/);
++    expect(row).toMatch(/tokens_in: result\.usage\.input_tokens/);
++    expect(row).toMatch(/tokens_out: result\.usage\.output_tokens/);
++    expect(row).toMatch(/session_id: session\.id/);
++    expect(SOURCE).toMatch(/type Pass = 'analyze' \| 'followup_extract' \| 'report_draft';/);
++  });
++
++  it("the report's OTR is the band the host recorded or nothing -- never inferred from the talk", () => {
++    expect(SOURCE).toMatch(/otr: recordedOtr !== null \? normaliseOtr\(recordedOtr\) : null,/);
++    expect(SOURCE).toMatch(/has_upcoming_tests: drafted\.draft\.has_upcoming_tests \|\| followups\.some\(\(f\) => f\.kind === 'exam_upcoming'\)/);
++  });
++
++  it('a Daily transcript that will not download is reported and the lesson is finalised on the room\'s own segments', () => {
++    expect(SOURCE).toMatch(/captureError\(error, 'lesson-finalize\/transcript'/);
++    expect(SOURCE).toMatch(/api\.daily\.co\/v1\/transcript\/\$\{encodeURIComponent\(transcriptId\)\}\/access-link/);
++  });
++});
++
++describe('one question to Claude, one JSON object back', () => {
++  const request = {
++    apiKey: 'sk-test',
++    system: 'Be brief.',
++    user: 'Hello',
++    format: FEEDBACK_FORMAT,
++    effort: 'high' as const,
++  };
++
++  it('asks claude-opus-5-5 at the Messages API with the key, the version and the schema', async () => {
++    const seen: { url: string; init: RequestInit }[] = [];
++    const fetchImpl = (async (url: string | URL | Request, init?: RequestInit) => {
++      seen.push({ url: String(url), init: init! });
++      return new Response(JSON.stringify({ model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 12, output_tokens: 3 }, content: [{ type: 'text', text: '{"ok":1}' }] }), { status: 200 });
++    }) as typeof fetch;
++    const result = await askClaudeForJson({ ...request, fetchImpl });
++    expect(result).toEqual({ ok: true, json: { ok: 1 }, model: 'claude-opus-5-5', usage: { input_tokens: 12, output_tokens: 3 }, stop_reason: 'end_turn' });
++    expect(seen).toHaveLength(1);
++    expect(seen[0].url).toBe('https://api.anthropic.com/v1/messages');
++    const headers = seen[0].init.headers as Record<string, string>;
++    expect(headers['x-api-key']).toBe('sk-test');
++    expect(headers['anthropic-version']).toBe('2023-06-01');
++    expect(headers['content-type']).toBe('application/json');
++    const body = JSON.parse(seen[0].init.body as string);
++    expect(body.model).toBe('claude-opus-5-5');
++    expect(CLAUDE_MODEL).toBe('claude-opus-5-5');
++    expect(body.output_config).toEqual({ format: FEEDBACK_FORMAT, effort: 'high' });
++    expect(body.messages).toEqual([{ role: 'user', content: 'Hello' }]);
++    expect(body.system[0]).toEqual({ type: 'text', text: 'Be brief.' });
++    expect(body.system[1].text).toBe(jsonOnlyInstruction(FEEDBACK_FORMAT));
++    expect(body.max_tokens).toBeGreaterThanOrEqual(16000);
++  });
++
++  it('the body is the SDK\'s wire shape, with the prompt verbatim as the first system block', () => {
++    const body = claudeJsonBody(request);
++    expect(body.model).toBe('claude-opus-5-5');
++    expect((body.system as { text: string }[])[0].text).toBe('Be brief.');
++    expect(body.fallbacks).toEqual([{ model: 'claude-opus-4-8' }]);
++    expect(claudeJsonBody({ ...request, effort: undefined }).output_config).toEqual({ format: FEEDBACK_FORMAT });
++  });
++
++  it('a refusal is no answer, and its tokens are still on the bill', async () => {
++    const fetchImpl = (async () =>
++      new Response(JSON.stringify({ model: 'claude-opus-5-5', stop_reason: 'refusal', usage: { input_tokens: 40, output_tokens: 0 }, content: [] }), { status: 200 })) as typeof fetch;
++    expect(await askClaudeForJson({ ...request, fetchImpl })).toEqual({ ok: false, reason: 'refusal', detail: 'the model declined', model: 'claude-opus-5-5', usage: { input_tokens: 40, output_tokens: 0 } });
++  });
++
++  it('a 4xx, a reply that is not JSON, and a network failure each come back as a reason rather than a throw', async () => {
++    const http = (async () => new Response(JSON.stringify({ type: 'error', error: { type: 'invalid_request_error', message: 'bad beta' } }), { status: 400 })) as typeof fetch;
++    expect(await askClaudeForJson({ ...request, fetchImpl: http })).toEqual({ ok: false, reason: 'http', detail: '400: bad beta', model: null, usage: null });
++
++    const prose = (async () => new Response(JSON.stringify({ model: 'claude-opus-5-5', stop_reason: 'end_turn', usage: { input_tokens: 1, output_tokens: 1 }, content: [{ type: 'text', text: 'Sorry, I cannot.' }] }), { status: 200 })) as typeof fetch;
++    expect(await askClaudeForJson({ ...request, fetchImpl: prose })).toMatchObject({ ok: false, reason: 'parse', usage: { input_tokens: 1, output_tokens: 1 } });
++
++    const down = (async () => {
++      throw new Error('connection reset');
++    }) as typeof fetch;
++    expect(await askClaudeForJson({ ...request, fetchImpl: down })).toEqual({ ok: false, reason: 'network', detail: 'connection reset', model: null, usage: null });
++
++    expect(await askClaudeForJson({ ...request, apiKey: undefined })).toMatchObject({ ok: false, reason: 'no_key' });
++  });
++
++  it('reads JSON out of a code fence or a sentence, and gives up honestly', () => {
++    expect(extractJson('{"a":1}')).toEqual({ a: 1 });
++    expect(extractJson('```json\n{"a":1}\n```')).toEqual({ a: 1 });
++    expect(extractJson('Here you go: {"a":{"b":[1,2]}} — hope that helps')).toEqual({ a: { b: [1, 2] } });
++    expect(extractJson('no json here')).toBeNull();
++    expect(extractJson('{"broken":')).toBeNull();
++  });
++
++  it('a near miss from the model is the heuristic, not a half-read row', () => {
++    const good = { summary: 's', strengths: ['a'], suggestions: ['b'], moments: [{ at: '01:00', kind: 'strength', quote: 'q', comment: 'c' }], dimension_scores: { engagement: 4, questioning: 3, clarity: 5, rapport: 4 } };
++    expect(parseFeedback(good)).toEqual(good);
++    expect(parseFeedback({ ...good, moments: [{ at: '01:00', kind: 'praise', quote: 'q', comment: 'c' }] })).toBeNull();
++    expect(parseFeedback({ ...good, dimension_scores: { engagement: 4, questioning: 3, clarity: 5 } })).toBeNull();
++    expect(parseFeedback({ ...good, strengths: 'a' })).toBeNull();
++    expect(parseFeedback(null)).toBeNull();
++    const fallback = heuristicFeedback({ teacher_talk_pct: 0.7, student_talk_pct: 0.3, question_count: 2, open_question_pct: 0, avg_wait_ms: 900, student_turns: 4, avg_student_turn_ms: 2000, praise_count: 0 });
++    expect(fallback.moments).toEqual([]);
++    expect(fallback.suggestions.length).toBeGreaterThanOrEqual(3);
++    expect(fallback.summary).toMatch(/^Student talked 30% of the lesson across 4 turns/);
++  });
++});
+diff --git a/supabase/functions/_shared/claudeJson.ts b/supabase/functions/_shared/claudeJson.ts
+new file mode 100644
+index 0000000..e6da982
+--- /dev/null
++++ b/supabase/functions/_shared/claudeJson.ts
+@@ -0,0 +1,167 @@
++// One question to Claude, one JSON object back -- or a reason there is none.
++//
++// Plain fetch against the Messages API rather than the SDK, for the same
++// reason report.ts posts Sentry envelopes by hand: a top-level import that
++// fails to resolve does not degrade an edge function, it stops it booting,
++// and nothing here can prove an npm specifier resolves on the edge runtime
++// before a deploy. The request body is the SDK's wire shape exactly --
++// `output_config.format` for the JSON schema, `fallbacks` with its beta --
++// so swapping this for the SDK later changes this file and nothing that
++// calls it.
++//
++// Never throws. Every way a pass can come back empty is a value the caller
++// can read -- a refusal, an HTTP status, a body that is not JSON, a network
++// failure -- because the three passes lesson-finalize runs are independent
++// and a thrown error in one must not lose the other two. The usage comes
++// back even on a refusal: those tokens were billed and belong in ai_usage.
++
++export const CLAUDE_MODEL = 'claude-opus-5-5';
++export const CLAUDE_FALLBACK_MODEL = 'claude-opus-4-8';
++const MESSAGES_URL = 'https://api.anthropic.com/v1/messages';
++const ANTHROPIC_VERSION = '2023-06-01';
++/** The array-form server-side fallback, as online-lms sends it. */
++const FALLBACK_BETA = 'server-side-fallback-2026-06-01';
++
++export interface JsonFormat {
++  type: 'json_schema';
++  schema: Record<string, unknown>;
++}
++
++export interface ClaudeUsage {
++  input_tokens: number;
++  output_tokens: number;
++}
++
++export type ClaudeJsonResult =
++  | { ok: true; json: unknown; model: string; usage: ClaudeUsage | null; stop_reason: string | null }
++  | { ok: false; reason: 'refusal' | 'http' | 'parse' | 'network' | 'no_key'; detail: string; model: string | null; usage: ClaudeUsage | null };
++
++export interface ClaudeJsonRequest {
++  apiKey: string | undefined;
++  system: string;
++  user: string;
++  format: JsonFormat;
++  /** `output_config.effort`; omitted when undefined (the model's default). */
++  effort?: 'low' | 'medium' | 'high' | 'xhigh' | 'max';
++  maxTokens?: number;
++  /** How long to wait before giving the pass up as a network failure. */
++  timeoutMs?: number;
++  /** Test seam: the fetch to use. */
++  fetchImpl?: typeof fetch;
++}
++
++/**
++ * The second system block: the schema, said in words, so a reply is JSON
++ * and nothing else even where the structured output is not honoured.
++ */
++export function jsonOnlyInstruction(format: JsonFormat): string {
++  return `Reply with a single JSON object and nothing else: no prose before or after it, no code fence. It must match this JSON Schema exactly:\n${JSON.stringify(format.schema)}`;
++}
++
++/**
++ * The JSON object inside a reply. A model told to answer with JSON only
++ * mostly does; when it wraps the object in a code fence or a sentence, the
++ * first '{' to the last '}' is read instead of giving up. Anything that
++ * still does not parse is null -- the caller's heuristic answers then.
++ */
++export function extractJson(text: string): unknown {
++  const trimmed = text.trim();
++  try {
++    return JSON.parse(trimmed);
++  } catch {
++    // Fall through to the lenient read.
++  }
++  const unfenced = trimmed.replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, '');
++  try {
++    return JSON.parse(unfenced);
++  } catch {
++    // Fall through.
++  }
++  const first = trimmed.indexOf('{');
++  const last = trimmed.lastIndexOf('}');
++  if (first === -1 || last <= first) return null;
++  try {
++    return JSON.parse(trimmed.slice(first, last + 1));
++  } catch {
++    return null;
++  }
++}
++
++/** The request body, as the Messages API takes it. Pure, so a test can read it. */
++export function claudeJsonBody(req: ClaudeJsonRequest): Record<string, unknown> {
++  return {
++    model: CLAUDE_MODEL,
++    max_tokens: req.maxTokens ?? 16000,
++    system: [
++      { type: 'text', text: req.system },
++      { type: 'text', text: jsonOnlyInstruction(req.format) },
++    ],
++    messages: [{ role: 'user', content: req.user }],
++    output_config: {
++      format: req.format,
++      ...(req.effort ? { effort: req.effort } : {}),
++    },
++    fallbacks: [{ model: CLAUDE_FALLBACK_MODEL }],
++  };
++}
++
++function usageOf(body: Record<string, unknown> | null): ClaudeUsage | null {
++  const u = body?.usage as Record<string, unknown> | undefined;
++  if (!u) return null;
++  const input = Number(u.input_tokens);
++  const output = Number(u.output_tokens);
++  if (!Number.isFinite(input) || !Number.isFinite(output)) return null;
++  return { input_tokens: input, output_tokens: output };
++}
++
++export async function askClaudeForJson(req: ClaudeJsonRequest): Promise<ClaudeJsonResult> {
++  if (!req.apiKey?.trim()) {
++    return { ok: false, reason: 'no_key', detail: 'ANTHROPIC_API_KEY is not set', model: null, usage: null };
++  }
++  const doFetch = req.fetchImpl ?? fetch;
++  let response: Response;
++  try {
++    response = await doFetch(MESSAGES_URL, {
++      method: 'POST',
++      headers: {
++        'x-api-key': req.apiKey.trim(),
++        'anthropic-version': ANTHROPIC_VERSION,
++        'anthropic-beta': FALLBACK_BETA,
++        'content-type': 'application/json',
++      },
++      body: JSON.stringify(claudeJsonBody(req)),
++      signal: AbortSignal.timeout(req.timeoutMs ?? 110_000),
++    });
++  } catch (error) {
++    return { ok: false, reason: 'network', detail: String((error as Error)?.message ?? error), model: null, usage: null };
++  }
++
++  let body: Record<string, unknown> | null = null;
++  try {
++    body = (await response.json()) as Record<string, unknown>;
++  } catch {
++    body = null;
++  }
++  const model = typeof body?.model === 'string' ? body.model : null;
++  const usage = usageOf(body);
++
++  if (!response.ok) {
++    const detail = typeof body?.error === 'object' && body.error
++      ? String((body.error as Record<string, unknown>).message ?? response.status)
++      : `HTTP ${response.status}`;
++    return { ok: false, reason: 'http', detail: `${response.status}: ${detail}`, model, usage };
++  }
++
++  const stopReason = typeof body?.stop_reason === 'string' ? body.stop_reason : null;
++  if (stopReason === 'refusal') {
++    return { ok: false, reason: 'refusal', detail: 'the model declined', model, usage };
++  }
++
++  const content = Array.isArray(body?.content) ? (body!.content as { type?: string; text?: string }[]) : [];
++  const text = content.find((b) => b?.type === 'text' && typeof b.text === 'string')?.text;
++  const json = text ? extractJson(text) : null;
++  if (json === null || typeof json !== 'object') {
++    return { ok: false, reason: 'parse', detail: text ? 'the reply was not a JSON object' : 'the reply held no text', model, usage };
++  }
++  return { ok: true, json, model: model ?? CLAUDE_MODEL, usage, stop_reason: stopReason };
++}
+diff --git a/supabase/functions/_shared/lessonAnalysis.ts b/supabase/functions/_shared/lessonAnalysis.ts
+new file mode 100644
+index 0000000..749b971
+--- /dev/null
++++ b/supabase/functions/_shared/lessonAnalysis.ts
+@@ -0,0 +1,209 @@
++// The post-session coaching for the teacher who taught: the prompt, the
++// shape the model is held to, the reading of what came back, and the
++// metrics-only fallback when there is no model. Pure, no Deno imports.
++//
++// Ported from online-lms src/lib/coaching/analyze.ts (§7.3). The prompt and
++// the heuristic are that file's, unchanged; what moved is the network call,
++// which lives in lesson-finalize/index.ts, and the zod schema, which is a
++// hand-written check here so the module needs nothing installed. What lands
++// in lesson_feedback is for the teacher and their in-charge -- never a
++// family's business -- so every string here is written to that reader.
++
++import type { SessionMetrics, TranscriptSegment } from './lessonMetrics.ts';
++
++/** A specific, timestamped moment in the lesson worth learning from. */
++export interface FeedbackMoment {
++  at: string; // "mm:ss" matching the transcript markers
++  kind: 'strength' | 'improvement';
++  quote: string; // short verbatim excerpt
++  comment: string; // why it worked / what to try instead
++}
++
++export interface TeacherFeedback {
++  summary: string;
++  strengths: string[];
++  suggestions: string[];
++  moments: FeedbackMoment[];
++  dimension_scores: {
++    engagement: number;
++    questioning: number;
++    clarity: number;
++    rapport: number;
++  };
++}
++
++// JSON Schema for structured outputs (no min/max — unsupported; enforced in prompt).
++export const FEEDBACK_FORMAT = {
++  type: 'json_schema' as const,
++  schema: {
++    type: 'object',
++    additionalProperties: false,
++    properties: {
++      summary: { type: 'string' },
++      strengths: { type: 'array', items: { type: 'string' } },
++      suggestions: { type: 'array', items: { type: 'string' } },
++      moments: {
++        type: 'array',
++        items: {
++          type: 'object',
++          additionalProperties: false,
++          properties: {
++            at: { type: 'string' },
++            kind: { type: 'string', enum: ['strength', 'improvement'] },
++            quote: { type: 'string' },
++            comment: { type: 'string' },
++          },
++          required: ['at', 'kind', 'quote', 'comment'],
++        },
++      },
++      dimension_scores: {
++        type: 'object',
++        additionalProperties: false,
++        properties: {
++          engagement: { type: 'integer' },
++          questioning: { type: 'integer' },
++          clarity: { type: 'integer' },
++          rapport: { type: 'integer' },
++        },
++        required: ['engagement', 'questioning', 'clarity', 'rapport'],
++      },
++    },
++    required: ['summary', 'strengths', 'suggestions', 'moments', 'dimension_scores'],
++  },
++};
++
++export const ANALYSIS_SYSTEM = `You are a supportive tutoring coach reviewing a 1-1 lesson transcript and metrics.
++Lead with strengths. Be specific and actionable, grounded in the transcript and the numbers.
++Keep each strength and suggestion to one sentence. Score each dimension 1-5 (integers).
++
++Also extract 3-6 KEY MOMENTS from the transcript — the specific situations most worth learning
++from, balanced between what worked ("strength") and what could have gone better ("improvement").
++For each moment: "at" is the [mm:ss] timestamp of the line it refers to (copy it from the
++transcript), "quote" is a short verbatim excerpt (max ~20 words), and "comment" explains —
++for a strength, exactly what was effective; for an improvement, what to do instead, phrased as
++a concrete alternative the teacher could have said or done in that situation. Only reference
++things actually present in the transcript; if it is too short for meaningful moments, return fewer.`;
++
++/** The user turn: the lesson, its numbers, and the transcript with [mm:ss] markers. */
++export function analysisUserPrompt(
++  segments: TranscriptSegment[],
++  metrics: SessionMetrics,
++  ctx: { teacherName: string; studentName: string; course: string },
++): string {
++  const transcript = segments
++    .map((s) => `[${fmt(s.start_ms)}] ${s.speaker === 'teacher' ? 'Teacher' : 'Student'}: ${s.text}`)
++    .join('\n');
++
++  return `Lesson: ${ctx.course}. Teacher: ${ctx.teacherName}. Student: ${ctx.studentName}.
++
++Metrics:
++- Teacher talk: ${pct(metrics.teacher_talk_pct)} / Student talk: ${pct(metrics.student_talk_pct)}
++- Questions: ${metrics.question_count} (open ${pct(metrics.open_question_pct)})
++- Avg wait after a question: ${(metrics.avg_wait_ms / 1000).toFixed(1)}s
++- Student turns: ${metrics.student_turns} (avg ${(metrics.avg_student_turn_ms / 1000).toFixed(1)}s)
++- Praise moments: ${metrics.praise_count}
++
++Transcript:
++${transcript}`;
++}
++
++/**
++ * What the model returned, as TeacherFeedback, or null when it is not one.
++ * The same acceptance as analyze.ts's FeedbackSchema.safeParse: every field
++ * present and of its type, the moment kinds from the enum, the scores
++ * numbers. A near miss is a miss -- the heuristic is the answer then, not a
++ * half-read object stored as if it were whole.
++ */
++export function parseFeedback(raw: unknown): TeacherFeedback | null {
++  if (!raw || typeof raw !== 'object') return null;
++  const r = raw as Record<string, unknown>;
++  if (typeof r.summary !== 'string') return null;
++  if (!isStringArray(r.strengths) || !isStringArray(r.suggestions)) return null;
++  if (!Array.isArray(r.moments)) return null;
++  const moments: FeedbackMoment[] = [];
++  for (const m of r.moments) {
++    if (!m || typeof m !== 'object') return null;
++    const x = m as Record<string, unknown>;
++    if (typeof x.at !== 'string' || typeof x.quote !== 'string' || typeof x.comment !== 'string') return null;
++    if (x.kind !== 'strength' && x.kind !== 'improvement') return null;
++    moments.push({ at: x.at, kind: x.kind, quote: x.quote, comment: x.comment });
++  }
++  const d = r.dimension_scores;
++  if (!d || typeof d !== 'object') return null;
++  const scores = d as Record<string, unknown>;
++  for (const key of ['engagement', 'questioning', 'clarity', 'rapport']) {
++    if (typeof scores[key] !== 'number' || Number.isNaN(scores[key])) return null;
++  }
++  return {
++    summary: r.summary,
++    strengths: r.strengths,
++    suggestions: r.suggestions,
++    moments,
++    dimension_scores: {
++      engagement: scores.engagement as number,
++      questioning: scores.questioning as number,
++      clarity: scores.clarity as number,
++      rapport: scores.rapport as number,
++    },
++  };
++}
++
++function isStringArray(value: unknown): value is string[] {
++  return Array.isArray(value) && value.every((v) => typeof v === 'string');
++}
++
++export function fmt(ms: number) {
++  const s = Math.floor(ms / 1000);
++  return `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`;
++}
++export function pct(x: number) {
++  return `${Math.round(x * 100)}%`;
++}
++
++/** Deterministic fallback so the dashboard is meaningful without an API key. */
++export function heuristicFeedback(m: SessionMetrics): TeacherFeedback {
++  const strengths: string[] = [];
++  const suggestions: string[] = [];
++
++  if (m.student_talk_pct >= 0.4)
++    strengths.push('Strong student voice — they did a healthy share of the talking and thinking.');
++  if (m.open_question_pct >= 0.4)
++    strengths.push("Good use of open questions to draw out the student's reasoning.");
++  if (m.praise_count >= 3)
++    strengths.push("Warm and encouraging — you reinforced the student's effort throughout.");
++  if (m.avg_wait_ms >= 2500)
++    strengths.push('You gave real wait-time after questions, letting the student think.');
++  if (strengths.length === 0)
++    strengths.push('You kept the lesson moving and covered the planned ground.');
++
++  if (m.teacher_talk_pct > 0.65)
++    suggestions.push('Aim to talk less — try handing the next step to the student to solve aloud.');
++  if (m.open_question_pct < 0.4)
++    suggestions.push("Mix in more open 'how/why' questions rather than yes/no checks.");
++  if (m.avg_wait_ms < 2000)
++    suggestions.push('Extend your wait-time after a question to ~3 seconds before stepping in.');
++  if (m.praise_count < 2)
++    suggestions.push('Name specific things the student did well to build their confidence.');
++  if (suggestions.length === 0)
++    suggestions.push("Keep doing what you're doing — consider stretching the student with a harder follow-up.");
++
++  const score = (good: boolean, mid: boolean) => (good ? 5 : mid ? 4 : 3);
++  return {
++    summary: `Student talked ${pct(m.student_talk_pct)} of the lesson across ${m.student_turns} turns, with ${m.question_count} questions asked. ${
++      m.teacher_talk_pct > 0.65 ? "There's room to hand more of the work to the student." : 'A nicely balanced session.'
++    }`,
++    strengths,
++    suggestions,
++    moments: [], // transcript-specific moments need the AI pass
++    dimension_scores: {
++      engagement: clamp(score(m.student_talk_pct >= 0.4, m.student_talk_pct >= 0.3)),
++      questioning: clamp(score(m.open_question_pct >= 0.4 && m.question_count >= 5, m.question_count >= 3)),
++      clarity: clamp(score(m.avg_wait_ms >= 2500, m.avg_wait_ms >= 1500)),
++      rapport: clamp(score(m.praise_count >= 3, m.praise_count >= 1)),
++    },
++  };
++}
++
++function clamp(n: number) {
++  return Math.max(1, Math.min(5, n));
++}
+diff --git a/supabase/functions/_shared/lessonFollowups.ts b/supabase/functions/_shared/lessonFollowups.ts
+new file mode 100644
+index 0000000..31a0454
+--- /dev/null
++++ b/supabase/functions/_shared/lessonFollowups.ts
+@@ -0,0 +1,330 @@
++// Session → follow-ups: what the office should know and what a parent should
++// hear, read out of the transcript. The prompt, the shape the model is held
++// to, the policy applied to whatever it says, the keyword fallback, and the
++// row each item becomes for worker_store_lesson_results. Pure, no Deno
++// imports.
++//
++// Ported from online-lms src/lib/followups/extract.ts (the prompt) and
++// extract-parse.ts (everything else), unchanged except for ONE WORD: the
++// action online-lms calls `call_parent` is `staff_call` here, because that
++// is the spelling lesson_followups_action_check admits and the one
++// approve_followup files a task for. The kinds and the other three actions
++// were already the database's; a-follow-up-is-proposed-under-the-centres-
++// rules.test.ts reads the CHECKs out of the migration and holds these lists
++// to them, so the next rename cannot drift either side quietly.
++//
++// The policy in parseFollowups is the part worth knowing by heart: a concern
++// about wellbeing never becomes an automatic message, whatever the model
++// said -- it goes to a staff call; a share always carries the words a parent
++// would read; a deadline follows the priority; and an item already open for
++// the student is not proposed twice.
++
++import type { TranscriptSegment } from './lessonMetrics.ts';
++
++export type FollowupKind =
++  | 'win' // something worth sharing with the parent
++  | 'concern' // wellbeing, tiredness, distraction, repeated struggle
++  | 'misconception' // a specific error pattern that keeps recurring
++  | 'logistics' // holiday, wants a different time, clash
++  | 'exam_upcoming' // a test or exam the student mentioned
++  | 'ask_to_relay' // "tell my mum …"
++  | 'tech_issue'; // audio, camera, device trouble
++
++export type FollowupAction =
++  | 'share_with_parent' // post in the family thread (a person approves first)
++  | 'staff_call' // staff should speak to the parent
++  | 'note_for_next_lesson' // a standing note for the teacher
++  | 'staff_task'; // internal to-do (reschedule, check equipment)
++
++export type FollowupPriority = 'low' | 'normal' | 'high';
++
++export const FOLLOWUP_KINDS: readonly FollowupKind[] = [
++  'win', 'concern', 'misconception', 'logistics', 'exam_upcoming', 'ask_to_relay', 'tech_issue',
++];
++export const FOLLOWUP_ACTIONS: readonly FollowupAction[] = [
++  'share_with_parent', 'staff_call', 'note_for_next_lesson', 'staff_task',
++];
++export const FOLLOWUP_PRIORITIES: readonly FollowupPriority[] = ['low', 'normal', 'high'];
++
++export interface ExtractedFollowup {
++  kind: FollowupKind;
++  action: FollowupAction;
++  priority: FollowupPriority;
++  title: string;
++  detail: string;
++  quote: string | null;
++  at: string | null; // "mm:ss"
++  suggested_parent_message: string | null;
++  due_in_days: number;
++}
++
++export const FOLLOWUP_FORMAT = {
++  type: 'json_schema' as const,
++  schema: {
++    type: 'object',
++    additionalProperties: false,
++    properties: {
++      items: {
++        type: 'array',
++        items: {
++          type: 'object',
++          additionalProperties: false,
++          properties: {
++            kind: { type: 'string', enum: [...FOLLOWUP_KINDS] },
++            action: { type: 'string', enum: [...FOLLOWUP_ACTIONS] },
++            priority: { type: 'string', enum: [...FOLLOWUP_PRIORITIES] },
++            title: { type: 'string' },
++            detail: { type: 'string' },
++            quote: { type: ['string', 'null'] },
++            at: { type: ['string', 'null'] },
++            suggested_parent_message: { type: ['string', 'null'] },
++            due_in_days: { type: 'integer' },
++          },
++          required: ['kind', 'action', 'priority', 'title', 'detail', 'quote', 'at', 'suggested_parent_message', 'due_in_days'],
++        },
++      },
++      nothing_notable: { type: 'boolean' },
++    },
++    required: ['items', 'nothing_notable'],
++  },
++};
++
++export const FOLLOWUP_SYSTEM = `You read the transcript of a 1-1 online maths lesson with a school-age student and list what the tuition centre should follow up on.
++
++Only report things ACTUALLY in the transcript. Prefer fewer, specific items. Kinds:
++- win: a genuine step forward a parent would like to hear (first time solving X alone, big effort).
++- concern: wellbeing or engagement — tired, upset, distracted, repeatedly disengaged, says something worrying. These always go to a staff phone call, never an automatic message.
++- misconception: an error pattern that recurred (sign errors, dividing by the wrong side). Action note_for_next_lesson.
++- logistics: holidays, wanting a different time, clashes, missed-lesson reasons. Action staff_task.
++- exam_upcoming: any test, exam, mock, assessment the student mentions with a time. Action staff_task, priority normal or high if within a week.
++- ask_to_relay: the student asks for something to be told to a parent. Action share_with_parent.
++- tech_issue: audio/camera/device trouble that cost lesson time. Action staff_task.
++For share_with_parent write suggested_parent_message as a warm, plain two-sentence message from the teacher to the parent, first person, naming the student by first name. quote is a short verbatim excerpt (max 20 words); at is the [mm:ss] of that line. due_in_days: 1 for high, 3 for normal, 7 for low. If nothing is notable, return an empty list and nothing_notable true.`;
++
++export interface ExtractFollowupsInput {
++  segments: TranscriptSegment[];
++  studentFirstName: string;
++  course: string;
++  /** Titles of follow-ups already open for this student, to avoid duplicates. */
++  openTitles: string[];
++  /** Optional one-paragraph summary of what was on the whiteboard. */
++  notebookSummary?: string | null;
++}
++
++const fmt = (ms: number) =>
++  `${String(Math.floor(ms / 60000)).padStart(2, '0')}:${String(Math.floor((ms % 60000) / 1000)).padStart(2, '0')}`;
++
++/** The user turn extract.ts sends. */
++export function followupUserPrompt(input: ExtractFollowupsInput): string {
++  const transcript = input.segments
++    .map((s) => `[${fmt(s.start_ms)}] ${s.speaker === 'teacher' ? 'Teacher' : 'Student'}: ${s.text}`)
++    .join('\n');
++  return `Student: ${input.studentFirstName}. Course: ${input.course}.
++${input.openTitles.length ? `Already being followed up (do not repeat): ${input.openTitles.join('; ')}\n` : ''}${input.notebookSummary ? `Whiteboard summary: ${input.notebookSummary}\n` : ''}
++Transcript:
++${transcript}`;
++}
++
++/** Default owner-facing deadlines by priority, in days. */
++export const DUE_DAYS: Record<FollowupPriority, number> = { high: 1, normal: 3, low: 7 };
++
++function normaliseTitle(t: string): string {
++  return t.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
++}
++
++/** Two titles are "the same" when one contains the other or they share most words. */
++export function similarTitles(a: string, b: string): boolean {
++  const x = normaliseTitle(a);
++  const y = normaliseTitle(b);
++  if (!x || !y) return false;
++  if (x === y || x.includes(y) || y.includes(x)) return true;
++  const wx = new Set(x.split(' ').filter((w) => w.length > 3));
++  const wy = new Set(y.split(' ').filter((w) => w.length > 3));
++  if (wx.size === 0 || wy.size === 0) return false;
++  let shared = 0;
++  for (const w of wx) if (wy.has(w)) shared++;
++  return shared / Math.min(wx.size, wy.size) >= 0.6;
++}
++
++/** The raw item extract-parse.ts's RawItem admits, with its defaults applied. */
++interface RawItem {
++  kind: FollowupKind;
++  action: FollowupAction;
++  priority: FollowupPriority;
++  title: string;
++  detail: string;
++  quote: string | null;
++  at: string | null;
++  suggested_parent_message: string | null;
++  due_in_days: number;
++}
++
++function oneOf<T extends string>(list: readonly T[], value: unknown): value is T {
++  return typeof value === 'string' && (list as readonly string[]).includes(value);
++}
++
++/**
++ * The same acceptance as RawFollowups.safeParse: a root object with an
++ * `items` array; each item's kind, action and priority from the enums,
++ * title and detail strings; quote, at and suggested_parent_message a string
++ * or null (absent reads as null); due_in_days a number (absent reads as 3);
++ * nothing_notable a boolean (absent reads as false). Errors name the path.
++ */
++function readRaw(raw: unknown): { items: RawItem[]; errors: string[] } {
++  const errors: string[] = [];
++  if (!raw || typeof raw !== 'object') return { items: [], errors: ['Expected object'] };
++  const root = raw as Record<string, unknown>;
++  if (!Array.isArray(root.items)) return { items: [], errors: ['items: Expected array'] };
++  if (root.nothing_notable !== undefined && typeof root.nothing_notable !== 'boolean') {
++    errors.push('nothing_notable: Expected boolean');
++  }
++  const items: RawItem[] = [];
++  root.items.forEach((item, i) => {
++    if (!item || typeof item !== 'object') {
++      errors.push(`items.${i}: Expected object`);
++      return;
++    }
++    const r = item as Record<string, unknown>;
++    if (!oneOf(FOLLOWUP_KINDS, r.kind)) errors.push(`items.${i}.kind: Invalid enum value`);
++    if (!oneOf(FOLLOWUP_ACTIONS, r.action)) errors.push(`items.${i}.action: Invalid enum value`);
++    if (!oneOf(FOLLOWUP_PRIORITIES, r.priority)) errors.push(`items.${i}.priority: Invalid enum value`);
++    if (typeof r.title !== 'string') errors.push(`items.${i}.title: Expected string`);
++    if (typeof r.detail !== 'string') errors.push(`items.${i}.detail: Expected string`);
++    for (const key of ['quote', 'at', 'suggested_parent_message']) {
++      if (r[key] !== undefined && r[key] !== null && typeof r[key] !== 'string') {
++        errors.push(`items.${i}.${key}: Expected string or null`);
++      }
++    }
++    if (r.due_in_days !== undefined && (typeof r.due_in_days !== 'number' || Number.isNaN(r.due_in_days))) {
++      errors.push(`items.${i}.due_in_days: Expected number`);
++    }
++    if (errors.length > 0) return;
++    items.push({
++      kind: r.kind as FollowupKind,
++      action: r.action as FollowupAction,
++      priority: r.priority as FollowupPriority,
++      title: r.title as string,
++      detail: r.detail as string,
++      quote: (r.quote as string | null | undefined) ?? null,
++      at: (r.at as string | null | undefined) ?? null,
++      suggested_parent_message: (r.suggested_parent_message as string | null | undefined) ?? null,
++      due_in_days: (r.due_in_days as number | undefined) ?? 3,
++    });
++  });
++  return { items, errors };
++}
++
++/**
++ * Validate and tidy. Rules applied regardless of what the model said:
++ * - a concern about wellbeing is never auto-shared; it goes to a call.
++ * - share_with_parent always carries a suggested message.
++ * - deadlines follow priority unless the model gave a sooner one.
++ * - items already open for this student (by title) are dropped.
++ */
++export function parseFollowups(raw: unknown, openTitles: string[] = []): { items: ExtractedFollowup[]; errors: string[] } {
++  const parsed = readRaw(raw);
++  if (parsed.errors.length > 0) return { items: [], errors: parsed.errors };
++
++  const out: ExtractedFollowup[] = [];
++  for (const it of parsed.items) {
++    const title = it.title.trim();
++    const detail = it.detail.trim();
++    if (!title || !detail) continue;
++    if (openTitles.some((t) => similarTitles(t, title))) continue;
++    if (out.some((o) => similarTitles(o.title, title))) continue;
++
++    let action = it.action;
++    let priority = it.priority;
++    if (it.kind === 'concern') {
++      action = 'staff_call';
++      if (priority === 'low') priority = 'normal';
++    }
++    if (it.kind === 'exam_upcoming' && priority === 'low') priority = 'normal';
++    if (it.kind === 'misconception' && action === 'share_with_parent') action = 'note_for_next_lesson';
++
++    const suggested = action === 'share_with_parent' ? (it.suggested_parent_message?.trim() || detail) : it.suggested_parent_message?.trim() || null;
++    const due = Math.max(1, Math.min(DUE_DAYS[priority], Math.round(it.due_in_days || DUE_DAYS[priority])));
++
++    out.push({
++      kind: it.kind,
++      action,
++      priority,
++      title,
++      detail,
++      quote: it.quote?.trim() || null,
++      at: it.at && /^\d{1,2}:\d{2}$/.test(it.at.trim()) ? it.at.trim() : null,
++      suggested_parent_message: suggested,
++      due_in_days: due,
++    });
++  }
++  const order: Record<FollowupPriority, number> = { high: 0, normal: 1, low: 2 };
++  out.sort((a, b) => order[a.priority] - order[b.priority]);
++  return { items: out, errors: [] };
++}
++
++// --- heuristic fallback (no API key) --------------------------------------
++
++const EXAM = /\b(exam|test|assessment|mock|paper|quiz)\b.*\b(next|this|tomorrow|on|coming|week|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b/i;
++const CONFUSED = /\b(don'?t get|don'?t understand|confused|lost|stuck|no idea)\b/i;
++const TIRED = /\b(tired|sleepy|didn'?t sleep|headache|sick|unwell)\b/i;
++const LOGISTICS = /\b(holiday|travelling|away|can'?t make|change (the )?time|move (the )?lesson|reschedule)\b/i;
++const TECH = /\b(can'?t hear|cannot hear|can'?t see|lag|frozen|audio|camera|mic|internet)\b/i;
++const RELAY = /\b(tell my (mum|mom|dad|parents|mother|father))\b/i;
++
++/** Transcript-keyword fallback so the pipeline still produces items without a key. */
++export function heuristicFollowups(
++  segments: { speaker: 'teacher' | 'student'; text: string; start_ms: number }[],
++  openTitles: string[] = [],
++): ExtractedFollowup[] {
++  const items: ExtractedFollowup[] = [];
++  let confusionCount = 0;
++  for (const s of segments) {
++    if (s.speaker !== 'student') continue;
++    const at = fmt(s.start_ms);
++    if (EXAM.test(s.text)) items.push({ kind: 'exam_upcoming', action: 'staff_task', priority: 'normal', title: 'Student mentioned an upcoming test', detail: s.text, quote: s.text, at, suggested_parent_message: null, due_in_days: 3 });
++    if (TIRED.test(s.text)) items.push({ kind: 'concern', action: 'staff_call', priority: 'normal', title: 'Student seemed unwell or tired', detail: s.text, quote: s.text, at, suggested_parent_message: null, due_in_days: 3 });
++    if (LOGISTICS.test(s.text)) items.push({ kind: 'logistics', action: 'staff_task', priority: 'normal', title: 'Scheduling change mentioned', detail: s.text, quote: s.text, at, suggested_parent_message: null, due_in_days: 3 });
++    if (TECH.test(s.text)) items.push({ kind: 'tech_issue', action: 'staff_task', priority: 'low', title: 'Tech trouble during the lesson', detail: s.text, quote: s.text, at, suggested_parent_message: null, due_in_days: 7 });
++    if (RELAY.test(s.text)) items.push({ kind: 'ask_to_relay', action: 'share_with_parent', priority: 'normal', title: 'Student asked for something to be passed on', detail: s.text, quote: s.text, at, suggested_parent_message: s.text, due_in_days: 3 });
++    if (CONFUSED.test(s.text)) confusionCount++;
++  }
++  if (confusionCount >= 3) {
++    items.push({ kind: 'misconception', action: 'note_for_next_lesson', priority: 'normal', title: 'Repeated confusion during the lesson', detail: `The student said they were stuck or confused ${confusionCount} times.`, quote: null, at: null, suggested_parent_message: null, due_in_days: 3 });
++  }
++  return parseFollowups({ items, nothing_notable: items.length === 0 }, openTitles).items;
++}
++
++// --- the row the worker takes ----------------------------------------------
++
++/** "mm:ss" (the transcript marker) as milliseconds, or null when it is not one. */
++export function atMs(at: string | null): number | null {
++  if (!at) return null;
++  const m = /^(\d{1,2}):(\d{2})$/.exec(at.trim());
++  if (!m) return null;
++  return (Number(m[1]) * 60 + Number(m[2])) * 1000;
++}
++
++/** What worker_store_lesson_results reads off each element of p_followups. */
++export interface FollowupRow {
++  kind: FollowupKind;
++  action: FollowupAction;
++  priority: FollowupPriority;
++  title: string;
++  detail: string;
++  quote: string | null;
++  at_ms: number | null;
++  suggested_parent_message: string | null;
++}
++
++export function toFollowupRow(item: ExtractedFollowup): FollowupRow {
++  return {
++    kind: item.kind,
++    action: item.action,
++    priority: item.priority,
++    title: item.title,
++    detail: item.detail,
++    quote: item.quote,
++    at_ms: atMs(item.at),
++    suggested_parent_message: item.suggested_parent_message,
++  };
++}
+diff --git a/supabase/functions/_shared/lessonMetrics.ts b/supabase/functions/_shared/lessonMetrics.ts
+new file mode 100644
+index 0000000..e42fe16
+--- /dev/null
++++ b/supabase/functions/_shared/lessonMetrics.ts
+@@ -0,0 +1,180 @@
++// A lesson's numbers, from its transcript. Pure, no Deno imports, so the
++// smoke suite holds the rules themselves rather than a regex over index.ts.
++//
++// Ported line for line from online-lms src/lib/coaching/metrics.ts (§7.1),
++// which the room's live coach also runs: the two must agree, because the
++// live nudge a teacher saw in the room and the row in lesson_metrics are the
++// same arithmetic and a disagreement would look like the lesson changed
++// after it ended. computeMetrics() is that port, unchanged. segmentsFrom() is
++// this side's own: the segments arrive as jsonb from lesson_transcripts, so
++// whatever is not a segment is dropped here rather than crashing the worker.
++
++export interface TranscriptSegment {
++  speaker: 'teacher' | 'student';
++  text: string;
++  start_ms: number;
++  end_ms: number;
++}
++
++export interface SessionMetrics {
++  teacher_talk_pct: number;
++  student_talk_pct: number;
++  question_count: number;
++  open_question_pct: number;
++  avg_wait_ms: number;
++  student_turns: number;
++  avg_student_turn_ms: number;
++  praise_count: number;
++}
++
++const OPEN_STARTERS = ['how', 'why', 'what', 'describe', 'explain', 'tell', 'walk', 'where', 'which'];
++const PRAISE = [
++  'great',
++  'good job',
++  'good work',
++  'well done',
++  'excellent',
++  'nice',
++  'exactly',
++  'perfect',
++  'brilliant',
++  'awesome',
++  'fantastic',
++  "that's right",
++  'thats right',
++  'well thought',
++  'good thinking',
++];
++
++function dur(s: TranscriptSegment) {
++  return Math.max(0, s.end_ms - s.start_ms);
++}
++
++function isQuestion(text: string) {
++  return text.trim().endsWith('?');
++}
++
++function isOpenQuestion(text: string) {
++  const first = text.trim().toLowerCase().split(/\s+/)[0] ?? '';
++  return OPEN_STARTERS.includes(first);
++}
++
++function hasPraise(text: string) {
++  const lower = text.toLowerCase();
++  return PRAISE.some((p) => lower.includes(p));
++}
++
++/** Compute the full metric set from an ordered transcript. */
++export function computeMetrics(segments: TranscriptSegment[]): SessionMetrics {
++  if (segments.length === 0) {
++    return {
++      teacher_talk_pct: 0,
++      student_talk_pct: 0,
++      question_count: 0,
++      open_question_pct: 0,
++      avg_wait_ms: 0,
++      student_turns: 0,
++      avg_student_turn_ms: 0,
++      praise_count: 0,
++    };
++  }
++
++  const ordered = [...segments].sort((a, b) => a.start_ms - b.start_ms);
++
++  let teacherMs = 0;
++  let studentMs = 0;
++  let questionCount = 0;
++  let openCount = 0;
++  let praiseCount = 0;
++  const waits: number[] = [];
++
++  for (let i = 0; i < ordered.length; i++) {
++    const seg = ordered[i];
++    if (seg.speaker === 'teacher') {
++      teacherMs += dur(seg);
++      if (hasPraise(seg.text)) praiseCount++;
++      if (isQuestion(seg.text)) {
++        questionCount++;
++        if (isOpenQuestion(seg.text)) openCount++;
++        // wait-time: silence until the next student turn starts
++        const next = ordered.slice(i + 1).find((s) => s.speaker === 'student');
++        if (next) waits.push(Math.max(0, next.start_ms - seg.end_ms));
++      }
++    } else {
++      studentMs += dur(seg);
++    }
++  }
++
++  // Student turns = contiguous runs of student speech.
++  const turns: number[] = [];
++  let runStart: number | null = null;
++  let runEnd = 0;
++  for (const seg of ordered) {
++    if (seg.speaker === 'student') {
++      if (runStart === null) runStart = seg.start_ms;
++      runEnd = seg.end_ms;
++    } else if (runStart !== null) {
++      turns.push(runEnd - runStart);
++      runStart = null;
++    }
++  }
++  if (runStart !== null) turns.push(runEnd - runStart);
++
++  const totalSpeech = teacherMs + studentMs || 1;
++  const avg = (xs: number[]) => (xs.length ? Math.round(xs.reduce((a, b) => a + b, 0) / xs.length) : 0);
++
++  return {
++    teacher_talk_pct: round2(teacherMs / totalSpeech),
++    student_talk_pct: round2(studentMs / totalSpeech),
++    question_count: questionCount,
++    open_question_pct: questionCount ? round2(openCount / questionCount) : 0,
++    avg_wait_ms: avg(waits),
++    student_turns: turns.length,
++    avg_student_turn_ms: avg(turns),
++    praise_count: praiseCount,
++  };
++}
++
++function round2(n: number) {
++  return Math.round(n * 100) / 100;
++}
++
++/**
++ * The segments a jsonb column holds, as typed segments.
++ *
++ * The room writes {speaker, text, start_ms, end_ms} with the host already
++ * named 'teacher' and the learner 'student'; a row that says 'host' or
++ * 'learner' instead is read the same way, and anything without a text and
++ * two numbers is not a segment and is left out. A worker that threw on one
++ * malformed row would lose the whole lesson's draft over it.
++ */
++export function segmentsFrom(raw: unknown): TranscriptSegment[] {
++  if (!Array.isArray(raw)) return [];
++  const out: TranscriptSegment[] = [];
++  for (const item of raw) {
++    if (!item || typeof item !== 'object') continue;
++    const r = item as Record<string, unknown>;
++    const text = typeof r.text === 'string' ? r.text : '';
++    const start = typeof r.start_ms === 'number' ? r.start_ms : Number(r.start_ms);
++    const end = typeof r.end_ms === 'number' ? r.end_ms : Number(r.end_ms);
++    if (!text.trim() || !Number.isFinite(start) || !Number.isFinite(end)) continue;
++    const who = String(r.speaker ?? '').toLowerCase();
++    out.push({
++      speaker: who === 'teacher' || who === 'host' ? 'teacher' : 'student',
++      text,
++      start_ms: start,
++      end_ms: Math.max(end, start),
++    });
++  }
++  return out;
++}
++
++/** The word count lesson_end stores: whitespace-split tokens of every non-blank segment. */
++export function wordCount(segments: TranscriptSegment[]): number {
++  let n = 0;
++  for (const s of segments) {
++    const t = s.text.trim();
++    if (t) n += t.split(/\s+/).length;
++  }
++  return n;
++}
+diff --git a/supabase/functions/_shared/lessonNews.ts b/supabase/functions/_shared/lessonNews.ts
+new file mode 100644
+index 0000000..6213455
+--- /dev/null
++++ b/supabase/functions/_shared/lessonNews.ts
+@@ -0,0 +1,31 @@
++// Backfill or news: the one question every writer of a push-triggered row
++// has to answer, asked here for what lesson-finalize stores.
++//
++// A draft for a lesson that ended an hour ago is news: the teacher's phone
++// should say so. The same draft computed for a lesson three days back --
++// a re-read of a trailing window, a transcript that arrived late, a replay
++// after an outage -- is a mirror catching up, and it stays quiet
++// (worker_store_lesson_results takes p_quiet and sets app.push_quiet). The
++// expensive mistake is the quiet one in the wrong direction, and the loud
++// one is #489: pushes about days already over. A day is the line.
++
++/** A lesson whose start is further back than this is backfill, not news. */
++export const OLD_NEWS_MS = 24 * 60 * 60 * 1000;
++
++/**
++ * Whether storing this lesson's results is old news. The booking's
++ * effective_start is the start that counts; a row without one falls back
++ * to the confirmed or requested start, and one with no start at all is
++ * treated as news -- better one notification about an odd row than a
++ * silence nobody can report.
++ */
++export function isOldNews(
++  session: { effective_start: string | null; confirmed_start: string | null; requested_start: string | null },
++  nowMs: number,
++): boolean {
++  const start = session.effective_start ?? session.confirmed_start ?? session.requested_start;
++  if (!start) return false;
++  const at = Date.parse(start);
++  if (!Number.isFinite(at)) return false;
++  return at < nowMs - OLD_NEWS_MS;
++}
+diff --git a/supabase/functions/_shared/reportDraft.ts b/supabase/functions/_shared/reportDraft.ts
+new file mode 100644
+index 0000000..0dcc86d
+--- /dev/null
++++ b/supabase/functions/_shared/reportDraft.ts
+@@ -0,0 +1,330 @@
++// The per-session report, drafted in session_reports' own vocabulary: the
++// nine prev_hw strings, GP in quarters, OTR in bands of five, understanding
++// 1..10. The normalisers, the prompt, the reading of what the model said and
++// the notes-first fallback. Pure, no Deno imports, so the smoke suite can
++// hold the rules the way it holds _shared/familyAudience.ts.
++//
++// Ported from online-lms src/lib/reports/mvapp-template.ts (the vocabulary
++// and normalisers, "Mirrors mv-app/src/lib/reportFields.ts; keep the two in
++// step") and src/lib/reports/draft-session-report.ts (the prompt,
++// normaliseDraft and heuristicSessionReport), unchanged. These run BEFORE
++// lesson_report_drafts' own CHECKs (prev_hw in the nine, otr a band), so a
++// model that says "partly" or 83 is coerced here and the database never sees
++// a value the report form would not offer.
++
++/** Previous homework — the portal's nine answers, in the portal's order. */
++export const PREV_HW_OPTIONS = [
++  'Yes',
++  'Most of it Done',
++  'Partially Done',
++  'Little Done',
++  'Not Done',
++  'No Homework Given',
++  'Did Not Bring / Did Not Send Through Email/Whatsapp',
++  'Did Not Bring Exercise Book',
++  'Done And Sent Through Email/Skype/Whatsapp',
++] as const;
++export type PrevHw = (typeof PREV_HW_OPTIONS)[number];
++
++/** GP: 7.0 down to 1.0 in quarters, best first. */
++export const GP_OPTIONS: number[] = Array.from({ length: (7 - 1) * 4 + 1 }, (_, i) => 7 - i * 0.25);
++
++/** Understanding: 10 down to 1. */
++export const UNDERSTANDING_OPTIONS: number[] = Array.from({ length: 10 }, (_, i) => 10 - i);
++
++/** Oral test result: a band, stored as its lower bound (95 … 5). */
++export const OTR_BANDS: { lower: number; label: string }[] = Array.from({ length: 19 }, (_, i) => {
++  const val = 19 - i;
++  return { lower: val * 5, label: `${val * 5}% to ${(val + 1) * 5}%` };
++});
++
++export interface WrittenTest {
++  name: string;
++  score: number | null;
++  out_of: number | null;
++  percent: number | null;
++}
++
++/** The report as it is drafted, before submit_report. */
++export interface SessionReportDraft {
++  topic: string;
++  topic_completed: boolean;
++  topics_not_done: string | null;
++  understanding: number; // 1..10
++  otr: number | null; // band lower bound or null = no oral test
++  gp: number | null; // 1..7 in quarters; only when the author signs the report
++  prev_hw: PrevHw | null;
++  homework: string;
++  remarks: string;
++  written_tests: WrittenTest[];
++  has_upcoming_tests: boolean;
++}
++
++// --- normalisers for values that come from a model or free typing ----------
++
++/** Snap to the nearest quarter within 1..7, or null when absent. */
++export function normaliseGp(value: number | string | null | undefined): number | null {
++  if (value == null || value === '') return null;
++  const n = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9.]/g, ''));
++  if (!Number.isFinite(n)) return null;
++  const snapped = Math.round(n * 4) / 4;
++  return Math.min(7, Math.max(1, snapped));
++}
++
++/** Snap to the nearest band lower bound (5..95), or null for no oral test. */
++export function normaliseOtr(value: number | string | null | undefined): number | null {
++  if (value == null || value === '') return null;
++  const n = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9.]/g, ''));
++  if (!Number.isFinite(n) || n <= 0) return null;
++  const lower = Math.round(n / 5) * 5;
++  return Math.min(95, Math.max(5, lower));
++}
++
++export function normaliseUnderstanding(value: number | string | null | undefined): number | null {
++  if (value == null || value === '') return null;
++  const n = typeof value === 'number' ? value : Number(String(value).replace(/[^0-9.]/g, ''));
++  if (!Number.isFinite(n)) return null;
++  return Math.min(10, Math.max(1, Math.round(n)));
++}
++
++/** Map a loose phrase ("partly", "yes", "none set") onto one of the nine options. */
++export function normalisePrevHw(value: string | null | undefined): PrevHw | null {
++  if (!value) return null;
++  const v = value.trim().toLowerCase();
++  if (!v) return null;
++  const exact = PREV_HW_OPTIONS.find((o) => o.toLowerCase() === v);
++  if (exact) return exact;
++  if (/(no|none|wasn't|was not|not).*(given|set|assigned)/.test(v) || /^n\/?a$/.test(v)) return 'No Homework Given';
++  if (/sent|email|whatsapp|skype|online|uploaded/.test(v) && /done|complete|sent/.test(v)) return 'Done And Sent Through Email/Skype/Whatsapp';
++  if (/didn'?t bring|did not bring|forgot|left (it )?at home/.test(v)) {
++    return /book/.test(v) ? 'Did Not Bring Exercise Book' : 'Did Not Bring / Did Not Send Through Email/Whatsapp';
++  }
++  if (/^(yes|done|complete(d)?|all done|fully)/.test(v)) return 'Yes';
++  if (/most|mostly|nearly|almost/.test(v)) return 'Most of it Done';
++  if (/partial|partly|half|some/.test(v)) return 'Partially Done';
++  if (/little|few|barely|hardly|attempted/.test(v)) return 'Little Done';
++  if (/^(no|not done|none|nothing|incomplete|didn'?t do|did not do)/.test(v)) return 'Not Done';
++  return null;
++}
++
++/** The percentage the portal would compute, or null when the marks cannot produce one. */
++export function testPercent(score: number | null | undefined, outOf: number | null | undefined): number | null {
++  if (score == null || outOf == null) return null;
++  if (!Number.isFinite(score) || !Number.isFinite(outOf)) return null;
++  if (outOf <= 0 || score < 0 || score > outOf) return null;
++  return Math.round((score / outOf) * 1000) / 10;
++}
++
++export function normaliseWrittenTests(tests: Partial<WrittenTest>[] | null | undefined): WrittenTest[] {
++  return (tests ?? [])
++    .filter((t) => t && typeof t.name === 'string' && t.name.trim())
++    .map((t) => {
++      const score = t.score ?? null;
++      const out_of = t.out_of ?? null;
++      return { name: t.name!.trim(), score, out_of, percent: testPercent(score, out_of) };
++    });
++}
++
++/**
++ * What submit_report refuses, checked here first so the teacher sees it in the
++ * editor rather than as a database error. `signs` = the author's report
++ * publishes directly (staff, or a teacher with report_auto_approve), in which
++ * case a GP is required; otherwise the GP is the in-charge's to set and must be
++ * left null.
++ */
++export function validateReportDraft(d: SessionReportDraft, opts: { signs: boolean }): string[] {
++  const errors: string[] = [];
++  if (!d.topic || !d.topic.trim()) errors.push('A report needs the topic that was taught.');
++  if (!Number.isInteger(d.understanding) || d.understanding < 1 || d.understanding > 10)
++    errors.push('Understanding must be a whole number from 1 to 10.');
++  if (d.otr != null && !OTR_BANDS.some((b) => b.lower === d.otr)) errors.push('The oral test result must be one of the bands.');
++  if (opts.signs) {
++    if (d.gp == null) errors.push('A report needs a GP before it goes to the family.');
++    else if (!GP_OPTIONS.includes(d.gp)) errors.push('GP must be between 1 and 7 in quarters.');
++  } else if (d.gp != null) {
++    errors.push('The GP is set by the in-charge for this report.');
++  }
++  if (d.prev_hw != null && !PREV_HW_OPTIONS.includes(d.prev_hw)) errors.push('Previous homework must be one of the listed answers.');
++  if (d.topic_completed && d.topics_not_done && d.topics_not_done.trim())
++    errors.push('A completed topic cannot also list topics not done.');
++  for (const t of d.written_tests) {
++    if (t.score != null && t.out_of != null && testPercent(t.score, t.out_of) == null)
++      errors.push(`Written test "${t.name}": marks must be 0 to ${t.out_of ?? 'the total'}.`);
++  }
++  return errors;
++}
++
++// --- who signs ---------------------------------------------------------------
++
++/** What of a profile the signing rule reads. */
++export interface SigningProfile {
++  full_name: string | null;
++  role: string | null;
++  report_auto_approve: boolean | null;
++}
++
++/**
++ * submit_report's v_signs_it, read the same way: staff, support and admin
++ * sign, and a teacher only when their reports publish on their own
++ * (report_auto_approve). Whoever signs sets the GP; nobody else is offered
++ * one, and submit_report ignores a GP it is not owed.
++ */
++export function signsReports(teacher: SigningProfile | null): boolean {
++  if (!teacher) return false;
++  return ['staff', 'support', 'admin'].includes(teacher.role ?? '') || (teacher.role === 'teacher' && teacher.report_auto_approve === true);
++}
++
++// --- the draft ---------------------------------------------------------------
++
++export interface TranscriptLine {
++  speaker: 'teacher' | 'student';
++  text: string;
++}
++
++export interface DraftMetrics {
++  student_talk_pct: number;
++  question_count: number;
++  praise_count: number;
++}
++
++export interface DraftSessionReportInput {
++  notes: string;
++  segments: TranscriptLine[];
++  metrics: DraftMetrics | null;
++  studentName: string;
++  course: string;
++  /** Topic options for this course (course_topics); the topic should be one of these when one fits. */
++  topicOptions: string[];
++  /** The topic the booking named, if any. */
++  bookedTopic?: string | null;
++  /** What the previous report set as homework, so prev_hw can be judged. */
++  previousHomework?: string | null;
++  /** Evidence about the previous homework from the platform (submitted/verified/marks). */
++  previousHomeworkStatus?: string | null;
++  /** In-lesson practice or test results. */
++  testResults?: { name: string; score: number; out_of: number }[];
++  /** Whether the author's report publishes directly (then a GP is expected). */
++  signs: boolean;
++}
++
++export const REPORT_FORMAT = {
++  type: 'json_schema' as const,
++  schema: {
++    type: 'object',
++    additionalProperties: false,
++    properties: {
++      topic: { type: 'string' },
++      topic_completed: { type: 'boolean' },
++      topics_not_done: { type: ['string', 'null'] },
++      understanding: { type: 'integer' },
++      otr: { type: ['integer', 'null'] },
++      gp: { type: ['number', 'null'] },
++      prev_hw: { type: ['string', 'null'] },
++      homework: { type: 'string' },
++      remarks: { type: 'string' },
++      written_tests: {
++        type: 'array',
++        items: {
++          type: 'object',
++          additionalProperties: false,
++          properties: { name: { type: 'string' }, score: { type: ['number', 'null'] }, out_of: { type: ['number', 'null'] } },
++          required: ['name', 'score', 'out_of'],
++        },
++      },
++      has_upcoming_tests: { type: 'boolean' },
++      rationale: { type: 'string' },
++    },
++    required: ['topic', 'topic_completed', 'topics_not_done', 'understanding', 'otr', 'gp', 'prev_hw', 'homework', 'remarks', 'written_tests', 'has_upcoming_tests', 'rationale'],
++  },
++};
++
++export const REPORT_SYSTEM = `You draft the centre's per-session report for a 1-1 maths lesson, which the teacher will edit and the parent will read. Base it on the teacher's notes first, then the transcript, metrics and results. Be honest and specific; never invent detail.
++
++Fields:
++- topic: the topic taught. Choose one of the provided topic options when one fits; otherwise a short label. Prefer the booked topic if the lesson matched it.
++- topic_completed: true if the planned topic was finished; if false, topics_not_done lists what was left (else null).
++- understanding: 1-10 whole number, the student's grasp of today's topic by the end.
++- otr: ONLY if an oral quiz/questioning round was clearly scored in the lesson, give the percentage as a multiple of 5 (5-95); otherwise null.
++- gp: ${'only when the author signs the report'} — a grade point 1-7 in quarters (7 best) reflecting overall performance; null if told not to.
++- prev_hw: one of exactly: ${PREV_HW_OPTIONS.join(' | ')} — or null if nothing can be said.
++- homework: concrete, short, what to do before next lesson (exercise numbers, practice set).
++- remarks: 3-5 warm, plain sentences to the parent: what was covered, how the student did, one strength, one thing to work on. First name only. No jargon.
++- written_tests: any test or practice set done in the lesson, with marks (score, out_of); empty list if none.
++- has_upcoming_tests: true if the student or teacher mentioned an upcoming school test or exam.
++- rationale: two sentences for the teacher on why you scored it this way.`;
++
++/** The user turn draft-session-report.ts sends. */
++export function reportUserPrompt(input: DraftSessionReportInput): string {
++  const transcript = input.segments.map((s) => `${s.speaker === 'teacher' ? 'Teacher' : 'Student'}: ${s.text}`).join('\n');
++  const first = input.studentName.split(' ')[0];
++  const m = input.metrics;
++  return `Student: ${input.studentName} (use "${first}"). Course: ${input.course}.
++Author signs the report (GP allowed): ${input.signs ? 'yes' : 'no — set gp to null'}.
++Booked topic: ${input.bookedTopic ?? '(none)'}.
++Topic options: ${input.topicOptions.length ? input.topicOptions.join(' | ') : '(none)'}.
++Previous homework set: ${input.previousHomework ?? '(unknown)'}. Platform evidence: ${input.previousHomeworkStatus ?? '(none)'}.
++In-lesson results: ${input.testResults?.length ? input.testResults.map((t) => `${t.name}: ${t.score}/${t.out_of}`).join('; ') : '(none)'}.
++
++Teacher's quick notes:
++${input.notes || '(none provided)'}
++
++${m ? `Metrics: student talked ${Math.round(m.student_talk_pct * 100)}%, ${m.question_count} questions asked, ${m.praise_count} praise moments.\n` : ''}${transcript ? `Transcript:\n${transcript}` : '(no transcript available)'}`;
++}
++
++/** Coerce whatever came back into the template's exact vocabulary. */
++export function normaliseDraft(raw: Record<string, unknown>, input: Pick<DraftSessionReportInput, 'signs' | 'topicOptions' | 'bookedTopic' | 'testResults'>): SessionReportDraft {
++  const topicRaw = String(raw.topic ?? '').trim();
++  const topic = input.topicOptions.find((t) => t.toLowerCase() === topicRaw.toLowerCase()) ?? topicRaw ?? input.bookedTopic ?? '';
++  const topic_completed = Boolean(raw.topic_completed);
++  const written = normaliseWrittenTests(
++    (Array.isArray(raw.written_tests) ? (raw.written_tests as Partial<WrittenTest>[]) : []).concat(
++      (input.testResults ?? []).map((t) => ({ name: t.name, score: t.score, out_of: t.out_of })),
++    ),
++  );
++  // Dedupe tests by name (AI may echo the ones we supplied).
++  const seen = new Set<string>();
++  const written_tests = written.filter((t) => (seen.has(t.name.toLowerCase()) ? false : (seen.add(t.name.toLowerCase()), true)));
++  return {
++    topic,
++    topic_completed,
++    topics_not_done: topic_completed ? null : (typeof raw.topics_not_done === 'string' && raw.topics_not_done.trim()) || null,
++    understanding: normaliseUnderstanding(raw.understanding as number | string | null) ?? 6,
++    otr: normaliseOtr(raw.otr as number | string | null),
++    gp: input.signs ? normaliseGp(raw.gp as number | string | null) : null,
++    prev_hw: normalisePrevHw(typeof raw.prev_hw === 'string' ? raw.prev_hw : null),
++    homework: String(raw.homework ?? '').trim(),
++    remarks: String(raw.remarks ?? '').trim(),
++    written_tests,
++    has_upcoming_tests: Boolean(raw.has_upcoming_tests),
++  };
++}
++
++/** Notes-first fallback so the editor always opens with something usable. */
++export function heuristicSessionReport(input: DraftSessionReportInput): { draft: SessionReportDraft; rationale: string } {
++  const first = input.studentName.split(' ')[0];
++  const n = input.notes.trim();
++  const topic = input.bookedTopic?.trim() || input.topicOptions[0] || `Continued work in ${input.course}`;
++  const tests = normaliseWrittenTests((input.testResults ?? []).map((t) => ({ name: t.name, score: t.score, out_of: t.out_of })));
++  const avg = tests.length ? tests.reduce((s, t) => s + (t.percent ?? 0), 0) / tests.length : null;
++  const understanding = avg == null ? 7 : Math.max(1, Math.min(10, Math.round(avg / 10)));
++  const prevStatus = (input.previousHomeworkStatus ?? '').toLowerCase();
++  const prev_hw = !input.previousHomework ? 'No Homework Given' : /verified|complete|done/.test(prevStatus) ? 'Yes' : /submitted|partial/.test(prevStatus) ? 'Partially Done' : /overdue|missing|not/.test(prevStatus) ? 'Not Done' : null;
++  return {
++    draft: {
++      topic,
++      topic_completed: true,
++      topics_not_done: null,
++      understanding,
++      otr: null,
++      gp: input.signs ? normaliseGp(Math.max(1, Math.min(7, understanding * 0.7))) : null,
++      prev_hw,
++      homework: "Complete the practice set from today's lesson.",
++      remarks: n
++        ? `${first} worked on ${topic} today. ${n}`
++        : `${first} worked steadily on ${topic} today and attempted the problems with a positive attitude. A little more independent practice would help consolidate the method.`,
++      written_tests: tests,
++      has_upcoming_tests: false,
++    },
++    rationale: "Heuristic draft from the teacher's notes and in-lesson results; no AI pass was run.",
++  };
++}
+diff --git a/supabase/functions/_shared/transcript.ts b/supabase/functions/_shared/transcript.ts
+new file mode 100644
+index 0000000..2a30500
+--- /dev/null
++++ b/supabase/functions/_shared/transcript.ts
+@@ -0,0 +1,151 @@
++// A lesson's transcript from two witnesses, made one. Pure, no Deno imports.
++//
++// Segments arrive from two places: the browsers in the call (live,
++// incremental, each client sees every transcription message; lesson_end
++// stores what the host's browser held) and Daily's stored WebVTT after the
++// call (authoritative but late, fetched by lesson-finalize on the
++// transcript.ready-to-download webhook). Both can hold the same utterance;
++// both can have gaps. Merging keeps one copy of each utterance and preserves
++// order; the stored one wins where both cover the same seconds.
++//
++// Ported from online-lms src/lib/transcripts/vtt.ts and merge.ts, unchanged.
++// Daily's cues may carry a voice tag like `<v Maya Chen>` naming the speaker;
++// names map to roles with the teacher's and student's names, and an unknown
++// voice is the student's, so a teacher-only transcript is never produced by
++// accident.
++
++import type { TranscriptSegment } from './lessonMetrics.ts';
++
++export interface VttCue {
++  start_ms: number;
++  end_ms: number;
++  speaker: string | null;
++  text: string;
++}
++
++const TIME = /(?:(\d{1,2}):)?(\d{2}):(\d{2})[.,](\d{3})/;
++
++export function parseVttTimestamp(s: string): number | null {
++  const m = s.trim().match(TIME);
++  if (!m) return null;
++  const h = m[1] ? Number(m[1]) : 0;
++  return ((h * 60 + Number(m[2])) * 60 + Number(m[3])) * 1000 + Number(m[4]);
++}
++
++export function parseVtt(text: string): VttCue[] {
++  const lines = text.replace(/\r\n?/g, '\n').split('\n');
++  const cues: VttCue[] = [];
++  let i = 0;
++  while (i < lines.length) {
++    const line = lines[i]!.trim();
++    if (!line || line === 'WEBVTT' || line.startsWith('NOTE') || line.startsWith('STYLE') || line.startsWith('REGION')) {
++      i++;
++      continue;
++    }
++    // Optional cue identifier line precedes the timing line.
++    let timing = line;
++    if (!timing.includes('-->')) {
++      i++;
++      timing = (lines[i] ?? '').trim();
++    }
++    if (!timing.includes('-->')) {
++      i++;
++      continue;
++    }
++    const [a, b] = timing.split('-->');
++    const start = parseVttTimestamp(a ?? '');
++    const end = parseVttTimestamp((b ?? '').split(/\s+/)[1] ?? b ?? '');
++    i++;
++    const body: string[] = [];
++    while (i < lines.length && lines[i]!.trim() !== '') {
++      body.push(lines[i]!);
++      i++;
++    }
++    if (start === null || end === null) continue;
++    let speaker: string | null = null;
++    let joined = body.join(' ').trim();
++    const voice = joined.match(/^<v(?:\.[^\s>]+)?\s+([^>]+)>/);
++    if (voice) {
++      speaker = voice[1]!.trim();
++      joined = joined.replace(/^<v[^>]*>/, '').replace(/<\/v>/g, '').trim();
++    } else {
++      const colon = joined.match(/^([A-Za-z][\w .'-]{0,40}):\s+(.+)$/);
++      if (colon) {
++        speaker = colon[1]!.trim();
++        joined = colon[2]!.trim();
++      }
++    }
++    joined = joined.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
++    if (joined) cues.push({ start_ms: start, end_ms: Math.max(end, start), speaker, text: joined });
++  }
++  return cues;
++}
++
++/** Decide teacher vs student for a cue's speaker label. */
++export function speakerRole(label: string | null, names: { teacher: string; student: string }): 'teacher' | 'student' {
++  if (!label) return 'student';
++  const l = label.toLowerCase();
++  const t = names.teacher.toLowerCase();
++  const s = names.student.toLowerCase();
++  if (l === t || l.includes(t) || t.includes(l)) return 'teacher';
++  if (l === s || l.includes(s) || s.includes(l)) return 'student';
++  if (/teacher|tutor/.test(l)) return 'teacher';
++  const tFirst = t.split(' ')[0] ?? t;
++  if (tFirst && l.split(' ')[0] === tFirst) return 'teacher';
++  return 'student';
++}
++
++export function vttToSegments(text: string, names: { teacher: string; student: string }): TranscriptSegment[] {
++  return parseVtt(text).map((c) => ({ speaker: speakerRole(c.speaker, names), text: c.text, start_ms: c.start_ms, end_ms: c.end_ms }));
++}
++
++/** A stable key so the same utterance posted twice (two browsers, a retry) is stored once. */
++export function segmentKey(s: TranscriptSegment): string {
++  const t = s.text.toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
++  return `${s.speaker}|${Math.round(s.start_ms / 500)}|${t.slice(0, 48)}`;
++}
++
++function similar(a: string, b: string): boolean {
++  const x = a.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
++  const y = b.toLowerCase().replace(/[^a-z0-9 ]/g, '').trim();
++  if (!x || !y) return false;
++  if (x === y || x.includes(y) || y.includes(x)) return true;
++  const wx = x.split(' ');
++  const wy = new Set(y.split(' '));
++  const shared = wx.filter((w) => wy.has(w)).length;
++  return shared / Math.max(wx.length, wy.size) >= 0.7;
++}
++
++/** Deduplicate a stream of segments (same utterance within ~1.5s, same speaker, similar text). */
++export function dedupeSegments(segments: TranscriptSegment[]): TranscriptSegment[] {
++  const sorted = [...segments].sort((a, b) => a.start_ms - b.start_ms || a.end_ms - b.end_ms);
++  const out: TranscriptSegment[] = [];
++  for (const s of sorted) {
++    if (!s.text.trim()) continue;
++    const dup = out.some((o) => o.speaker === s.speaker && Math.abs(o.start_ms - s.start_ms) <= 1500 && similar(o.text, s.text));
++    if (!dup) out.push(s);
++  }
++  return out;
++}
++
++/**
++ * Merge the live stream with the stored transcript. The stored one wins where
++ * both cover the same time; the live stream fills anything the stored file
++ * lacks (it can be missing the first seconds or the tail after a drop).
++ */
++export function mergeTranscripts(live: TranscriptSegment[], stored: TranscriptSegment[]): TranscriptSegment[] {
++  if (stored.length === 0) return dedupeSegments(live);
++  if (live.length === 0) return dedupeSegments(stored);
++  const merged = dedupeSegments([...stored, ...live]);
++  // Prefer the stored text when a live segment was judged a duplicate: dedupe
++  // keeps the first by start time, so re-run with stored first on ties.
++  return merged;
++}
++
++/** Coverage in seconds — how much of the lesson the transcript spans. */
++export function transcriptSpanSeconds(segments: TranscriptSegment[]): number {
++  if (segments.length === 0) return 0;
++  const start = Math.min(...segments.map((s) => s.start_ms));
++  const end = Math.max(...segments.map((s) => s.end_ms));
++  return Math.max(0, Math.round((end - start) / 1000));
++}
+diff --git a/supabase/functions/lesson-finalize/index.ts b/supabase/functions/lesson-finalize/index.ts
+new file mode 100644
+index 0000000..e0d7e26
+--- /dev/null
++++ b/supabase/functions/lesson-finalize/index.ts
+@@ -0,0 +1,541 @@
++// Supabase Edge Function — what a lesson leaves behind, computed once it has
++// ended: the transcript made whole, the lesson's numbers, the teacher's
++// coaching, the report draft in the form's own vocabulary, and the
++// follow-ups a person will approve.
++//
++//   supabase functions deploy lesson-finalize
++//   (JWT verification ON. Called by the DATABASE — lesson_end, through
++//   invoke_edge_function, with reason 'end' — and by daily-webhook when
++//   Daily's stored transcript is ready, with reason 'transcript'. Never by a
++//   phone or a browser: the bearer must be the project's service-role key,
++//   compared in constant time, and anything else is a 401.)
++//
++// Secrets:
++//   ANTHROPIC_API_KEY   the three model passes. Without it every lesson gets
++//                       the heuristic draft and says so in lesson_report_drafts.source.
++//   DAILY_API_KEY       the stored transcript. Without it the room's own
++//                       segments are the transcript.
++//
++// WHAT IS A PORT AND WHAT IS NOT. The prompts, the readings of what the
++// model says, the policy on follow-ups and the normalisers are online-lms's
++// modules moved into _shared/ unchanged (each file says which). This file is
++// the plumbing around them: which rows to read, when to ask the model at all,
++// and the one door everything lands through — worker_store_lesson_results,
++// service role only, which is quiet toward phones when the lesson is old news.
++//
++// THE CONSENT IS THE FAMILY'S. lesson_consents says whether a model may read
++// this child's lesson (ai_analysis) and whether a transcript may be kept
++// (transcript). Without ai_analysis nothing of the lesson reaches Anthropic:
++// the metrics are computed here, the draft and the follow-ups come from the
++// keyword heuristics, and lesson_feedback stays empty. Without transcript
++// consent the stored WebVTT at Daily is not fetched, whatever the webhook
++// said was ready.
++//
++// IDEMPOTENT ON PURPOSE. A lesson is finalised at least twice when Daily's
++// transcript lands after the end: the second run replaces the metrics, the
++// coaching and the draft (a replaced draft tells the teacher nothing twice —
++// the push is on INSERT), and worker_store_lesson_results proposes
++// follow-ups only once per session.
++//
++// THE ANSWER GOES OUT BEFORE THE WORK. pg_net gives the database's call a few
++// seconds; three model passes take longer. So the request is checked, the
++// session read, a 200 returned, and the work runs under EdgeRuntime.waitUntil
++// — the same shape as daily-webhook. Anywhere without waitUntil the work is
++// awaited and the full result returned instead.
++
++import { createClient } from 'jsr:@supabase/supabase-js@2';
++
++import { CLAUDE_MODEL, askClaudeForJson, type ClaudeJsonResult } from '../_shared/claudeJson.ts';
++import {
++  ANALYSIS_SYSTEM,
++  FEEDBACK_FORMAT,
++  analysisUserPrompt,
++  heuristicFeedback,
++  parseFeedback,
++  type TeacherFeedback,
++} from '../_shared/lessonAnalysis.ts';
++import {
++  FOLLOWUP_FORMAT,
++  FOLLOWUP_SYSTEM,
++  followupUserPrompt,
++  heuristicFollowups,
++  parseFollowups,
++  toFollowupRow,
++  type ExtractedFollowup,
++} from '../_shared/lessonFollowups.ts';
++import { computeMetrics, segmentsFrom, wordCount } from '../_shared/lessonMetrics.ts';
++import { isOldNews } from '../_shared/lessonNews.ts';
++import { isUuid, secretMatches } from '../_shared/lessonRoom.ts';
++import { captureError } from '../_shared/report.ts';
++import {
++  REPORT_FORMAT,
++  REPORT_SYSTEM,
++  heuristicSessionReport,
++  normaliseDraft,
++  normaliseOtr,
++  reportUserPrompt,
++  signsReports,
++  type DraftSessionReportInput,
++  type SessionReportDraft,
++  type SigningProfile,
++} from '../_shared/reportDraft.ts';
++import { mergeTranscripts, vttToSegments } from '../_shared/transcript.ts';
++
++const SUPABASE_URL = Deno.env.get('SUPABASE_URL')!;
++const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
++
++const admin = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
++  auth: { persistSession: false },
++});
++
++type Reason = 'end' | 'transcript';
++
++type Session = {
++  id: string;
++  topic: string | null;
++  subject: string | null;
++  course_id: string | null;
++  student_id: string | null;
++  student_name: string | null;
++  assigned_teacher_id: string | null;
++  department_id: string | null;
++  effective_start: string | null;
++  confirmed_start: string | null;
++  requested_start: string | null;
++  duration_minutes: number | null;
++};
++
++type Pass = 'analyze' | 'followup_extract' | 'report_draft';
++
++Deno.serve(async (req) => {
++  if (req.method !== 'POST') {
++    return json({ error: 'method not allowed' }, 405);
++  }
++
++  // The gateway has already checked the bearer is a JWT this project
++  // issued. That admits every signed-in person; this door is the database's
++  // and daily-webhook's only, both of which carry the service-role key.
++  const bearer = (req.headers.get('Authorization') ?? '').replace(/^Bearer\s+/i, '');
++  if (!(await secretMatches(bearer, SERVICE_ROLE_KEY))) {
++    return json({ error: 'unauthorised' }, 401);
++  }
++
++  let body: { session_id?: unknown; reason?: unknown };
++  try {
++    body = await req.json();
++  } catch {
++    body = {};
++  }
++  if (!isUuid(body.session_id)) return json({ error: 'session_id is required' }, 400);
++  const sessionId = body.session_id.toLowerCase();
++  const reason: Reason = body.reason === 'transcript' ? 'transcript' : 'end';
++
++  // Read before answering, so a session nobody booked is a 404 to the
++  // caller rather than a line in a log it never reads.
++  const { data: session, error: sessionError } = await admin
++    .from('session_requests')
++    .select(
++      'id, topic, subject, course_id, student_id, student_name, assigned_teacher_id, department_id, effective_start, confirmed_start, requested_start, duration_minutes',
++    )
++    .eq('id', sessionId)
++    .maybeSingle();
++  if (sessionError) {
++    await captureError(sessionError, 'lesson-finalize/session', { session_id: sessionId });
++    return json({ error: 'could not read the session' }, 500);
++  }
++  if (!session) return json({ error: 'no such session' }, 404);
++
++  const work = finalize(session as Session, reason).catch(async (error) => {
++    await captureError(error, 'lesson-finalize', { session_id: sessionId, reason });
++    return null;
++  });
++
++  const runtime = (globalThis as { EdgeRuntime?: { waitUntil(p: Promise<unknown>): void } }).EdgeRuntime;
++  if (runtime?.waitUntil) {
++    runtime.waitUntil(work);
++    return json({ ok: true, accepted: true, session_id: sessionId, reason });
++  }
++  const result = await work;
++  if (!result) return json({ ok: false, error: 'Could not finalise the lesson.' }, 500);
++  return json(result);
++});
++
++/** The whole of one run. Throws only for what captureError should hear. */
++async function finalize(session: Session, reason: Reason) {
++  const anthropicKey = Deno.env.get('ANTHROPIC_API_KEY');
++  const dailyKey = Deno.env.get('DAILY_API_KEY');
++
++  // --- 1. Everything the passes read, in one round of reads ---------------
++  const [teacher, student, room, transcriptRow, events, consents, course, topics, openTitles, previousHomework, quickChecks] =
++    await Promise.all([
++      profileOf(session.assigned_teacher_id),
++      profileOf(session.student_id),
++      roomOf(session.id),
++      transcriptOf(session.id),
++      eventsOf(session.id),
++      consentsOf(session.student_id),
++      courseNameOf(session.course_id),
++      topicLabelsOf(session.course_id),
++      openFollowupTitlesOf(session.student_id, session.id),
++      previousHomeworkOf(session.student_id, session.course_id, session.id),
++      quickChecksOf(session.id),
++    ]);
++
++  const teacherName = teacher?.full_name?.trim() || 'Teacher';
++  const studentName = student?.full_name?.trim() || session.student_name?.trim() || 'the student';
++  const courseName = course ?? session.subject ?? 'Maths';
++  const aiConsent = consents.has('ai_analysis');
++  const transcriptConsent = consents.has('transcript');
++
++  // --- 2. The transcript: the room's segments, and Daily's when ready -----
++  let segments = segmentsFrom(transcriptRow?.segments);
++  let transcriptSource: 'none' | 'live' | 'merged' = segments.length > 0 ? 'live' : 'none';
++  if (transcriptConsent && room?.transcript_status === 'ready' && room.provider_transcript_id && dailyKey?.trim()) {
++    try {
++      const vtt = await fetchDailyTranscript(room.provider_transcript_id, dailyKey.trim());
++      const stored = vttToSegments(vtt, { teacher: teacherName, student: studentName });
++      if (stored.length > 0) {
++        segments = mergeTranscripts(segments, stored);
++        transcriptSource = 'merged';
++        const { error } = await admin.from('lesson_transcripts').upsert(
++          {
++            session_id: session.id,
++            segments,
++            word_count: wordCount(segments),
++            updated_at: new Date().toISOString(),
++          },
++          { onConflict: 'session_id' },
++        );
++        if (error) throw error;
++      }
++    } catch (error) {
++      // The room's own segments are still a transcript; the lesson is
++      // finalised on those and the stored one is tried again on the next
++      // run. Reported, because a transcript that quietly never merges looks
++      // exactly like a lesson that had none.
++      await captureError(error, 'lesson-finalize/transcript', {
++        session_id: session.id,
++        provider_transcript_id: room.provider_transcript_id,
++      });
++    }
++  }
++
++  // --- 3. The numbers, and what the room recorded by hand -----------------
++  const metrics = computeMetrics(segments);
++  const notes = events
++    .filter((e) => e.kind === 'teacher_note')
++    .map((e) => noteText(e.payload))
++    .filter(Boolean)
++    .join('\n');
++  const oralChecks = events.filter((e) => e.kind === 'quick_check_result').map((e) => e.payload);
++  const testResults: { name: string; score: number; out_of: number }[] = [];
++  for (const p of oralChecks) {
++    const score = Number(p.score);
++    const outOf = Number(p.out_of);
++    if (typeof p.name === 'string' && p.name.trim() && Number.isFinite(score) && Number.isFinite(outOf)) {
++      testResults.push({ name: p.name.trim(), score, out_of: outOf });
++    }
++  }
++  for (const q of quickChecks) testResults.push(q);
++  // The oral test result the host recorded, if any: the only source the
++  // report's OTR may have. It is a band the teacher scored in the room,
++  // never a number inferred from how the talk went.
++  const recordedOtr = oralChecks.map((p) => Number(p.otr)).filter((n) => Number.isFinite(n) && n > 0).pop() ?? null;
++
++  const useAi = aiConsent && Boolean(anthropicKey?.trim());
++  const usage: { kind: Pass; result: ClaudeJsonResult }[] = [];
++  const record = (kind: Pass, result: ClaudeJsonResult) => {
++    usage.push({ kind, result });
++    if (!result.ok && result.reason !== 'refusal') {
++      console.warn(`[edge] lesson-finalize ${kind} fell back to the heuristic: ${result.reason} — ${result.detail}`);
++    }
++    return result;
++  };
++
++  const draftInput: DraftSessionReportInput = {
++    notes,
++    segments,
++    metrics: segments.length > 0 ? metrics : null,
++    studentName,
++    course: courseName,
++    topicOptions: topics,
++    bookedTopic: session.topic,
++    previousHomework,
++    previousHomeworkStatus: null,
++    testResults,
++    signs: signsReports(teacher),
++  };
++
++  // --- 4. The three passes, side by side, each falling back on its own ----
++  const [feedback, followups, drafted] = await Promise.all([
++    // The coaching. No consent: nothing, not even the heuristic — the row
++    // would be a reading of a lesson the family did not agree to have read.
++    (async (): Promise<TeacherFeedback | null> => {
++      if (!aiConsent) return null;
++      if (useAi && segments.length > 0) {
++        const result = record(
++          'analyze',
++          await askClaudeForJson({
++            apiKey: anthropicKey,
++            system: ANALYSIS_SYSTEM,
++            user: analysisUserPrompt(segments, metrics, { teacherName, studentName, course: courseName }),
++            format: FEEDBACK_FORMAT,
++          }),
++        );
++        if (result.ok) {
++          const parsed = parseFeedback(result.json);
++          if (parsed) return parsed;
++        }
++      }
++      return heuristicFeedback(metrics);
++    })(),
++
++    // The follow-ups. The keyword heuristic without a model; the policy in
++    // parseFollowups applies to both.
++    (async (): Promise<ExtractedFollowup[]> => {
++      if (useAi && segments.length > 0) {
++        const input = { segments, studentFirstName: studentName.split(' ')[0], course: courseName, openTitles };
++        const result = record(
++          'followup_extract',
++          await askClaudeForJson({
++            apiKey: anthropicKey,
++            system: FOLLOWUP_SYSTEM,
++            user: followupUserPrompt(input),
++            format: FOLLOWUP_FORMAT,
++            effort: 'high',
++          }),
++        );
++        if (result.ok) {
++          const parsed = parseFollowups(result.json, openTitles);
++          if (parsed.errors.length === 0) return parsed.items;
++        }
++      }
++      return heuristicFollowups(segments, openTitles);
++    })(),
++
++    // The draft, in the form's vocabulary before the database's CHECKs see it.
++    (async (): Promise<{ draft: SessionReportDraft; rationale: string; source: 'ai' | 'heuristic' }> => {
++      if (useAi) {
++        const result = record(
++          'report_draft',
++          await askClaudeForJson({
++            apiKey: anthropicKey,
++            system: REPORT_SYSTEM,
++            user: reportUserPrompt(draftInput),
++            format: REPORT_FORMAT,
++            effort: 'high',
++          }),
++        );
++        if (result.ok) {
++          const raw = result.json as Record<string, unknown>;
++          return { draft: normaliseDraft(raw, draftInput), rationale: String(raw.rationale ?? ''), source: 'ai' };
++        }
++      }
++      return { ...heuristicSessionReport(draftInput), source: 'heuristic' };
++    })(),
++  ]);
++
++  // Two rules the form holds that a model cannot be trusted with: the OTR is
++  // the band the host recorded or nothing, and an exam the follow-ups found
++  // is an upcoming test on the report.
++  const draft: SessionReportDraft = {
++    ...drafted.draft,
++    otr: recordedOtr !== null ? normaliseOtr(recordedOtr) : null,
++    has_upcoming_tests: drafted.draft.has_upcoming_tests || followups.some((f) => f.kind === 'exam_upcoming'),
++  };
++
++  // --- 5. The bill, one row per call, whatever the call came back with ----
++  for (const { kind, result } of usage) {
++    if (!result.usage) continue;
++    const { error } = await admin.from('ai_usage').insert({
++      user_id: null,
++      kind,
++      model: result.model ?? CLAUDE_MODEL,
++      tokens_in: result.usage.input_tokens,
++      tokens_out: result.usage.output_tokens,
++      session_id: session.id,
++    });
++    if (error) await captureError(error, 'lesson-finalize/ai_usage', { session_id: session.id, kind });
++  }
++
++  // --- 6. One door ---------------------------------------------------------
++  const rows = followups.map(toFollowupRow);
++  const { error: storeError } = await admin.rpc('worker_store_lesson_results', {
++    p_session_id: session.id,
++    p_metrics: metrics,
++    p_feedback: feedback,
++    p_draft: draft,
++    p_draft_rationale: drafted.rationale,
++    p_draft_source: drafted.source,
++    p_followups: rows,
++    p_quiet: isOldNews(session, Date.now()),
++  });
++  if (storeError) throw storeError;
++
++  return {
++    ok: true,
++    session_id: session.id,
++    reason,
++    source: drafted.source,
++    followups: rows.length,
++    transcript: transcriptSource,
++  };
++}
++
++// --- reads --------------------------------------------------------------------
++
++async function profileOf(id: string | null): Promise<SigningProfile | null> {
++  if (!id) return null;
++  const { data, error } = await admin.from('profiles').select('full_name, role, report_auto_approve').eq('id', id).maybeSingle();
++  if (error) throw error;
++  return (data as SigningProfile | null) ?? null;
++}
++
++async function roomOf(sessionId: string): Promise<{ transcript_status: string; provider_transcript_id: string | null } | null> {
++  const { data, error } = await admin.from('lesson_rooms').select('transcript_status, provider_transcript_id').eq('session_id', sessionId).maybeSingle();
++  if (error) throw error;
++  return data;
++}
++
++async function transcriptOf(sessionId: string): Promise<{ segments: unknown } | null> {
++  const { data, error } = await admin.from('lesson_transcripts').select('segments').eq('session_id', sessionId).maybeSingle();
++  if (error) throw error;
++  return data;
++}
++
++async function eventsOf(sessionId: string): Promise<{ kind: string; payload: Record<string, unknown> }[]> {
++  const { data, error } = await admin
++    .from('lesson_events')
++    .select('kind, payload')
++    .eq('session_id', sessionId)
++    .in('kind', ['teacher_note', 'quick_check_result'])
++    .order('at', { ascending: true });
++  if (error) throw error;
++  return ((data ?? []) as { kind: string; payload: unknown }[]).map((e) => ({
++    kind: e.kind,
++    payload: e.payload && typeof e.payload === 'object' ? (e.payload as Record<string, unknown>) : {},
++  }));
++}
++
++/** The kinds of consent in force for the student: granted and not revoked. */
++async function consentsOf(studentId: string | null): Promise<Set<string>> {
++  if (!studentId) return new Set();
++  const { data, error } = await admin.from('lesson_consents').select('kind').eq('student_id', studentId).is('revoked_at', null);
++  if (error) throw error;
++  return new Set(((data ?? []) as { kind: string }[]).map((c) => c.kind));
++}
++
++async function courseNameOf(courseId: string | null): Promise<string | null> {
++  if (!courseId) return null;
++  const { data, error } = await admin.from('courses').select('name').eq('id', courseId).maybeSingle();
++  if (error) throw error;
++  return (data as { name: string | null } | null)?.name ?? null;
++}
++
++async function topicLabelsOf(courseId: string | null): Promise<string[]> {
++  if (!courseId) return [];
++  const { data, error } = await admin
++    .from('course_topics')
++    .select('label')
++    .eq('course_id', courseId)
++    .eq('is_active', true)
++    .order('sort_order', { ascending: true });
++  if (error) throw error;
++  return ((data ?? []) as { label: string | null }[]).map((t) => t.label?.trim() ?? '').filter(Boolean);
++}
++
++/** Titles already proposed or approved for the student from other lessons, so nothing is proposed twice. */
++async function openFollowupTitlesOf(studentId: string | null, sessionId: string): Promise<string[]> {
++  if (!studentId) return [];
++  const { data, error } = await admin
++    .from('lesson_followups')
++    .select('title')
++    .eq('student_id', studentId)
++    .neq('session_id', sessionId)
++    .in('status', ['proposed', 'approved']);
++  if (error) throw error;
++  return ((data ?? []) as { title: string | null }[]).map((f) => f.title?.trim() ?? '').filter(Boolean);
++}
++
++/** The homework the last published report on this course set, for prev_hw. */
++async function previousHomeworkOf(studentId: string | null, courseId: string | null, sessionId: string): Promise<string | null> {
++  if (!studentId || !courseId) return null;
++  const { data: reports, error } = await admin
++    .from('session_reports')
++    .select('session_request_id, homework, published_at')
++    .eq('student_id', studentId)
++    .eq('status', 'published')
++    .neq('session_request_id', sessionId)
++    .order('published_at', { ascending: false })
++    .limit(25);
++  if (error) throw error;
++  const rows = (reports ?? []) as { session_request_id: string; homework: string | null }[];
++  if (rows.length === 0) return null;
++  const { data: sessions, error: sessionsError } = await admin
++    .from('session_requests')
++    .select('id, course_id')
++    .in('id', rows.map((r) => r.session_request_id));
++  if (sessionsError) throw sessionsError;
++  const onCourse = new Set(((sessions ?? []) as { id: string; course_id: string | null }[]).filter((s) => s.course_id === courseId).map((s) => s.id));
++  const last = rows.find((r) => onCourse.has(r.session_request_id));
++  return last?.homework?.trim() || null;
++}
++
++/**
++ * In-lesson quick checks the student submitted, as test results. The
++ * practice tables are another migration's; a project without them yet
++ * reads as "no quick checks" rather than as a worker that cannot run.
++ */
++async function quickChecksOf(sessionId: string): Promise<{ name: string; score: number; out_of: number }[]> {
++  try {
++    const { data, error } = await admin
++      .from('practice_attempts')
++      .select('score, out_of, status, set:practice_sets(title, kind)')
++      .eq('session_id', sessionId)
++      .in('status', ['submitted', 'marked']);
++    if (error) throw error;
++    type Set = { title: string | null; kind: string | null };
++    type Row = { score: number | null; out_of: number | null; set: Set | Set[] | null };
++    const out: { name: string; score: number; out_of: number }[] = [];
++    for (const row of (data ?? []) as unknown as Row[]) {
++      // A to-one embed is an object on the wire; the client's types say array.
++      const set = Array.isArray(row.set) ? row.set[0] : row.set;
++      if (set?.kind !== 'quick_check') continue;
++      if (typeof row.score !== 'number' || typeof row.out_of !== 'number') continue;
++      out.push({ name: set.title?.trim() || 'Quick check', score: row.score, out_of: row.out_of });
++    }
++    return out;
++  } catch (error) {
++    console.warn(`[edge] lesson-finalize read no quick checks for ${sessionId}: ${String((error as Error)?.message ?? error)}`);
++    return [];
++  }
++}
++
++// --- helpers --------------------------------------------------------------------
++
++/** The teacher's note as the room writes it, whichever key it used. */
++function noteText(payload: Record<string, unknown>): string {
++  for (const key of ['text', 'note', 'body']) {
++    const v = payload[key];
++    if (typeof v === 'string' && v.trim()) return v.trim();
++  }
++  return '';
++}
++
++/** Daily's stored WebVTT for a transcript: an access link first, then the file it points at. */
++async function fetchDailyTranscript(transcriptId: string, apiKey: string): Promise<string> {
++  const link = await fetch(`https://api.daily.co/v1/transcript/${encodeURIComponent(transcriptId)}/access-link`, {
++    headers: { Authorization: `Bearer ${apiKey}` },
++    signal: AbortSignal.timeout(15_000),
++  });
++  if (!link.ok) throw new Error(`Daily access-link returned ${link.status}`);
++  const { link: url } = (await link.json()) as { link?: string };
++  if (!url) throw new Error('Daily access-link returned no link');
++  const file = await fetch(url, { signal: AbortSignal.timeout(30_000) });
++  if (!file.ok) throw new Error(`Daily transcript download returned ${file.status}`);
++  return await file.text();
++}
++
++function json(body: unknown, status = 200): Response {
++  return Response.json(body, { status });
++}
+diff --git a/supabase/migrations/20261013163945_a_lesson_that_ends_asks_for_its_draft.sql b/supabase/migrations/20261013163945_a_lesson_that_ends_asks_for_its_draft.sql
+new file mode 100644
+index 0000000..c059393
+--- /dev/null
++++ b/supabase/migrations/20261013163945_a_lesson_that_ends_asks_for_its_draft.sql
+@@ -0,0 +1,108 @@
++-- ---------------------------------------------------------------------------
++-- A lesson that ends asks for its draft.
++--
++-- Stage 4 of the lesson platform (online-lms/docs/INTEGRATION.md, "The
++-- draft"): lesson_end, after its three writes, asks the lesson-finalize edge
++-- function to compute what the lesson leaves behind -- the merged
++-- transcript, lesson_metrics, lesson_feedback, lesson_report_drafts and the
++-- proposed lesson_followups, all through worker_store_lesson_results.
++--
++-- AFTER THE WRITES, AND AFTER THE COMMIT. invoke_edge_function hands the
++-- request to pg_net, which sends it once this transaction is through, so the
++-- function reads the transcript this very call stored rather than the one
++-- before it. The body names the session and the reason ('end'); daily-webhook
++-- sends the same body with reason 'transcript' when Daily's stored transcript
++-- lands later, and the function replaces what it computed the first time.
++--
++-- NEVER IN THE WAY OF THE WRITE. A project with no functions_url in
++-- edge_config, or no service_role_key in Vault, is exactly the project
++-- invoke_edge_function was written to complain about -- and a teacher
++-- closing a lesson must not be the one it complains to. The ask is wrapped
++-- the way notify_push wraps its own: the exception becomes a warning in the
++-- Postgres log and a row on the lesson's own event log (kind
++-- finalize_not_asked, with the error), where the session's readers can see
++-- that no draft is coming and why. The booking's departed_at, the room's
++-- closed_at and the transcript are already written by then and stay written.
++--
++-- Re-emitted from pg_get_functiondef() against a database with every
++-- migration applied; the guarded perform at the end of the body is the only
++-- change. The comment, the revoke and the grant are restated so a paste of
++-- this file alone leaves the function exactly as 20261013152316 left it.
++-- ---------------------------------------------------------------------------
++CREATE OR REPLACE FUNCTION public.lesson_end(p_session_id uuid, p_segments jsonb DEFAULT '[]'::jsonb)
++ RETURNS void
++ LANGUAGE plpgsql
++ SECURITY DEFINER
++ SET search_path TO 'public'
++AS $function$
++declare
++  v_quiet text;
++  v_words integer;
++begin
++  if not public.reads_lesson(p_session_id)
++     or not exists (select 1 from public.session_requests s
++                     where s.id = p_session_id
++                       and s.mode = 'online'
++                       and s.status in ('confirmed', 'completed')) then
++    raise exception 'only the teacher, the room''s in-charge or an admin ends an online lesson'
++      using errcode = '42501';
++  end if;
++
++  v_quiet := coalesce(current_setting('app.push_quiet', true), '');
++  perform set_config('app.push_quiet', '1', true);
++
++  -- departed_at only. Not the booking's status: that is in
++  -- enqueue_session_sync's change list, and whatever closes online sessions
++  -- today keeps doing it.
++  update public.session_requests s
++     set departed_at = coalesce(s.departed_at, now())
++   where s.id = p_session_id;
++
++  insert into public.lesson_rooms (session_id, room_name, closed_at)
++  values (p_session_id, 'lesson-' || p_session_id::text, now())
++  on conflict (session_id) do update set closed_at = excluded.closed_at;
++
++  -- The transcript the room held. An end with no segments (a reconnect, a
++  -- second closer) leaves a transcript already written alone.
++  if jsonb_typeof(p_segments) = 'array' and jsonb_array_length(p_segments) > 0 then
++    select coalesce(sum(array_length(regexp_split_to_array(btrim(seg->>'text'), '\s+'), 1)), 0)::int
++      into v_words
++      from jsonb_array_elements(p_segments) seg
++     where nullif(btrim(coalesce(seg->>'text', '')), '') is not null;
++
++    insert into public.lesson_transcripts (session_id, segments, word_count)
++    values (p_session_id, p_segments, v_words)
++    on conflict (session_id) do update
++      set segments   = excluded.segments,
++          word_count = excluded.word_count,
++          updated_at = now();
++  end if;
++
++  perform set_config('app.push_quiet', v_quiet, true);
++
++  -- The draft, the coaching and the follow-ups are the worker's to compute,
++  -- once this has committed (pg_net sends after the transaction). Never in
++  -- the way of the writes above: a project that cannot ask still closes its
++  -- lessons, and the lesson's own log says the draft was not asked for.
++  begin
++    perform public.invoke_edge_function(
++      'lesson-finalize',
++      jsonb_build_object('session_id', p_session_id, 'reason', 'end'));
++  exception when others then
++    raise warning 'lesson_end(%) could not ask lesson-finalize for the draft: %', p_session_id, sqlerrm;
++    insert into public.lesson_events (session_id, kind, payload)
++    values (p_session_id, 'finalize_not_asked', jsonb_build_object('error', left(sqlerrm, 500)));
++  end;
++end;
++$function$;
++
++comment on function public.lesson_end(uuid, jsonb) is
++  'Closes an online lesson: departed_at on the booking (once, never the '
++  'status), closed_at on the room, and the transcript segments the room held '
++  'with their word count; then asks lesson-finalize for the draft, the '
++  'coaching and the follow-ups (a failure to ask is a finalize_not_asked '
++  'event, never a failed close). The teacher, the department''s in-charge '
++  'or an admin.';
++
++revoke all on function public.lesson_end(uuid, jsonb) from public;
++grant execute on function public.lesson_end(uuid, jsonb) to authenticated;
+diff --git a/supabase/probes/20261013163945.sql b/supabase/probes/20261013163945.sql
+new file mode 100644
+index 0000000..5c0f43a
+--- /dev/null
++++ b/supabase/probes/20261013163945.sql
+@@ -0,0 +1,17 @@
++  -- The ask is in the function, after every write and inside its own
++  -- exception block, and the door is still the same people's.
++  select '20261013163945', 'a lesson that ends asks for its draft',
++         'lesson_end invokes lesson-finalize with {session_id, reason: end} after the booking, room and transcript writes, inside an exception block that records finalize_not_asked; authenticated may still execute it and anon may not',
++         coalesce((select prosrc like '%invoke_edge_function(%'
++                      and prosrc like '%''lesson-finalize''%'
++                      and prosrc like '%''reason'', ''end''%'
++                      and strpos(prosrc, '''lesson-finalize''') > strpos(prosrc, 'insert into public.lesson_transcripts')
++                      and strpos(prosrc, '''lesson-finalize''') > strpos(prosrc, 'insert into public.lesson_rooms')
++                      and strpos(prosrc, '''lesson-finalize''') > strpos(prosrc, 'update public.session_requests')
++                      and strpos(prosrc, '''lesson-finalize''') > strpos(prosrc, 'set_config(''app.push_quiet'', v_quiet')
++                      and prosrc ~ 'begin\s+perform public\.invoke_edge_function\(\s*''lesson-finalize''[^;]*;\s*exception when others'
++                      and prosrc like '%finalize_not_asked%'
++                    from pg_proc
++                   where oid = to_regprocedure('public.lesson_end(uuid, jsonb)')), false)
++           and has_function_privilege('authenticated', to_regprocedure('public.lesson_end(uuid, jsonb)'), 'execute')
++           and not has_function_privilege('anon', to_regprocedure('public.lesson_end(uuid, jsonb)'), 'execute')
+diff --git a/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql b/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+index 1fca013..9a9fe9b 100644
+--- a/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
++++ b/supabase/tests/rls/20261013152318-the_room_writes_arrival_and_departure_onto_the_booking_and_nothing_else.sql
+@@ -448,9 +448,17 @@ select test_ok(
+   (select r.closed_at is not null from public.lesson_rooms r
+      where r.session_id = 'ab1e5502-0000-0000-0000-000000000001')
+ );
+-select test_ok(
+-  'ending pushed nobody and told the portal nothing',
+-  pg_temp.quiet_since('before end')
++-- Since 20261013163945 an end also asks lesson-finalize for the draft, one
++-- request per end -- the teacher's and the in-charge's, never the three
++-- refused ones. That is neither a push nor a word to the portal, so it is
++-- counted apart; 20261013163946 holds what the ask itself must carry.
++select test_ok(
++  'ending pushed nobody and told the portal nothing -- the only requests it queued were the two asks for its draft',
++  (select count(*) from net.http_request_queue q where q.url not like '%/lesson-finalize')
++    = (select m.pushes from marks m where m.what = 'before end')
++  and (select count(*) from public.sync_outbox)
++    = (select m.outbox from marks m where m.what = 'before end')
++  and (select count(*) from net.http_request_queue q where q.url like '%/lesson-finalize') = 2
+ );
+ 
+ -- Who reads what the lesson left behind.
+diff --git a/supabase/tests/rls/20261013163946-a_lesson_that_ends_asks_for_its_draft.sql b/supabase/tests/rls/20261013163946-a_lesson_that_ends_asks_for_its_draft.sql
+new file mode 100644
+index 0000000..b1ef5b9
+--- /dev/null
++++ b/supabase/tests/rls/20261013163946-a_lesson_that_ends_asks_for_its_draft.sql
+@@ -0,0 +1,189 @@
++-- ---------------------------------------------------------------------------
++-- A lesson that ends asks for its draft
++-- (migration 20261013163945; online-lms/docs/INTEGRATION.md, "The draft")
++--
++-- Closing a lesson is the one moment the database asks lesson-finalize to
++-- work: once, after the booking, the room and the transcript are written,
++-- naming the session and the reason, with the service-role bearer every
++-- function door the database calls carries. Nobody who could not end the
++-- lesson can make it ask. A second closer asks again, and the function is
++-- built to be asked twice. And a project that cannot ask -- no functions URL
++-- -- still closes the lesson, and leaves a line on the lesson's own log
++-- saying no draft is coming, rather than a teacher who cannot leave the
++-- room. The request queue is read directly: "asked" is a row, not a hope.
++-- ---------------------------------------------------------------------------
++begin;
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++
++insert into public.lesson_platform_rooms (department_id)
++values ('dddddddd-0000-0000-0000-0000000000fc')
++on conflict (department_id) do nothing;
++-- Erin is seated in Maths by the prologue; in charge of it is this section's
++-- to say, the way the two lesson sections before it do.
++update public.department_members set is_incharge = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++create function pg_temp.fin_fam() returns uuid language sql stable as $$
++  select family_id from public.profiles where id = '11111111-1111-1111-1111-111111111111'
++$$;
++
++-- 01 Ben with Frank, under way now; 02 the same, for the project that cannot ask.
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   department_id, assigned_teacher_id, mode, status, requested_start, confirmed_start,
++   duration_minutes, arrived_at)
++values
++  ('f1a15e00-0000-0000-0000-000000000001', pg_temp.fin_fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '55 minutes', now() - interval '55 minutes', 60, now() - interval '54 minutes'),
++  ('f1a15e00-0000-0000-0000-000000000002', pg_temp.fin_fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '55 minutes', now() - interval '55 minutes', 60, now() - interval '54 minutes');
++
++-- What the database asked for, read off pg_net's queue.
++create function pg_temp.asks(p_session uuid) returns bigint language sql stable as $$
++  select count(*) from net.http_request_queue q
++   where q.url = 'https://test.supabase.co/functions/v1/lesson-finalize'
++     and (q.body->>'session_id')::uuid = p_session
++$$;
++
++delete from net.http_request_queue;
++
++-- ---------------------------------------------------------------------------
++-- The teacher ends the lesson: three writes, then one ask.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, assigned
++select public.lesson_end('f1a15e00-0000-0000-0000-000000000001',
++  '[{"speaker": "teacher", "text": "How do we expand this bracket?", "start_ms": 0, "end_ms": 2500},
++    {"speaker": "student", "text": "Multiply each term inside", "start_ms": 4000, "end_ms": 6000}]');
++
++set local role postgres;
++select test_ok(
++  'ending a lesson asks lesson-finalize once, naming the session and the reason',
++  pg_temp.asks('f1a15e00-0000-0000-0000-000000000001') = 1
++  and exists (select 1 from net.http_request_queue q
++               where q.url = 'https://test.supabase.co/functions/v1/lesson-finalize'
++                 and q.method = 'POST'
++                 and q.body->>'session_id' = 'f1a15e00-0000-0000-0000-000000000001'
++                 and q.body->>'reason' = 'end')
++);
++select test_ok(
++  'with the service-role bearer every function door the database calls carries',
++  (select q.headers->>'Authorization' = 'Bearer test-service-role-key'
++          and q.headers->>'Content-Type' = 'application/json'
++     from net.http_request_queue q
++    where q.url = 'https://test.supabase.co/functions/v1/lesson-finalize'
++    limit 1)
++);
++select test_ok(
++  'and the transcript, the room and the booking were written for it to read',
++  (select t.word_count = 10 and jsonb_array_length(t.segments) = 2
++     from public.lesson_transcripts t where t.session_id = 'f1a15e00-0000-0000-0000-000000000001')
++  and (select r.closed_at is not null from public.lesson_rooms r
++        where r.session_id = 'f1a15e00-0000-0000-0000-000000000001')
++  and (select s.departed_at is not null from public.session_requests s
++        where s.id = 'f1a15e00-0000-0000-0000-000000000001')
++);
++select test_ok(
++  'the ask is the only thing on the queue: the booking''s own update stayed quiet toward phones',
++  (select count(*) from net.http_request_queue q
++    where q.url <> 'https://test.supabase.co/functions/v1/lesson-finalize') = 0
++);
++select test_ok(
++  'and the quiet flag did not walk out of lesson_end',
++  coalesce(current_setting('app.push_quiet', true), '') = ''
++);
++
++-- ---------------------------------------------------------------------------
++-- Nobody who could not end the lesson can make it ask.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita, in Maths, not assigned
++select test_ok(
++  'a teacher who was not assigned cannot end it',
++  raises_matching($$select public.lesson_end('f1a15e00-0000-0000-0000-000000000001')$$,
++                  'only the teacher')
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada, Ben's parent
++select test_ok(
++  'nor can the parent',
++  raises_matching($$select public.lesson_end('f1a15e00-0000-0000-0000-000000000001')$$,
++                  'only the teacher')
++);
++set local role anon;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok(
++  'nor a stranger',
++  raises($$select public.lesson_end('f1a15e00-0000-0000-0000-000000000001')$$)
++);
++set local role postgres;
++select test_ok(
++  'and none of them made it ask',
++  pg_temp.asks('f1a15e00-0000-0000-0000-000000000001') = 1
++);
++
++-- ---------------------------------------------------------------------------
++-- A second closer asks again; the function is built to be asked twice.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, in charge of Maths
++select public.lesson_end('f1a15e00-0000-0000-0000-000000000001');
++set local role postgres;
++select test_ok(
++  'the in-charge ending it again asks again and leaves the transcript already written alone',
++  pg_temp.asks('f1a15e00-0000-0000-0000-000000000001') = 2
++  and (select t.word_count = 10 from public.lesson_transcripts t
++        where t.session_id = 'f1a15e00-0000-0000-0000-000000000001')
++);
++
++-- ---------------------------------------------------------------------------
++-- A project that cannot ask still closes the lesson, and says so on the
++-- lesson's own log.
++-- ---------------------------------------------------------------------------
++update public.edge_config set functions_url = '' where id = 1;
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'with no functions URL the teacher still closes the lesson',
++  not raises($$select public.lesson_end('f1a15e00-0000-0000-0000-000000000002',
++                '[{"speaker": "teacher", "text": "Well done today", "start_ms": 0, "end_ms": 1500}]')$$)
++);
++set local role postgres;
++select test_ok(
++  'the writes landed',
++  (select s.departed_at is not null from public.session_requests s
++    where s.id = 'f1a15e00-0000-0000-0000-000000000002')
++  and exists (select 1 from public.lesson_transcripts t
++               where t.session_id = 'f1a15e00-0000-0000-0000-000000000002')
++);
++select test_ok(
++  'nothing was asked, and the lesson''s log says why',
++  pg_temp.asks('f1a15e00-0000-0000-0000-000000000002') = 0
++  and exists (select 1 from public.lesson_events e
++               where e.session_id = 'f1a15e00-0000-0000-0000-000000000002'
++                 and e.kind = 'finalize_not_asked'
++                 and e.payload->>'error' like '%functions_url%')
++);
++update public.edge_config set functions_url = 'https://test.supabase.co/functions/v1' where id = 1;
++
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'the teacher who taught the lesson reads that line',
++  (select count(*) from public.lesson_events
++    where session_id = 'f1a15e00-0000-0000-0000-000000000002' and kind = 'finalize_not_asked') = 1
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'the parent does not',
++  (select count(*) from public.lesson_events
++    where session_id = 'f1a15e00-0000-0000-0000-000000000002') = 0
++);
++rollback;
+-- 
+2.43.0
+

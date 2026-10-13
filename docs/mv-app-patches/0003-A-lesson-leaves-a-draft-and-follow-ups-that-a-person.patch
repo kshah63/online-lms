@@ -1,0 +1,1501 @@
+From 6c706a2d7a29bc357b991ccfe6e40289fb931a0f Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 13 Oct 2026 16:21:22 +0000
+Subject: [PATCH 3/9] A lesson leaves a draft and follow-ups that a person
+ approves
+
+What a finished online lesson leaves behind, and who may act on it:
+lesson_metrics, lesson_feedback (the teacher's own coaching), lesson_recordings
+(readable by the household only while the recording consent is in force),
+lesson_followups and ai_usage, all written by worker_store_lesson_results
+(service role, quiet for a lesson older than a day; a concern files a task in
+the room's pool at once, a retry proposes nothing twice).
+
+approve_followup keeps every family-facing word a person's: a teacher's yes
+only marks the row approved and pushes the room's in-charges; an in-charge
+or admin sends the message as themselves through start_family_direct and
+messages, writes the standing note through add_student_note, or files the
+task, and the row is done with the id written back. dismiss_followup says no.
+
+Two notify_push pairs join the list, so the three places that hold it
+(the migrations, DEPLOYMENT.md, send-push's header) say twenty-eight, and
+the schedule check now expects the fourteenth cron job.
+
+Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_016Yf774TAZaYcnfPt2CdeHJ
+---
+ __smoke__/push-triggers.test.ts               |   4 +-
+ ...the-schedule-check-names-every-job.test.ts |   6 +-
+ supabase/functions/send-push/index.ts         |   2 +
+ ..._and_follow_ups_that_a_person_approves.sql | 588 ++++++++++++++++
+ supabase/probes/20261013155425.sql            |  83 +++
+ ...a_task_can_carry_a_file_20260808000200.sql |  15 +-
+ ..._and_follow_ups_that_a_person_approves.sql | 653 ++++++++++++++++++
+ supabase/tests/schedule-check.sql             |   3 +-
+ 8 files changed, 1343 insertions(+), 11 deletions(-)
+ create mode 100644 supabase/migrations/20261013155425_a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+ create mode 100644 supabase/probes/20261013155425.sql
+ create mode 100644 supabase/tests/rls/20261013155426-a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+
+diff --git a/__smoke__/push-triggers.test.ts b/__smoke__/push-triggers.test.ts
+index 678f12f..b6aad94 100644
+--- a/__smoke__/push-triggers.test.ts
++++ b/__smoke__/push-triggers.test.ts
+@@ -86,9 +86,9 @@ function fromTheFunction(): string[] {
+ }
+ 
+ describe('what notifies', () => {
+-  test('the migrations wire up twenty-six table+event pairs', () => {
++  test('the migrations wire up twenty-eight table+event pairs', () => {
+     // Guards the two comparisons below: two empty lists match perfectly.
+-    expect(fromTheMigration()).toHaveLength(26);
++    expect(fromTheMigration()).toHaveLength(28);
+   });
+ 
+   test('docs/DEPLOYMENT.md lists exactly what the migration wires up', () => {
+diff --git a/__smoke__/the-schedule-check-names-every-job.test.ts b/__smoke__/the-schedule-check-names-every-job.test.ts
+index 97ca997..60935ac 100644
+--- a/__smoke__/the-schedule-check-names-every-job.test.ts
++++ b/__smoke__/the-schedule-check-names-every-job.test.ts
+@@ -71,13 +71,13 @@ test('and says how many that is, in words a reader can count against', () => {
+   expect({ count, saysSo: check.includes(`Expect ${words} rows:`) }).toEqual({ count, saysSo: true });
+ });
+ 
+-test('the deployment doc schedules the thirteen it says it does', () => {
++test('the deployment doc schedules the fourteen it says it does', () => {
+   // The doc counts them in its own prose ("Four of the thirteen must read t"),
+   // which is a third copy and drifts too. Cheap to hold to the setup block.
+   const jobs = scheduled();
+   const doc = readFileSync(join(ROOT, 'docs', 'DEPLOYMENT.md'), 'utf8');
+   const usesInvoke = jobs.filter((j) => j.usesInvokeEdgeFunction).length;
+ 
+-  expect({ total: jobs.length, usesInvoke }).toEqual({ total: 13, usesInvoke: 4 });
+-  expect(doc).toContain('Four of the thirteen must read `t`');
++  expect({ total: jobs.length, usesInvoke }).toEqual({ total: 14, usesInvoke: 4 });
++  expect(doc).toContain('Four of the fourteen must read `t`');
+ });
+diff --git a/supabase/functions/send-push/index.ts b/supabase/functions/send-push/index.ts
+index 196c832..31315bd 100644
+--- a/supabase/functions/send-push/index.ts
++++ b/supabase/functions/send-push/index.ts
+@@ -27,6 +27,8 @@
+ //   • UPDATE on public.session_reports           published to the family, or sent back
+ //   • INSERT on public.leave_requests            a leave request asks its deciders
+ //   • UPDATE on public.leave_requests            the decision answers its asker
++//   • INSERT on public.lesson_report_drafts      a report draft is ready, to the teacher who taught
++//   • UPDATE on public.lesson_followups          a follow-up approved by the teacher asks the room's in-charges to send it
+ //
+ // Plus one envelope that is not a webhook: `handoff_digest`, posted directly
+ // by release_deactivated_work and star_inherits_orphans (20260825003700) so a
+diff --git a/supabase/migrations/20261013155425_a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql b/supabase/migrations/20261013155425_a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+new file mode 100644
+index 0000000..0ffce9b
+--- /dev/null
++++ b/supabase/migrations/20261013155425_a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+@@ -0,0 +1,588 @@
++-- ---------------------------------------------------------------------------
++-- A lesson leaves a draft and follow-ups that a person approves.
++--
++-- Stage 3 of the lesson platform (online-lms/docs/INTEGRATION.md, "Reports"
++-- and "Follow-ups and notifications"): what the lesson-finalize function
++-- computes once a lesson has ended, and the one way any of it reaches a
++-- family or a task list -- through a person with the role the app already
++-- gives them, by the door that role already has.
++--
++-- WHAT THE WORKER WRITES. lesson_metrics (talk time, questions, wait time),
++-- lesson_feedback (the teacher's own coaching, never a family's business),
++-- lesson_report_drafts (a proposal in submit_report's shape; the table is
++-- 20261013152316's, this wires its push), lesson_followups (wins, concerns,
++-- misconceptions, logistics, exams, things to relay, tech trouble -- each
++-- with an action and a quote). lesson_recordings is the recording
++-- pipeline's. ai_usage is the model bill, an admin's to read. All of it
++-- lands through worker_store_lesson_results, service role only, which is
++-- quiet (app.push_quiet) when the caller says the lesson is old news.
++--
++-- NOTHING REACHES A FAMILY ON ITS OWN. A follow-up is proposed, and stays
++-- proposed until approve_followup. The assigned teacher's yes only moves it
++-- to approved -- the in-charge sends. The in-charge of the room (or an
++-- admin) creates the thing: a message to the household from themselves as a
++-- person (start_family_direct, then messages with sender_id = auth.uid(),
++-- because there is no system sender and the household should see a name),
++-- a message_tasks row the way schedule_call_back files one, or a standing
++-- note through add_student_note for the next two lessons. Every created id
++-- is written back onto the row. The one exception is a concern: the worker
++-- files its task in the room's pool at once, because a wellbeing worry
++-- waits for nobody's approval queue -- and it is a staff call, never an
++-- automatic message.
++--
++-- WHO READS WHAT. Metrics, feedback, recordings: reads_lesson (the assigned
++-- teacher, the room's in-charge, an admin). Follow-ups: the same three,
++-- through decides_followup, which is also the gate on approving and
++-- dismissing one. Families read nothing here, except a recording once the
++-- household has consented to recording -- and then only their own. Never
++-- is_staff() alone.
++--
++-- PUSH. notify_push is wired to lesson_report_drafts INSERT (the teacher:
++-- "your draft is ready") and lesson_followups UPDATE OF status (the
++-- in-charge: a teacher said yes, send it). send-push grows its cases
++-- separately; until then it ignores tables it does not know.
++-- ---------------------------------------------------------------------------
++
++create table if not exists public.lesson_metrics (
++  session_id        uuid primary key references public.session_requests (id) on delete cascade,
++  teacher_talk_pct  real,
++  student_talk_pct  real,
++  question_count    integer,
++  open_question_pct real,
++  avg_wait_ms       integer,
++  student_turns     integer,
++  praise_count      integer,
++  computed_at       timestamptz not null default now()
++);
++
++comment on table public.lesson_metrics is
++  'What the transcript measures about a lesson: who talked, how many '
++  'questions, how long the teacher waited. Written by lesson-finalize '
++  'through worker_store_lesson_results; read by the teacher, the room''s '
++  'in-charge and admins.';
++
++create table if not exists public.lesson_feedback (
++  session_id       uuid primary key references public.session_requests (id) on delete cascade,
++  teacher_id       uuid references public.profiles (id) on delete set null,
++  summary          text,
++  strengths        jsonb,
++  suggestions      jsonb,
++  dimension_scores jsonb,
++  moments          jsonb,
++  created_at       timestamptz not null default now()
++);
++
++comment on table public.lesson_feedback is
++  'Coaching feedback on how the lesson was taught, for the teacher who '
++  'taught it. Never a family''s to read.';
++
++create table if not exists public.lesson_recordings (
++  session_id            uuid primary key references public.session_requests (id) on delete cascade,
++  provider_recording_id text,
++  storage_path          text,
++  duration_s            integer,
++  recorded_at           timestamptz,
++  expires_at            timestamptz,
++  deleted_at            timestamptz
++);
++
++comment on table public.lesson_recordings is
++  'The recording of a lesson, where it is kept and until when. Written by '
++  'the recording pipeline (service role). A household reads its own once '
++  'the recording consent is in force.';
++
++create table if not exists public.lesson_followups (
++  id                       uuid primary key default gen_random_uuid(),
++  session_id               uuid not null references public.session_requests (id) on delete cascade,
++  student_id               uuid references public.profiles (id) on delete set null,
++  family_id                uuid references public.families (id) on delete set null,
++  department_id            uuid references public.departments (id) on delete set null,
++  kind                     text not null check (kind in ('win', 'concern', 'misconception', 'logistics',
++                                                         'exam_upcoming', 'ask_to_relay', 'tech_issue')),
++  action                   text not null check (action in ('share_with_parent', 'staff_task',
++                                                           'note_for_next_lesson', 'staff_call')),
++  priority                 text not null default 'normal' check (priority in ('low', 'normal', 'high')),
++  title                    text,
++  detail                   text,
++  quote                    text,
++  at_ms                    integer,
++  suggested_parent_message text,
++  status                   text not null default 'proposed'
++                           check (status in ('proposed', 'approved', 'dismissed', 'done')),
++  decided_by               uuid references public.profiles (id) on delete set null,
++  decided_at               timestamptz,
++  message_task_id          uuid references public.message_tasks (id) on delete set null,
++  note_id                  uuid references public.student_notes (id) on delete set null,
++  message_id               uuid references public.messages (id) on delete set null,
++  created_at               timestamptz not null default now()
++);
++
++comment on table public.lesson_followups is
++  'What the lesson transcript suggests somebody should do next, proposed by '
++  'lesson-finalize and decided by a person: the teacher''s yes moves it to '
++  'approved, the room''s in-charge (or an admin) sends it -- a message to '
++  'the household, a task, or a note -- and the created id is written back. '
++  'A concern files its task at once.';
++
++create index if not exists lesson_followups_session_idx
++  on public.lesson_followups (session_id);
++create index if not exists lesson_followups_queue_idx
++  on public.lesson_followups (department_id, status, created_at desc);
++
++create table if not exists public.ai_usage (
++  id         bigserial primary key,
++  user_id    uuid references public.profiles (id) on delete set null,
++  kind       text,
++  model      text,
++  tokens_in  integer,
++  tokens_out integer,
++  session_id uuid,
++  at         timestamptz not null default now()
++);
++
++comment on table public.ai_usage is
++  'One row per model call the edge functions make, for the bill. Written by '
++  'the service role; an admin''s to read.';
++
++alter table public.lesson_metrics    enable row level security;
++alter table public.lesson_feedback   enable row level security;
++alter table public.lesson_recordings enable row level security;
++alter table public.lesson_followups  enable row level security;
++alter table public.ai_usage          enable row level security;
++
++-- A stranger with the publishable key holds no write on any of these
++-- (20260901060458): the default grant to anon is taken back on every new
++-- table.
++revoke insert, update, delete, truncate, references, trigger on public.lesson_metrics    from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_feedback   from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_recordings from anon;
++revoke insert, update, delete, truncate, references, trigger on public.lesson_followups  from anon;
++revoke insert, update, delete, truncate, references, trigger on public.ai_usage          from anon;
++
++-- The service role writes the bill directly, so it needs the sequence too
++-- (the way sync_outbox_id_seq is granted in 20260728000700): a project's
++-- default privileges hand it out, a scratch database's do not.
++grant usage, select on sequence public.ai_usage_id_seq to service_role;
++
++-- ---------------------------------------------------------------------------
++-- decides_followup: the assigned teacher of the session, the in-charge of
++-- the room the follow-up sits in, an admin. The read policy and both doors
++-- ask this one function.
++-- ---------------------------------------------------------------------------
++create or replace function public.decides_followup(p_id uuid, uid uuid default auth.uid())
++returns boolean
++language sql
++stable security definer
++set search_path to 'public'
++as $$
++  select exists (
++    select 1
++      from public.lesson_followups f
++      join public.session_requests s on s.id = f.session_id
++     where f.id = p_id
++       and uid is not null
++       and (s.assigned_teacher_id = uid
++            or public.is_admin(uid)
++            or (f.department_id is not null
++                and public.is_incharge_of(f.department_id, uid)))
++  );
++$$;
++
++comment on function public.decides_followup(uuid, uuid) is
++  'Who reads, approves or dismisses a follow-up: the session''s assigned '
++  'teacher, the in-charge of the room it sits in, an admin.';
++
++revoke all on function public.decides_followup(uuid, uuid) from public;
++grant execute on function public.decides_followup(uuid, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- Policies: reads only. Every write is a door below, or the service role's.
++-- ---------------------------------------------------------------------------
++drop policy if exists lesson_metrics_select on public.lesson_metrics;
++create policy lesson_metrics_select on public.lesson_metrics
++  for select to authenticated using (public.reads_lesson(session_id));
++
++drop policy if exists lesson_feedback_select on public.lesson_feedback;
++create policy lesson_feedback_select on public.lesson_feedback
++  for select to authenticated using (public.reads_lesson(session_id));
++
++-- The household's one read in this migration: its own lesson's recording,
++-- while the recording consent for that child is in force.
++drop policy if exists lesson_recordings_select on public.lesson_recordings;
++create policy lesson_recordings_select on public.lesson_recordings
++  for select to authenticated using (
++    public.reads_lesson(session_id)
++    or exists (
++      select 1
++        from public.session_requests s
++        join public.profiles me on me.id = auth.uid()
++       where s.id = lesson_recordings.session_id
++         and s.family_id is not null
++         and me.family_id = s.family_id
++         and exists (select 1 from public.lesson_consents c
++                      where c.student_id = s.student_id
++                        and c.kind = 'recording'
++                        and c.revoked_at is null)
++    )
++  );
++
++drop policy if exists lesson_followups_select on public.lesson_followups;
++create policy lesson_followups_select on public.lesson_followups
++  for select to authenticated using (public.decides_followup(id));
++
++drop policy if exists ai_usage_select on public.ai_usage;
++create policy ai_usage_select on public.ai_usage
++  for select to authenticated using (public.is_admin());
++
++-- ---------------------------------------------------------------------------
++-- worker_store_lesson_results: lesson-finalize's one write, service role.
++--
++-- p_metrics, p_feedback and p_draft are objects or null (null leaves that
++-- table alone); p_followups is an array of {kind, action, priority, title,
++-- detail, quote, at_ms, suggested_parent_message}. A second run for the
++-- same lesson replaces the metrics, the feedback and the draft, and leaves
++-- the follow-ups it already proposed alone -- a retry must not propose
++-- everything twice, and a concern's task has already been filed.
++-- ---------------------------------------------------------------------------
++create or replace function public.worker_store_lesson_results(
++  p_session_id uuid,
++  p_metrics jsonb,
++  p_feedback jsonb,
++  p_draft jsonb,
++  p_draft_rationale text,
++  p_draft_source text,
++  p_followups jsonb,
++  p_quiet boolean default false)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  s       public.session_requests%rowtype;
++  v_quiet text;
++  r       jsonb;
++  v_id    uuid;
++  v_task  uuid;
++begin
++  select * into s from public.session_requests x where x.id = p_session_id;
++  if s.id is null then
++    raise exception 'no such session' using errcode = 'P0002';
++  end if;
++
++  -- Old news stays quiet toward phones; saved and restored, not cleared.
++  v_quiet := coalesce(current_setting('app.push_quiet', true), '');
++  if p_quiet then
++    perform set_config('app.push_quiet', '1', true);
++  end if;
++
++  if jsonb_typeof(p_metrics) = 'object' then
++    insert into public.lesson_metrics
++      (session_id, teacher_talk_pct, student_talk_pct, question_count,
++       open_question_pct, avg_wait_ms, student_turns, praise_count, computed_at)
++    values
++      (p_session_id,
++       (p_metrics->>'teacher_talk_pct')::real,
++       (p_metrics->>'student_talk_pct')::real,
++       (p_metrics->>'question_count')::integer,
++       (p_metrics->>'open_question_pct')::real,
++       (p_metrics->>'avg_wait_ms')::integer,
++       (p_metrics->>'student_turns')::integer,
++       (p_metrics->>'praise_count')::integer,
++       now())
++    on conflict (session_id) do update
++      set teacher_talk_pct  = excluded.teacher_talk_pct,
++          student_talk_pct  = excluded.student_talk_pct,
++          question_count    = excluded.question_count,
++          open_question_pct = excluded.open_question_pct,
++          avg_wait_ms       = excluded.avg_wait_ms,
++          student_turns     = excluded.student_turns,
++          praise_count      = excluded.praise_count,
++          computed_at       = excluded.computed_at;
++  end if;
++
++  if jsonb_typeof(p_feedback) = 'object' then
++    insert into public.lesson_feedback
++      (session_id, teacher_id, summary, strengths, suggestions, dimension_scores, moments)
++    values
++      (p_session_id, s.assigned_teacher_id,
++       p_feedback->>'summary', p_feedback->'strengths', p_feedback->'suggestions',
++       p_feedback->'dimension_scores', p_feedback->'moments')
++    on conflict (session_id) do update
++      set teacher_id       = excluded.teacher_id,
++          summary          = excluded.summary,
++          strengths        = excluded.strengths,
++          suggestions      = excluded.suggestions,
++          dimension_scores = excluded.dimension_scores,
++          moments          = excluded.moments;
++  end if;
++
++  if jsonb_typeof(p_draft) = 'object' then
++    -- The INSERT is what tells the teacher the draft is ready; a replaced
++    -- draft tells nobody twice.
++    insert into public.lesson_report_drafts (session_id, draft, rationale, source)
++    values (p_session_id, p_draft, p_draft_rationale, coalesce(p_draft_source, 'heuristic'))
++    on conflict (session_id) do update
++      set draft     = excluded.draft,
++          rationale = excluded.rationale,
++          source    = excluded.source;
++  end if;
++
++  if jsonb_typeof(p_followups) = 'array'
++     and not exists (select 1 from public.lesson_followups f where f.session_id = p_session_id) then
++    for r in select * from jsonb_array_elements(p_followups) loop
++      insert into public.lesson_followups
++        (session_id, student_id, family_id, department_id, kind, action, priority,
++         title, detail, quote, at_ms, suggested_parent_message)
++      values
++        (p_session_id, s.student_id, s.family_id, s.department_id,
++         r->>'kind', r->>'action', coalesce(r->>'priority', 'normal'),
++         r->>'title', r->>'detail', r->>'quote', (r->>'at_ms')::integer,
++         r->>'suggested_parent_message')
++      returning id into v_id;
++
++      -- A concern waits for nobody: a task in the room's pool, from the
++      -- teacher who taught the lesson, the way schedule_call_back files one.
++      -- A lesson with no room has no pool; the row stays proposed for an
++      -- admin to decide.
++      if r->>'kind' = 'concern' and s.department_id is not null then
++        insert into public.message_tasks
++          (department_id, assigned_by, student_id, family_id, note, due_at)
++        values
++          (s.department_id, s.assigned_teacher_id, s.student_id, s.family_id,
++           concat_ws(' — ', nullif(btrim(coalesce(r->>'title', '')), ''),
++                             nullif(btrim(coalesce(r->>'detail', '')), ''))
++             || ' (AI-extracted from the lesson transcript; verify before acting)',
++           now() + interval '1 day')
++        returning id into v_task;
++        update public.lesson_followups set message_task_id = v_task where id = v_id;
++      end if;
++    end loop;
++  end if;
++
++  perform set_config('app.push_quiet', v_quiet, true);
++end;
++$$;
++
++comment on function public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean) is
++  'Service role only (lesson-finalize). Stores a lesson''s metrics, coaching '
++  'feedback, report draft and proposed follow-ups; a concern files a task in '
++  'the room''s pool at once. Quiet toward phones when p_quiet. Follow-ups '
++  'already proposed for the session are left as they are.';
++
++revoke all on function public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)
++  from public, anon, authenticated;
++grant execute on function public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)
++  to service_role;
++
++-- ---------------------------------------------------------------------------
++-- approve_followup: a person says yes.
++--
++-- The assigned teacher's yes moves a proposed row to approved and creates
++-- nothing; the room's in-charge or an admin creates the thing and the row
++-- is done. By action:
++--   share_with_parent     a thread with the household (start_family_direct,
++--                         whose can_message_family is the whole rule on who
++--                         may) and a message from the approver as a person,
++--                         prefixed with whose lesson it was; p_text is the
++--                         approver's edit of the suggested wording
++--   note_for_next_lesson  add_student_note, standing, for the next two
++--                         lessons (its own rule: the centre, never a family)
++--   anything else         a message_tasks row in the room's pool, or to
++--                         p_assignee, from the approver, due tomorrow
++-- A row that already carries its task (a concern) is marked done without a
++-- second one.
++-- ---------------------------------------------------------------------------
++create or replace function public.approve_followup(p_id uuid, p_text text default null, p_assignee uuid default null)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  f         public.lesson_followups%rowtype;
++  v_teacher uuid;
++  v_sends   boolean;
++  v_text    text;
++  v_first   text;
++  v_conv    public.conversations%rowtype;
++  v_note    public.student_notes%rowtype;
++  v_task    public.message_tasks%rowtype;
++  v_msg     uuid;
++begin
++  select * into f from public.lesson_followups x where x.id = p_id;
++  if f.id is null then
++    raise exception 'no such follow-up' using errcode = 'P0002';
++  end if;
++  if not public.decides_followup(p_id) then
++    raise exception 'this follow-up is not yours to decide' using errcode = '42501';
++  end if;
++  if f.status not in ('proposed', 'approved') then
++    raise exception 'this follow-up has already been decided' using errcode = '22023';
++  end if;
++
++  select s.assigned_teacher_id into v_teacher
++    from public.session_requests s where s.id = f.session_id;
++  v_sends := public.is_admin()
++             or (f.department_id is not null and public.is_incharge_of(f.department_id));
++  v_text  := nullif(btrim(coalesce(p_text, '')), '');
++
++  if not v_sends then
++    -- The teacher's yes. The status change is what tells the in-charge.
++    if f.status <> 'approved' then
++      update public.lesson_followups
++         set status = 'approved', decided_by = auth.uid(), decided_at = now()
++       where id = p_id;
++    end if;
++    return;
++  end if;
++
++  if f.action = 'share_with_parent' then
++    if f.family_id is null then
++      raise exception 'this lesson has no household to share with' using errcode = '22023';
++    end if;
++    select split_part(public.display_name(p.full_name, p.preferred_name), ' ', 1)
++      into v_first
++      from public.profiles p where p.id = v_teacher;
++
++    -- The household thread. can_message_family inside is the one rule on
++    -- who may open one; a stranger to the family is refused there with its
++    -- own words. The child is passed so the thread is tagged whenever the
++    -- door tags one (it does so only when a person is named or seats are
++    -- chosen; the household thread itself stays untagged and seats everyone).
++    select * into v_conv
++      from public.start_family_direct(
++             f.family_id, coalesce(f.title, 'From the lesson'), null,
++             case when f.student_id is null then null else array[f.student_id] end, null);
++
++    -- The message is the approver's own, under the same rules the thread
++    -- holds anybody to.
++    if not public.is_approved() or not public.can_access_conversation(v_conv.id) then
++      raise exception 'you cannot write in that thread' using errcode = '42501';
++    end if;
++    insert into public.messages (conversation_id, sender_id, body)
++    values (v_conv.id, auth.uid(),
++            case when v_first is not null then 'From ' || v_first || '''s lesson today: '
++                 else 'From today''s lesson: ' end
++            || coalesce(v_text, nullif(btrim(coalesce(f.suggested_parent_message, '')), ''),
++                        concat_ws(' — ', f.title, f.detail)))
++    returning id into v_msg;
++
++    update public.lesson_followups
++       set message_id = v_msg, status = 'done', decided_by = auth.uid(), decided_at = now()
++     where id = p_id;
++
++  elsif f.action = 'note_for_next_lesson' then
++    if f.student_id is null then
++      raise exception 'this lesson names no student to write a note about' using errcode = '22023';
++    end if;
++    select * into v_note
++      from public.add_student_note(
++             left(coalesce(v_text, concat_ws(' — ', f.title, f.detail)), 2000),
++             f.student_id, null, null, null, 2);
++
++    update public.lesson_followups
++       set note_id = v_note.id, status = 'done', decided_by = auth.uid(), decided_at = now()
++     where id = p_id;
++
++  else
++    if f.message_task_id is null then
++      if p_assignee is not null and not exists (
++        select 1
++          from public.profiles p
++         where p.id = p_assignee
++           and p.role = 'staff'
++           and exists (select 1
++                         from public.department_members dm
++                         join public.departments d on d.id = dm.department_id
++                        where dm.user_id = p.id and d.kind = 'academic')
++      ) then
++        raise exception 'tasks go to an in-charge' using errcode = '42501';
++      end if;
++      if p_assignee is null and f.department_id is null then
++        raise exception 'this lesson has no room for the task to wait in; name an in-charge'
++          using errcode = '22023';
++      end if;
++
++      insert into public.message_tasks
++        (department_id, assigned_to, assigned_by, student_id, family_id, note, due_at)
++      values
++        (case when p_assignee is null then f.department_id end, p_assignee, auth.uid(),
++         f.student_id, f.family_id,
++         coalesce(v_text, concat_ws(' — ', f.title, f.detail))
++           || ' (AI-extracted from the lesson transcript; verify before acting)',
++         now() + interval '1 day')
++      returning * into v_task;
++
++      update public.lesson_followups set message_task_id = v_task.id where id = p_id;
++    end if;
++
++    update public.lesson_followups
++       set status = 'done', decided_by = auth.uid(), decided_at = now()
++     where id = p_id;
++  end if;
++end;
++$$;
++
++comment on function public.approve_followup(uuid, text, uuid) is
++  'Says yes to a proposed follow-up. The session''s teacher only moves it to '
++  'approved; the room''s in-charge or an admin creates the thing -- a message '
++  'to the household from themselves, a task (in the room''s pool, or to '
++  'p_assignee), or a standing note for the next two lessons -- writes its id '
++  'back and marks the row done. p_text is the approver''s wording.';
++
++revoke all on function public.approve_followup(uuid, text, uuid) from public;
++grant execute on function public.approve_followup(uuid, text, uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- dismiss_followup: the same three people say no.
++-- ---------------------------------------------------------------------------
++create or replace function public.dismiss_followup(p_id uuid)
++returns void
++language plpgsql
++security definer
++set search_path to 'public'
++as $$
++declare
++  v_status text;
++begin
++  select f.status into v_status from public.lesson_followups f where f.id = p_id;
++  if v_status is null then
++    raise exception 'no such follow-up' using errcode = 'P0002';
++  end if;
++  if not public.decides_followup(p_id) then
++    raise exception 'this follow-up is not yours to decide' using errcode = '42501';
++  end if;
++  if v_status not in ('proposed', 'approved') then
++    raise exception 'this follow-up has already been decided' using errcode = '22023';
++  end if;
++
++  update public.lesson_followups
++     set status = 'dismissed', decided_by = auth.uid(), decided_at = now()
++   where id = p_id;
++end;
++$$;
++
++comment on function public.dismiss_followup(uuid) is
++  'Says no to a proposed or approved follow-up: the session''s teacher, the '
++  'room''s in-charge or an admin. A task a concern already filed stays filed.';
++
++revoke all on function public.dismiss_followup(uuid) from public;
++grant execute on function public.dismiss_followup(uuid) to authenticated;
++
++-- ---------------------------------------------------------------------------
++-- Push. Two more pairs on notify_push, the way every other table carries it
++-- (20260809000100): AFTER, FOR EACH ROW. The draft's arrival is news to the
++-- teacher; a follow-up's status moving is news to the room's in-charge.
++-- ---------------------------------------------------------------------------
++drop trigger if exists push_lesson_report_drafts_insert on public.lesson_report_drafts;
++create trigger push_lesson_report_drafts_insert
++  after insert on public.lesson_report_drafts
++  for each row execute function public.notify_push();
++
++drop trigger if exists push_lesson_followups_update on public.lesson_followups;
++create trigger push_lesson_followups_update
++  after update of status on public.lesson_followups
++  for each row execute function public.notify_push();
++
++notify pgrst, 'reload schema';
+diff --git a/supabase/probes/20261013155425.sql b/supabase/probes/20261013155425.sql
+new file mode 100644
+index 0000000..9613a91
+--- /dev/null
++++ b/supabase/probes/20261013155425.sql
+@@ -0,0 +1,83 @@
++  -- What the worker leaves behind is there, row-secured, and readable only
++  -- through a policy that names a role.
++  select '20261013155425', 'a lesson leaves a draft and follow ups that a person approves',
++         'lesson_metrics, lesson_feedback, lesson_recordings, lesson_followups and ai_usage exist with RLS on and a select policy each; anon holds no write on any',
++         (select count(*) = 5 and bool_and(c.relrowsecurity)
++                 and bool_and(exists (select 1 from pg_policy p
++                                       where p.polrelid = c.oid and p.polcmd = 'r'))
++                 and bool_and(not has_table_privilege('anon', c.oid, 'insert')
++                              and not has_table_privilege('anon', c.oid, 'update')
++                              and not has_table_privilege('anon', c.oid, 'delete'))
++            from pg_class c
++            join pg_namespace n on n.oid = c.relnamespace
++           where n.nspname = 'public'
++             and c.relname in ('lesson_metrics', 'lesson_feedback', 'lesson_recordings',
++                               'lesson_followups', 'ai_usage'))
++           and to_regprocedure('public.decides_followup(uuid, uuid)') is not null
++
++  union all
++
++  -- The draft refuses what the report form would: a tenth prev_hw string
++  -- (the list is closed at nine) and an OTR of 83 (bands of five, 5..95).
++  select '20261013155425', 'a lesson leaves a draft and follow ups that a person approves',
++         'lesson_report_drafts_prev_hw_check admits exactly nine strings and lesson_report_drafts_otr_check only multiples of five between 5 and 95, so a tenth string and an OTR of 83 are refused',
++         coalesce((select (select count(*)
++                             from regexp_matches(substring(pg_get_constraintdef(oid) from 'ARRAY\[(.*)\]'),
++                                                 '::text', 'g')) = 9
++                     from pg_constraint
++                    where conname = 'lesson_report_drafts_prev_hw_check'
++                      and conrelid = to_regclass('public.lesson_report_drafts')), false)
++           and coalesce((select pg_get_constraintdef(oid) like '%>= 5%'
++                             and pg_get_constraintdef(oid) like '%<= 95%'
++                             and pg_get_constraintdef(oid) like '%% 5) = 0%'
++                           from pg_constraint
++                          where conname = 'lesson_report_drafts_otr_check'
++                            and conrelid = to_regclass('public.lesson_report_drafts')), false)
++
++  union all
++
++  -- The two new push pairs, wired the way every other one is: AFTER, FOR
++  -- EACH ROW, onto notify_push -- and the follow-up one scoped to status
++  -- alone, so writing an id back onto a row posts nothing.
++  select '20261013155425', 'a lesson leaves a draft and follow ups that a person approves',
++         'push_lesson_report_drafts_insert (AFTER INSERT) and push_lesson_followups_update (AFTER UPDATE OF status only) run notify_push for each row',
++         exists (select 1 from pg_trigger t
++                  where t.tgrelid = to_regclass('public.lesson_report_drafts')
++                    and t.tgname = 'push_lesson_report_drafts_insert'
++                    and t.tgfoid = to_regprocedure('public.notify_push()')
++                    and not t.tgisinternal and t.tgenabled <> 'D'
++                    and (t.tgtype & 1) <> 0      -- row
++                    and (t.tgtype & 2) = 0       -- after
++                    and (t.tgtype & 4) <> 0      -- insert
++                    and (t.tgtype & 16) = 0)     -- not update
++           and exists (select 1 from pg_trigger t
++                        where t.tgrelid = to_regclass('public.lesson_followups')
++                          and t.tgname = 'push_lesson_followups_update'
++                          and t.tgfoid = to_regprocedure('public.notify_push()')
++                          and not t.tgisinternal and t.tgenabled <> 'D'
++                          and (t.tgtype & 1) <> 0
++                          and (t.tgtype & 2) = 0
++                          and (t.tgtype & 16) <> 0
++                          and (t.tgtype & 4) = 0
++                          and (select array_agg(a.attname::text)
++                                 from unnest(t.tgattr) k(k)
++                                 join pg_attribute a on a.attrelid = t.tgrelid and a.attnum = k.k)
++                              = array['status'])
++
++  union all
++
++  -- The doors: the worker is the service role's alone and knows how to be
++  -- quiet; a person approves or dismisses.
++  select '20261013155425', 'a lesson leaves a draft and follow ups that a person approves',
++         'worker_store_lesson_results is executable by service_role only and sets app.push_quiet; approve_followup and dismiss_followup are callable by authenticated',
++         has_function_privilege('service_role',
++             to_regprocedure('public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)'), 'execute')
++           and not has_function_privilege('authenticated',
++             to_regprocedure('public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)'), 'execute')
++           and not has_function_privilege('anon',
++             to_regprocedure('public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)'), 'execute')
++           and coalesce((select prosrc like '%app.push_quiet%'
++                           from pg_proc
++                          where oid = to_regprocedure('public.worker_store_lesson_results(uuid, jsonb, jsonb, jsonb, text, text, jsonb, boolean)')), false)
++           and has_function_privilege('authenticated', to_regprocedure('public.approve_followup(uuid, text, uuid)'), 'execute')
++           and has_function_privilege('authenticated', to_regprocedure('public.dismiss_followup(uuid)'), 'execute')
+diff --git a/supabase/tests/rls/20260101000145-a_task_can_carry_a_file_20260808000200.sql b/supabase/tests/rls/20260101000145-a_task_can_carry_a_file_20260808000200.sql
+index 48dcb2c..661b551 100644
+--- a/supabase/tests/rls/20260101000145-a_task_can_carry_a_file_20260808000200.sql
++++ b/supabase/tests/rls/20260101000145-a_task_can_carry_a_file_20260808000200.sql
+@@ -354,7 +354,7 @@ select test_ok(
+  * payload for a hundred rows, so both are asserted rather than assumed.
+  */
+ select test_ok(
+-  'all twenty-six table+event pairs carry an after-each-row push trigger',
++  'all twenty-eight table+event pairs carry an after-each-row push trigger',
+   (select count(*) from (values
+       ('calls',                     'update'),
+       ('family_notices',            'insert'),
+@@ -389,7 +389,12 @@ select test_ok(
+       ('session_reports',           'insert'),
+       ('session_reports',           'update'),
+       ('leave_requests',            'insert'),
+-      ('leave_requests',            'update')
++      ('leave_requests',            'update'),
++      -- The lesson platform (20261013155425): the teacher hears their report
++      -- draft is ready; the room's in-charge hears a follow-up move, status
++      -- only, so an id written back onto the row posts nothing.
++      ('lesson_report_drafts',      'insert'),
++      ('lesson_followups',          'update')
+     ) as want(tbl, op)
+     where exists (
+       select 1
+@@ -404,16 +409,16 @@ select test_ok(
+          and (t.tgtype & 1) = 1                                        -- row
+          and (t.tgtype & 2) = 0                                        -- after
+          and (t.tgtype & case want.op when 'insert' then 4 else 16 end) <> 0
+-    )) = 26
++    )) = 28
+ );
+ 
+ -- The other direction. A twenty-seventh pair wired up here and not written into
+ -- docs/DEPLOYMENT.md is a notification nobody knows the app sends.
+ select test_ok(
+-  'and nothing beyond the twenty-six is wired to it',
++  'and nothing beyond the twenty-eight is wired to it',
+   (select count(*) from pg_trigger t
+      join pg_proc p on p.oid = t.tgfoid
+-    where p.proname = 'notify_push' and not t.tgisinternal) = 26
++    where p.proname = 'notify_push' and not t.tgisinternal) = 28
+ );
+ 
+ /*
+diff --git a/supabase/tests/rls/20261013155426-a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql b/supabase/tests/rls/20261013155426-a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+new file mode 100644
+index 0000000..15b5eba
+--- /dev/null
++++ b/supabase/tests/rls/20261013155426-a_lesson_leaves_a_draft_and_follow_ups_that_a_person_approves.sql
+@@ -0,0 +1,653 @@
++-- ---------------------------------------------------------------------------
++-- A lesson leaves a draft and follow-ups that a person approves
++-- (migration 20261013155425; online-lms/docs/INTEGRATION.md, "Reports" and
++-- "Follow-ups and notifications")
++--
++-- The worker's door is the service role's alone, and what it stores is read
++-- by the three people a policy already admits -- the assigned teacher, the
++-- room's in-charge, an admin -- and by nobody else: not a parent, not the
++-- child, not a teacher who was not assigned, not the desk. A recording is
++-- the one thing a household reads, and only once it has said yes to being
++-- recorded. The draft refuses a prev_hw the report form would not offer and
++-- an OTR that is not a band. Nothing a follow-up proposes reaches a family
++-- or a task list until a person approves it: the teacher's yes moves the
++-- row and creates nothing; the in-charge's yes creates a message from
++-- themselves, a task, or a note, under the rules those doors already hold
++-- (an unstarred in-charge cannot share with a family, a task cannot go to a
++-- teacher). A concern files its task at once. Every created id lands on the
++-- row, and a decided row is decided.
++-- ---------------------------------------------------------------------------
++begin;
++set local role postgres;
++select set_config('request.jwt.claim.sub', '', true);
++
++update public.edge_config set room_url = 'https://room.test' where id = 1;
++insert into public.lesson_platform_rooms (department_id)
++values ('dddddddd-0000-0000-0000-0000000000fc')
++on conflict (department_id) do nothing;
++update public.department_members set is_incharge = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++create function pg_temp.fam() returns uuid language sql stable as $$
++  select family_id from public.profiles where id = '11111111-1111-1111-1111-111111111111'
++$$;
++
++-- 01 Ben with Frank in Maths, ended an hour ago; 02 the same three days
++-- ago; 03 in Science, a day ago, for the draft's own constraints.
++insert into public.session_requests
++  (id, family_id, requested_by, student_id, student_name, subject, topic, course_id,
++   department_id, assigned_teacher_id, mode, status, requested_start, confirmed_start,
++   duration_minutes, arrived_at, departed_at)
++values
++  ('ab1e5503-0000-0000-0000-000000000001', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '2 hours', now() - interval '2 hours', 60,
++   now() - interval '2 hours', now() - interval '1 hour'),
++  ('ab1e5503-0000-0000-0000-000000000002', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Math AA HL', 'Vectors',
++   'cccccccc-0000-0000-0000-0000000000fa', 'dddddddd-0000-0000-0000-0000000000fc',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '3 days', now() - interval '3 days', 60,
++   now() - interval '3 days', now() - interval '3 days' + interval '1 hour'),
++  ('ab1e5503-0000-0000-0000-000000000003', pg_temp.fam(), '11111111-1111-1111-1111-111111111111',
++   '22222222-2222-2222-2222-222222222222', 'Ben Ashford', 'IB Physics HL', 'Waves',
++   'cccccccc-0000-0000-0000-0000000000fc', 'dddddddd-0000-0000-0000-0000000000fd',
++   '66666666-6666-6666-6666-666666666666', 'online', 'confirmed',
++   now() - interval '1 day', now() - interval '1 day', 60,
++   now() - interval '1 day', now() - interval '1 day' + interval '1 hour');
++
++insert into public.lesson_recordings
++  (session_id, provider_recording_id, storage_path, duration_s, recorded_at, expires_at)
++values ('ab1e5503-0000-0000-0000-000000000001', 'rec-5503-1',
++        'lesson-recordings/ab1e5503-0000-0000-0000-000000000001.mp4', 3500,
++        now() - interval '1 hour', now() + interval '30 days');
++
++-- Definer, so a person under test can name a row the policy hides from
++-- them: the refusal under test is the door's, not the lookup's.
++create function pg_temp.followup(p_kind text, p_session uuid default 'ab1e5503-0000-0000-0000-000000000001')
++returns public.lesson_followups language sql stable security definer as $$
++  select * from public.lesson_followups where kind = p_kind and session_id = p_session
++$$;
++
++-- Where the listeners stand, so "quiet" is measured rather than assumed.
++create temp table marks (what text, pushes bigint);
++create function pg_temp.mark(p_what text) returns void language sql as $$
++  insert into marks select p_what, (select count(*) from net.http_request_queue)
++$$;
++create function pg_temp.quiet_since(p_what text) returns boolean language sql stable as $$
++  select (select count(*) from net.http_request_queue) = (select pushes from marks where what = p_what)
++$$;
++delete from net.http_request_queue;
++select pg_temp.mark('before the worker');
++
++-- ---------------------------------------------------------------------------
++-- The worker's door is the service role's.
++-- ---------------------------------------------------------------------------
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal, admin
++select test_ok(
++  'an admin signed in through the app cannot store lesson results',
++  raises_matching($$select public.worker_store_lesson_results(
++                     'ab1e5503-0000-0000-0000-000000000001', null, null, null, null, null, null)$$,
++                  'permission denied')
++);
++set local role anon;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok(
++  'nor can a stranger',
++  raises_matching($$select public.worker_store_lesson_results(
++                     'ab1e5503-0000-0000-0000-000000000001', null, null, null, null, null, null)$$,
++                  'permission denied')
++);
++
++set local role service_role;
++select set_config('request.jwt.claim.sub', '', true);
++select test_ok(
++  'a lesson nobody booked has nothing to store against',
++  raises_matching($$select public.worker_store_lesson_results(
++                     'ab1e5503-0000-0000-0000-0000000000ff', null, null, null, null, null, null)$$,
++                  'no such session')
++);
++select public.worker_store_lesson_results(
++  'ab1e5503-0000-0000-0000-000000000001',
++  '{"teacher_talk_pct": 61.5, "student_talk_pct": 38.5, "question_count": 14,
++    "open_question_pct": 42.9, "avg_wait_ms": 2100, "student_turns": 31, "praise_count": 6}',
++  '{"summary": "Clear explanations; wait a beat longer after a question.",
++    "strengths": ["worked examples"], "suggestions": ["longer wait time"],
++    "dimension_scores": {"clarity": 4, "wait_time": 2}, "moments": []}',
++  '{"topic": "Vectors", "topic_completed": true, "understanding": 7, "otr": "85",
++    "prev_hw": "Yes", "homework": "Ex 4B q1-10", "remarks": "Ben worked steadily."}',
++  'understanding from 31 student turns and the oral check at 85%',
++  'ai',
++  '[{"kind": "win", "action": "share_with_parent", "priority": "normal",
++     "title": "Cracked the cross product", "detail": "Got every example right unaided",
++     "quote": "oh, I see it now", "at_ms": 1820000,
++     "suggested_parent_message": "Ben cracked the cross product today."},
++    {"kind": "misconception", "action": "note_for_next_lesson", "priority": "normal",
++     "title": "Mixed up dot and cross product", "detail": "Revisit next time"},
++    {"kind": "logistics", "action": "staff_task", "priority": "low",
++     "title": "Needs the Paper 2 formula booklet", "detail": "Did not have it on screen"},
++    {"kind": "concern", "action": "staff_call", "priority": "high",
++     "title": "Seemed very tired", "detail": "Said he had not slept before the exam week",
++     "quote": "I did not sleep", "at_ms": 600000},
++    {"kind": "exam_upcoming", "action": "staff_task", "priority": "normal",
++     "title": "Paper 1 mock on Friday", "detail": "Wants a past paper before then"}]',
++  false);
++
++set local role postgres;
++select test_ok(
++  'the metrics, the feedback (for the teacher who taught) and the draft are stored',
++  (select m.question_count = 14 and m.teacher_talk_pct = 61.5
++     from public.lesson_metrics m where m.session_id = 'ab1e5503-0000-0000-0000-000000000001')
++  and (select f.teacher_id = '66666666-6666-6666-6666-666666666666'
++            and f.summary like 'Clear explanations%'
++         from public.lesson_feedback f where f.session_id = 'ab1e5503-0000-0000-0000-000000000001')
++  and (select d.source = 'ai' and d.draft->>'otr' = '85' and d.rationale like 'understanding%'
++         from public.lesson_report_drafts d where d.session_id = 'ab1e5503-0000-0000-0000-000000000001')
++);
++select test_ok(
++  'five follow-ups are proposed, each carrying the booking''s student, household and room',
++  (select count(*) = 5 and bool_and(f.status = 'proposed')
++            and bool_and(f.student_id = '22222222-2222-2222-2222-222222222222')
++            and bool_and(f.family_id = pg_temp.fam())
++            and bool_and(f.department_id = 'dddddddd-0000-0000-0000-0000000000fc')
++     from public.lesson_followups f
++    where f.session_id = 'ab1e5503-0000-0000-0000-000000000001')
++);
++select test_ok(
++  'the concern filed a task in the room''s pool at once, from the teacher, due tomorrow, marked as the machine''s reading',
++  (select t.department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++          and t.assigned_to is null
++          and t.assigned_by = '66666666-6666-6666-6666-666666666666'
++          and t.student_id = '22222222-2222-2222-2222-222222222222'
++          and t.family_id = pg_temp.fam()
++          and t.note = 'Seemed very tired — Said he had not slept before the exam week (AI-extracted from the lesson transcript; verify before acting)'
++          and t.due_at between now() + interval '23 hours' and now() + interval '25 hours'
++     from public.message_tasks t
++    where t.id = (pg_temp.followup('concern')).message_task_id)
++);
++select test_ok(
++  'and nothing else filed one',
++  (select count(*) from public.lesson_followups f
++    where f.session_id = 'ab1e5503-0000-0000-0000-000000000001' and f.message_task_id is not null) = 1
++);
++select test_ok(
++  'the draft''s arrival and the concern''s task both reached the push queue',
++  exists (select 1 from net.http_request_queue q
++           where q.body->>'table' = 'lesson_report_drafts' and q.body->>'type' = 'INSERT')
++  and exists (select 1 from net.http_request_queue q
++               where q.body->>'table' = 'message_tasks' and q.body->>'type' = 'INSERT')
++);
++
++-- A retry: the draft is replaced and told to nobody twice; the follow-ups
++-- already proposed stand.
++delete from net.http_request_queue;
++set local role service_role;
++select public.worker_store_lesson_results(
++  'ab1e5503-0000-0000-0000-000000000001',
++  null, null,
++  '{"topic": "Vectors", "topic_completed": true, "understanding": 8, "otr": "85", "prev_hw": "Yes"}',
++  'second pass', 'ai',
++  '[{"kind": "win", "action": "share_with_parent", "title": "Again"}]',
++  false);
++set local role postgres;
++select test_ok(
++  'a second run replaces the draft and proposes nothing twice',
++  (select d.draft->>'understanding' = '8' and d.rationale = 'second pass'
++     from public.lesson_report_drafts d where d.session_id = 'ab1e5503-0000-0000-0000-000000000001')
++  and (select count(*) from public.lesson_followups f
++        where f.session_id = 'ab1e5503-0000-0000-0000-000000000001') = 5
++  and (select count(*) from public.lesson_metrics m
++        where m.session_id = 'ab1e5503-0000-0000-0000-000000000001') = 1
++  and not exists (select 1 from net.http_request_queue q
++                   where q.body->>'table' = 'lesson_report_drafts')
++);
++
++-- Old news, quietly.
++select pg_temp.mark('before the quiet run');
++set local role service_role;
++select public.worker_store_lesson_results(
++  'ab1e5503-0000-0000-0000-000000000002',
++  '{"question_count": 3}', null,
++  '{"topic": "Vectors", "understanding": 6}', 'a lesson three days old', 'heuristic',
++  '[{"kind": "win", "action": "share_with_parent", "title": "Settled in well",
++     "suggested_parent_message": "Ben settled in well."},
++    {"kind": "tech_issue", "action": "staff_task", "title": "Microphone dropped twice"},
++    {"kind": "concern", "action": "staff_call", "title": "Quiet all lesson"}]',
++  true);
++set local role postgres;
++select test_ok(
++  'a quiet run stores everything and pushes nobody, task included',
++  exists (select 1 from public.lesson_report_drafts d
++           where d.session_id = 'ab1e5503-0000-0000-0000-000000000002')
++  and (select count(*) from public.lesson_followups f
++        where f.session_id = 'ab1e5503-0000-0000-0000-000000000002') = 3
++  and (pg_temp.followup('concern', 'ab1e5503-0000-0000-0000-000000000002')).message_task_id is not null
++  and pg_temp.quiet_since('before the quiet run')
++);
++select test_ok(
++  'and the quiet flag did not walk out of the worker',
++  coalesce(current_setting('app.push_quiet', true), '') = ''
++);
++
++-- ---------------------------------------------------------------------------
++-- The draft refuses what the report form would.
++-- ---------------------------------------------------------------------------
++select test_ok(
++  'a tenth prev_hw string is refused',
++  raises_matching($$insert into public.lesson_report_drafts (session_id, draft, source)
++                    values ('ab1e5503-0000-0000-0000-000000000003',
++                            '{"topic": "Waves", "prev_hw": "Sometimes"}', 'ai')$$,
++                  'lesson_report_drafts_prev_hw_check')
++);
++select test_ok(
++  'an OTR of 83 is refused: bands of five only',
++  raises_matching($$insert into public.lesson_report_drafts (session_id, draft, source)
++                    values ('ab1e5503-0000-0000-0000-000000000003',
++                            '{"topic": "Waves", "otr": "83"}', 'ai')$$,
++                  'lesson_report_drafts_otr_check')
++);
++select test_ok(
++  'and so are 0 and 100, which the report''s own 0..100 check would take',
++  raises_matching($$insert into public.lesson_report_drafts (session_id, draft, source)
++                    values ('ab1e5503-0000-0000-0000-000000000003',
++                            '{"topic": "Waves", "otr": "0"}', 'ai')$$,
++                  'lesson_report_drafts_otr_check')
++  and raises_matching($$insert into public.lesson_report_drafts (session_id, draft, source)
++                        values ('ab1e5503-0000-0000-0000-000000000003',
++                                '{"topic": "Waves", "otr": "100"}', 'ai')$$,
++                      'lesson_report_drafts_otr_check')
++);
++insert into public.lesson_report_drafts (session_id, draft, source)
++values ('ab1e5503-0000-0000-0000-000000000003',
++        '{"topic": "Waves", "otr": "85", "prev_hw": "Not Done"}', 'heuristic');
++select test_ok(
++  'a band and one of the nine strings are taken, and so is a draft that names neither',
++  exists (select 1 from public.lesson_report_drafts
++           where session_id = 'ab1e5503-0000-0000-0000-000000000003')
++);
++
++-- ---------------------------------------------------------------------------
++-- Who reads what. Counted per person against lesson 01, which holds one
++-- row in every table.
++-- ---------------------------------------------------------------------------
++create function pg_temp.sees(p_what text) returns bigint language plpgsql stable as $$
++declare n bigint;
++begin
++  execute format('select count(*) from public.%I where session_id = %L',
++                 p_what, 'ab1e5503-0000-0000-0000-000000000001') into n;
++  return n;
++end;
++$$;
++create function pg_temp.sees_all() returns boolean language sql stable as $$
++  select pg_temp.sees('lesson_metrics') = 1 and pg_temp.sees('lesson_feedback') = 1
++     and pg_temp.sees('lesson_report_drafts') = 1 and pg_temp.sees('lesson_followups') = 5
++     and pg_temp.sees('lesson_recordings') = 1
++$$;
++create function pg_temp.sees_nothing() returns boolean language sql stable as $$
++  select pg_temp.sees('lesson_metrics') = 0 and pg_temp.sees('lesson_feedback') = 0
++     and pg_temp.sees('lesson_report_drafts') = 0 and pg_temp.sees('lesson_followups') = 0
++     and pg_temp.sees('lesson_recordings') = 0
++$$;
++
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank, assigned
++select test_ok('the teacher who taught the lesson reads all of it', pg_temp.sees_all());
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, in charge of Maths
++select test_ok('so does the in-charge of the room', pg_temp.sees_all());
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok('and an admin', pg_temp.sees_all());
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita, teacher in Maths, not assigned
++select test_ok('a teacher in the room who was not assigned reads none of it', pg_temp.sees_nothing());
++select act_as('cccc9999-9999-9999-9999-999999999999');   -- Tara, teaches Ben elsewhere
++select test_ok('nor a teacher who teaches the child in another subject', pg_temp.sees_nothing());
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, support desk
++select test_ok('nor the desk', pg_temp.sees_nothing());
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada, Ben's parent
++select test_ok('nor the parent -- the transcript''s readings are not the household''s', pg_temp.sees_nothing());
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok('nor the child', pg_temp.sees_nothing());
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo, another family
++select test_ok('nor a parent in another family', pg_temp.sees_nothing());
++
++-- The recording is the household's once it has said yes.
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', true);
++select test_ok(
++  'with the recording consent in force the parent reads the recording row, and still nothing else',
++  pg_temp.sees('lesson_recordings') = 1
++  and pg_temp.sees('lesson_metrics') = 0 and pg_temp.sees('lesson_feedback') = 0
++  and pg_temp.sees('lesson_report_drafts') = 0 and pg_temp.sees('lesson_followups') = 0
++);
++select act_as('22222222-2222-2222-2222-222222222222');   -- Ben
++select test_ok('the child in that household reads it too', pg_temp.sees('lesson_recordings') = 1);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok('another family does not', pg_temp.sees('lesson_recordings') = 0);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'transcript', true);
++select public.set_lesson_consent('22222222-2222-2222-2222-222222222222', 'recording', false);
++select test_ok(
++  'a consent to something else is not a consent to this, and a revoked one is gone',
++  pg_temp.sees('lesson_recordings') = 0
++);
++
++-- ---------------------------------------------------------------------------
++-- The bill is an admin's.
++-- ---------------------------------------------------------------------------
++set local role service_role;
++select set_config('request.jwt.claim.sub', '', true);
++insert into public.ai_usage (user_id, kind, model, tokens_in, tokens_out, session_id)
++values (null, 'lesson_finalize', 'test-model', 1200, 300, 'ab1e5503-0000-0000-0000-000000000001');
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select test_ok('an admin reads the model bill',
++  (select count(*) from public.ai_usage where session_id = 'ab1e5503-0000-0000-0000-000000000001') = 1);
++select test_ok(
++  'but does not write it by hand',
++  raises($$insert into public.ai_usage (kind, model) values ('by hand', 'x')$$)
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok('an in-charge does not read it',
++  (select count(*) from public.ai_usage where session_id = 'ab1e5503-0000-0000-0000-000000000001') = 0);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok('nor the teacher whose lesson it was',
++  (select count(*) from public.ai_usage where session_id = 'ab1e5503-0000-0000-0000-000000000001') = 0);
++
++-- ---------------------------------------------------------------------------
++-- Nobody writes a follow-up by hand.
++-- ---------------------------------------------------------------------------
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++update public.lesson_followups set status = 'done'
++ where id = (pg_temp.followup('win')).id;
++select test_ok(
++  'an in-charge cannot move a follow-up by hand',
++  (select status from public.lesson_followups where id = (pg_temp.followup('win')).id) = 'proposed'
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select test_ok(
++  'nor can the teacher propose one by hand',
++  raises($$insert into public.lesson_followups (session_id, kind, action, title)
++           values ('ab1e5503-0000-0000-0000-000000000001', 'win', 'share_with_parent', 'by hand')$$)
++);
++
++-- ---------------------------------------------------------------------------
++-- Approving: who may, and what each yes creates.
++-- ---------------------------------------------------------------------------
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a parent cannot approve a follow-up about her own child',
++  raises_matching(format($$select public.approve_followup(%L)$$, (pg_temp.followup('win')).id),
++                  'not yours to decide')
++);
++select act_as('77777777-7777-7777-7777-777777777777');   -- Gita
++select test_ok(
++  'nor can a teacher who was not assigned',
++  raises_matching(format($$select public.approve_followup(%L)$$, (pg_temp.followup('win')).id),
++                  'not yours to decide')
++);
++select act_as('44444444-4444-4444-4444-444444444444');   -- Dana, the desk
++select test_ok(
++  'nor the desk, who could message the family but was not in the lesson',
++  raises_matching(format($$select public.approve_followup(%L)$$, (pg_temp.followup('win')).id),
++                  'not yours to decide')
++);
++select test_ok(
++  'a follow-up nobody proposed is nothing',
++  raises_matching($$select public.approve_followup('ab1e5503-0000-0000-0000-0000000000ff')$$,
++                  'no such follow-up')
++);
++
++-- The teacher's yes: the row moves, nothing is created, the in-charge hears.
++set local role postgres;
++delete from net.http_request_queue;
++-- Counted past RLS on both sides: earlier sections leave the household
++-- threads of their own, and a teacher under test sees only the ones he is in.
++create function pg_temp.family_threads() returns bigint language sql stable security definer as $$
++  select count(*) from public.conversations where family_id = pg_temp.fam()
++$$;
++create temp table threads_before as select pg_temp.family_threads() as n;
++grant select on threads_before to public;   -- read below by the person under test
++set local role authenticated;
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select public.approve_followup((pg_temp.followup('win')).id);
++select test_ok(
++  'the teacher''s yes moves the win to approved and opens no thread',
++  (select f.status = 'approved' and f.decided_by = '66666666-6666-6666-6666-666666666666'
++          and f.decided_at is not null and f.message_id is null
++     from public.lesson_followups f where f.id = (pg_temp.followup('win')).id)
++  and pg_temp.family_threads() = (select n from threads_before)
++);
++select test_ok(
++  'the teacher saying yes twice changes nothing and is no error',
++  not raises(format($$select public.approve_followup(%L)$$, (pg_temp.followup('win')).id))
++  and (select f.status = 'approved' from public.lesson_followups f
++        where f.id = (pg_temp.followup('win')).id)
++);
++set local role postgres;
++select test_ok(
++  'the status moving is what the push queue hears, with the new status on it',
++  exists (select 1 from net.http_request_queue q
++           where q.body->>'table' = 'lesson_followups' and q.body->>'type' = 'UPDATE'
++             and q.body->'record'->>'status' = 'approved'
++             and q.body->'old_record'->>'status' = 'proposed')
++);
++
++-- An in-charge without the star cannot share with the family: the thread
++-- door's own rule, from its one place.
++update public.department_members set is_head = false
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin, unstarred
++select test_ok(
++  'an unstarred in-charge cannot send a win to the family',
++  raises_matching(format($$select public.approve_followup(%L, 'Ben cracked it.')$$,
++                         (pg_temp.followup('win')).id),
++                  'not under your courses')
++);
++set local role postgres;
++update public.department_members set is_head = true
++ where department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++   and user_id = '55555555-5555-5555-5555-555555555555';
++
++-- The starred in-charge sends: a household thread about Ben, a message from
++-- Erin as a person, in the words she chose, prefixed with whose lesson.
++delete from net.http_request_queue;
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select public.approve_followup((pg_temp.followup('win')).id, 'Ben cracked the cross product today -- every example right unaided.');
++set local role postgres;
++create temp table sent as
++  select f.message_id, m.conversation_id, m.sender_id, m.body
++    from public.lesson_followups f
++    join public.messages m on m.id = f.message_id
++   where f.id = (pg_temp.followup('win')).id;
++grant select on sent to public;   -- read below by the people under test
++select test_ok(
++  'the in-charge''s yes is done, with the message written back onto the row',
++  (select f.status = 'done' and f.decided_by = '55555555-5555-5555-5555-555555555555'
++     from public.lesson_followups f where f.id = (pg_temp.followup('win')).id)
++  and (select count(*) from sent) = 1
++);
++select test_ok(
++  'the message is from the approver, in her words, saying whose lesson it was',
++  (select s.sender_id = '55555555-5555-5555-5555-555555555555'
++          and s.body = 'From Frank''s lesson today: Ben cracked the cross product today -- every example right unaided.'
++     from sent s)
++);
++-- The household thread, untagged: start_family_direct only tags a child
++-- when a person is named or seats are chosen, and the household thread is
++-- the one that seats every parent.
++select test_ok(
++  'the thread is the household''s, owned by the in-charge who opened it, and seats the parent and the child',
++  (select c.family_id = pg_temp.fam() and c.kind = 'direct' and c.audience = 'household'
++          and c.assigned_to = '55555555-5555-5555-5555-555555555555'
++     from public.conversations c where c.id = (select conversation_id from sent))
++  and (select count(*) from public.conversation_participants cp
++        where cp.conversation_id = (select conversation_id from sent)
++          and cp.user_id in ('11111111-1111-1111-1111-111111111111',
++                             '22222222-2222-2222-2222-222222222222')) = 2
++);
++select test_ok(
++  'and the family''s phones heard it',
++  exists (select 1 from net.http_request_queue q
++           where q.body->>'table' = 'messages' and q.body->>'type' = 'INSERT'
++             and (q.body->'record'->>'id')::uuid = (select message_id from sent))
++);
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'the message satisfies every rule messages_insert holds the approver to',
++  (select m.sender_id = auth.uid()
++          and public.is_approved()
++          and public.can_access_conversation(m.conversation_id)
++          and not public.family_reply_gate(m.conversation_id)
++     from public.messages m where m.id = (select message_id from sent))
++);
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'the parent reads the thread and the message in it',
++  (select count(*) from public.conversations where id = (select conversation_id from sent)) = 1
++  and (select count(*) from public.messages where id = (select message_id from sent)) = 1
++);
++select act_as('33333333-3333-3333-3333-333333333333');   -- Cleo
++select test_ok(
++  'another family does not',
++  (select count(*) from public.messages where id = (select message_id from sent)) = 0
++);
++
++-- A task: in the room's pool from the approver, or to a named in-charge --
++-- never to a teacher.
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'a task cannot be handed to a teacher',
++  raises_matching(format($$select public.approve_followup(%L, null, '77777777-7777-7777-7777-777777777777')$$,
++                         (pg_temp.followup('logistics')).id),
++                  'tasks go to an in-charge')
++);
++select public.approve_followup((pg_temp.followup('logistics')).id);
++set local role postgres;
++select test_ok(
++  'the logistics item becomes a task in the room''s pool, from the in-charge, due tomorrow',
++  (select f.status = 'done' and f.message_task_id is not null
++     from public.lesson_followups f where f.id = (pg_temp.followup('logistics')).id)
++  and (select t.department_id = 'dddddddd-0000-0000-0000-0000000000fc'
++              and t.assigned_to is null
++              and t.assigned_by = '55555555-5555-5555-5555-555555555555'
++              and t.student_id = '22222222-2222-2222-2222-222222222222'
++              and t.family_id = pg_temp.fam()
++              and t.note = 'Needs the Paper 2 formula booklet — Did not have it on screen (AI-extracted from the lesson transcript; verify before acting)'
++              and t.due_at between now() + interval '23 hours' and now() + interval '25 hours'
++         from public.message_tasks t
++        where t.id = (pg_temp.followup('logistics')).message_task_id)
++);
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select public.approve_followup((pg_temp.followup('exam_upcoming')).id,
++                               'Pull a Paper 1 past paper for Ben before Friday',
++                               '55555555-5555-5555-5555-555555555555');
++set local role postgres;
++select test_ok(
++  'a named in-charge gets the task on their own list, in the approver''s words',
++  (select t.assigned_to = '55555555-5555-5555-5555-555555555555'
++          and t.department_id is null
++          and t.note = 'Pull a Paper 1 past paper for Ben before Friday (AI-extracted from the lesson transcript; verify before acting)'
++     from public.message_tasks t
++    where t.id = (pg_temp.followup('exam_upcoming')).message_task_id)
++);
++
++-- A note for the next lessons, through the notes door.
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select public.approve_followup((pg_temp.followup('misconception')).id);
++set local role postgres;
++select test_ok(
++  'the misconception becomes a standing note about Ben for the next two lessons, by the in-charge',
++  (select n.kind = 'standing' and n.student_id = '22222222-2222-2222-2222-222222222222'
++          and n.applies_to_next = 2 and n.author_id = '55555555-5555-5555-5555-555555555555'
++          and n.body = 'Mixed up dot and cross product — Revisit next time'
++     from public.student_notes n
++    where n.id = (pg_temp.followup('misconception')).note_id)
++  and (select f.status = 'done' from public.lesson_followups f
++        where f.id = (pg_temp.followup('misconception')).id)
++);
++
++-- A concern already has its task.
++create temp table tasks_before as select count(*) as n from public.message_tasks;
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select public.approve_followup((pg_temp.followup('concern')).id);
++set local role postgres;
++select test_ok(
++  'approving a concern marks it done without filing a second task',
++  (select f.status = 'done' from public.lesson_followups f
++    where f.id = (pg_temp.followup('concern')).id)
++  and (select count(*) from public.message_tasks) = (select n from tasks_before)
++);
++
++-- Decided is decided.
++set local role authenticated;
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'a follow-up already sent cannot be approved again',
++  raises_matching(format($$select public.approve_followup(%L)$$, (pg_temp.followup('win')).id),
++                  'already been decided')
++);
++select test_ok(
++  'nor dismissed',
++  raises_matching(format($$select public.dismiss_followup(%L)$$, (pg_temp.followup('win')).id),
++                  'already been decided')
++);
++
++-- ---------------------------------------------------------------------------
++-- Dismissing, on the older lesson.
++-- ---------------------------------------------------------------------------
++select act_as('11111111-1111-1111-1111-111111111111');   -- Ada
++select test_ok(
++  'a parent cannot dismiss one',
++  raises_matching(format($$select public.dismiss_followup(%L)$$,
++                         (pg_temp.followup('tech_issue', 'ab1e5503-0000-0000-0000-000000000002')).id),
++                  'not yours to decide')
++);
++select act_as('66666666-6666-6666-6666-666666666666');   -- Frank
++select public.dismiss_followup((pg_temp.followup('tech_issue', 'ab1e5503-0000-0000-0000-000000000002')).id);
++select test_ok(
++  'the teacher dismisses a tech issue',
++  (select f.status = 'dismissed' and f.decided_by = '66666666-6666-6666-6666-666666666666'
++     from public.lesson_followups f
++    where f.id = (pg_temp.followup('tech_issue', 'ab1e5503-0000-0000-0000-000000000002')).id)
++);
++select act_as('55555555-5555-5555-5555-555555555555');   -- Erin
++select test_ok(
++  'and a dismissed one is not approved afterwards',
++  raises_matching(format($$select public.approve_followup(%L)$$,
++                         (pg_temp.followup('tech_issue', 'ab1e5503-0000-0000-0000-000000000002')).id),
++                  'already been decided')
++);
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select public.approve_followup((pg_temp.followup('win', 'ab1e5503-0000-0000-0000-000000000002')).id);
++set local role postgres;
++select test_ok(
++  'an admin sends a win too, as themselves',
++  (select f.status = 'done' and m.sender_id = '88888888-8888-8888-8888-888888888888'
++          and m.body = 'From Frank''s lesson today: Ben settled in well.'
++     from public.lesson_followups f
++     join public.messages m on m.id = f.message_id
++    where f.id = (pg_temp.followup('win', 'ab1e5503-0000-0000-0000-000000000002')).id)
++);
++set local role authenticated;
++select act_as('88888888-8888-8888-8888-888888888888');   -- Hal
++select public.dismiss_followup((pg_temp.followup('concern', 'ab1e5503-0000-0000-0000-000000000002')).id);
++set local role postgres;
++select test_ok(
++  'dismissing a concern leaves the task it already filed where it is',
++  (select f.status = 'dismissed' from public.lesson_followups f
++    where f.id = (pg_temp.followup('concern', 'ab1e5503-0000-0000-0000-000000000002')).id)
++  and exists (select 1 from public.message_tasks t
++               where t.id = (pg_temp.followup('concern', 'ab1e5503-0000-0000-0000-000000000002')).message_task_id
++                 and t.status = 'pending')
++);
++rollback;
+diff --git a/supabase/tests/schedule-check.sql b/supabase/tests/schedule-check.sql
+index b396c5f..f218c59 100644
+--- a/supabase/tests/schedule-check.sql
++++ b/supabase/tests/schedule-check.sql
+@@ -42,13 +42,14 @@ select
+ from cron.job
+ order by jobname;
+ 
+--- Expect thirteen rows:
++-- Expect fourteen rows:
+ --   mv-call-coverage     0 4 * * 1-4   t   f
+ --   mv-dead-rings        * * * * *     t   f
+ --   mv-drain-push        * * * * *     t   t
+ --   mv-due-reminders     * * * * *     t   f
+ --   mv-due-tasks         * * * * *     t   f
+ --   mv-exports           */5 * * * *   t   t
++--   mv-lesson-tickets    0 * * * *     t   f
+ --   mv-no-shows          */5 * * * *   t   f
+ --   mv-report-nudges     30 3 * * 1-5  t   f
+ --   mv-scan-attachments  * * * * *     t   t
+-- 
+2.43.0
+
