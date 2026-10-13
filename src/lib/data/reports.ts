@@ -1,51 +1,34 @@
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { buildDemoSessions, demoReports } from "@/lib/demo/data";
+import { demoReports } from "@/lib/demo/data";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
 import { DEMO_LESSON_TRANSCRIPT } from "@/lib/coaching/demo-transcript";
 import { computeMetrics, type SessionMetrics, type TranscriptSegment } from "@/lib/coaching/metrics";
-import type { Profile, Report, SessionView } from "@/lib/types";
+import type { OnlineLesson, Profile, Report } from "@/lib/types";
 
-const SELECT = `
-  *,
-  course:courses(id,name,subject,materials_course_id),
-  student:profiles!sessions_student_id_fkey(id,display_name,timezone,avatar_url),
-  teacher:profiles!sessions_teacher_id_fkey(id,display_name,timezone,avatar_url)
-`;
+// ============================================================================
+// Reports, behind the data layer. online-lms's reports table is retired: the
+// centre's reports are mv-app's session_reports (written by submit_report, read
+// through the app) and the AI draft is lesson_report_drafts. my_online_lessons
+// already carries report_id, report_status and draft_ready per lesson. The
+// next stage ports these readers; until then the live paths return nothing.
+// ============================================================================
 
+/** The legacy report for a session (demo only). TODO(next stage): session_reports via my_online_lessons.report_id. */
 export async function getReport(sessionId: string): Promise<Report | null> {
   if (isDemoMode) return demoReports.find((r) => r.session_id === sessionId) ?? null;
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase.from("reports").select("*").eq("session_id", sessionId).maybeSingle();
-  if (error) throw error;
-  return (data as Report) ?? null;
+  return null;
 }
 
 /** A teacher's completed lessons paired with their report status (for the queue). */
 export async function getTeacherReportQueue(
   teacher: Profile,
-): Promise<{ session: SessionView; report: Report | null }[]> {
+): Promise<{ lesson: OnlineLesson; report: Report | null }[]> {
   const nowISO = new Date().toISOString();
-
-  if (isDemoMode) {
-    const sessions = buildDemoSessions()
-      .filter((s) => s.teacher_id === teacher.id && s.status === "completed" && s.scheduled_end < nowISO)
-      .sort((a, b) => (a.scheduled_start < b.scheduled_start ? 1 : -1));
-    return sessions.map((s) => ({ session: s, report: demoReports.find((r) => r.session_id === s.id) ?? null }));
-  }
-
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase
-    .from("sessions")
-    .select(`${SELECT}, report:reports(*)`)
-    .eq("teacher_id", teacher.id)
-    .eq("status", "completed")
-    .order("scheduled_start", { ascending: false })
-    .limit(40);
-  if (error) throw error;
-  return ((data ?? []) as unknown as (SessionView & { report: Report[] | Report | null })[]).map((row) => {
-    const report = Array.isArray(row.report) ? (row.report[0] ?? null) : row.report;
-    return { session: row, report };
-  });
+  const lessons = (await listMyOnlineLessons(teacher, 30))
+    .filter((l) => l.seat === "host" && l.status === "completed" && l.effective_start < nowISO)
+    .sort((a, b) => (a.effective_start < b.effective_start ? 1 : -1));
+  const rows = await Promise.all(lessons.map(async (lesson) => ({ lesson, report: await getReport(lesson.session_id) })));
+  return rows;
 }
 
 /** Transcript segments + metrics for a session, for AI report drafting. */
@@ -57,14 +40,7 @@ export async function getSessionTranscript(
     const segments = DEMO_LESSON_TRANSCRIPT;
     return { segments, metrics: computeMetrics(segments) };
   }
-
-  const supabase = createSupabaseServerClient()!;
-  const [{ data: t }, { data: m }] = await Promise.all([
-    supabase.from("transcripts").select("segments").eq("session_id", sessionId).maybeSingle(),
-    supabase.from("session_metrics").select("*").eq("session_id", sessionId).maybeSingle(),
-  ]);
-  return {
-    segments: ((t?.segments as TranscriptSegment[]) ?? []) as TranscriptSegment[],
-    metrics: (m as SessionMetrics) ?? null,
-  };
+  // TODO(next stage): lesson_transcripts.segments and lesson_metrics for sessionId (RLS: assigned teacher, in-charge, admin).
+  void sessionId;
+  return { segments: [], metrics: null };
 }

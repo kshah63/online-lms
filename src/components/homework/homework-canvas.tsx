@@ -53,6 +53,7 @@ export function HomeworkCanvas(props: CanvasProps) {
   const editorRef = useRef<Editor | null>(null);
   const sync = useNotebookSync({
     notebookId: props.notebookId,
+    saveId: props.notebookId,
     userId: props.userId,
     userName: props.userName,
     initialSnapshot: props.initialSnapshot,

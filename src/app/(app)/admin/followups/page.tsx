@@ -6,9 +6,8 @@ import { EmptyState } from "@/components/empty-state";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { MessageParentDialog } from "@/components/admin/message-parent-dialog";
 import { cn } from "@/lib/utils";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { getOpenFollowups } from "@/lib/data/followups";
 import { generateFollowups, resolveFollowup, snoozeFollowup } from "@/lib/actions/followups";
 import { FOLLOWUP_LABEL, type FollowupView } from "@/lib/types";
@@ -23,7 +22,9 @@ export default async function AdminFollowupsPage({
 }: {
   searchParams: { priority?: string; type?: string; view?: string };
 }) {
-  const admin = await requireRole("admin");
+  // Follow-ups are decided by the in-charge or an admin; support has no part in them.
+  const admin = await requireRole("admin", "staff");
+  const tz = viewerTimeZone(admin);
   const items = await getOpenFollowups(); // open + snoozed
 
   // ----- Filters (combinable: ?priority=high&type=no_show&view=snoozed) -----
@@ -153,7 +154,7 @@ export default async function AdminFollowupsPage({
       ) : (
         <div className="space-y-3">
           {visible.map((f) => (
-            <FollowupRow key={f.id} f={f} adminTz={admin.timezone} />
+            <FollowupRow key={f.id} f={f} adminTz={tz} />
           ))}
         </div>
       )}
@@ -170,28 +171,21 @@ function FollowupRow({ f, adminTz }: { f: FollowupView; adminTz: string }) {
 
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <Avatar name={f.student.display_name} src={f.student.avatar_url} size={24} />
-          <span className="font-medium">{f.student.display_name}</span>
+          <Avatar name={f.student.name} src={f.student.avatar_url} size={24} />
+          <span className="font-medium">{f.student.name}</span>
           <Badge variant="secondary">{FOLLOWUP_LABEL[f.type]}</Badge>
           {f.snoozed_until && <Badge variant="outline">snoozed</Badge>}
         </div>
         <p className="mt-1 text-sm text-muted-foreground">{f.reason}</p>
         <p className="mt-0.5 text-xs text-muted-foreground">
           {age}
-          {f.parent ? ` · parent: ${f.parent.display_name}${f.parent.phone ? "" : " (no phone)"}` : " · no parent linked"}
+          {f.parent ? ` · parent: ${f.parent.name}` : " · no parent linked"}
         </p>
       </div>
 
       <div className="flex shrink-0 flex-wrap items-center gap-2">
-        {f.parent && (
-          <MessageParentDialog
-            studentId={f.student_id}
-            followupId={f.id}
-            parentName={f.parent.display_name}
-            hasPhone={Boolean(f.parent.phone)}
-            defaultBody={defaultBody(f)}
-          />
-        )}
+        {/* Messaging the family is the app's (start_family_direct / message_tasks); the suggested opener travels with the follow-up. */}
+        {f.parent && <span className="hidden max-w-xs truncate text-xs text-muted-foreground xl:inline" title={defaultBody(f)}>{defaultBody(f)}</span>}
         <form action={snoozeFollowup}>
           <input type="hidden" name="id" value={f.id} />
           <input type="hidden" name="days" value="7" />
@@ -211,8 +205,8 @@ function FollowupRow({ f, adminTz }: { f: FollowupView; adminTz: string }) {
 }
 
 function defaultBody(f: FollowupView): string {
-  const first = f.student.display_name.split(" ")[0];
-  const parent = f.parent?.display_name?.split(" ")[0] ?? "there";
+  const first = f.student.name.split(" ")[0];
+  const parent = f.parent?.name?.split(" ")[0] ?? "there";
   switch (f.type) {
     case "no_show":
       return `Hi ${parent}, ${first} missed their recent lesson. Would you like us to reschedule? Happy to find a time that works.`;

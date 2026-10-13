@@ -1,10 +1,17 @@
 import { DateTime } from "luxon";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { demoProfiles } from "@/lib/demo/data";
 import { heuristicFeedback } from "@/lib/coaching/analyze";
 import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
 import type { FeedbackMoment, TeacherFeedback } from "@/lib/coaching/analyze";
+
+// ============================================================================
+// Coaching feedback, behind the data layer. online-lms's teacher_feedback,
+// session_metrics, transcripts and live_events are retired: the lesson-finalize
+// edge function writes lesson_feedback and lesson_metrics from lesson_transcripts,
+// and the room appends lesson_events. TODO(next stage): read those four tables
+// here (RLS: assigned teacher for own sessions, in-charge chain, admin). The
+// live paths return nothing until then; demo mode keeps its synthetic history.
+// ============================================================================
 
 export interface FeedbackView {
   session_id: string;
@@ -131,19 +138,9 @@ export async function getFeedbackHistory(teacherId: string): Promise<FeedbackVie
       .filter((f) => f.teacher_id === teacherId)
       .sort((a, b) => (a.created_at < b.created_at ? 1 : -1));
   }
-
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase
-    .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
-    .eq("teacher_id", teacherId)
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-  return (data ?? []).map(mapRow);
+  // TODO(next stage): lesson_feedback joined with lesson_metrics for the teacher's sessions.
+  void teacherId;
+  return [];
 }
 
 export async function getLatestFeedback(teacherId: string): Promise<FeedbackView | null> {
@@ -151,7 +148,7 @@ export async function getLatestFeedback(teacherId: string): Promise<FeedbackView
   return history[0] ?? null;
 }
 
-/** Admin QA: the latest feedback for every teacher, flagged if low engagement. */
+/** Office QA: the latest feedback for every teacher, flagged if low engagement. */
 export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
   if (isDemoMode) {
     const byTeacher = new Map<string, FeedbackView>();
@@ -160,30 +157,8 @@ export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
     }
     return [...byTeacher.values()];
   }
-
-  const teachers = demoProfiles.filter((p) => p.role === "teacher"); // shape only; real path below
-  void teachers;
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase
-    .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-
-  const seen = new Set<string>();
-  const latest: FeedbackView[] = [];
-  for (const row of data ?? []) {
-    const view = mapRow(row);
-    if (!seen.has(view.teacher_id)) {
-      seen.add(view.teacher_id);
-      latest.push(view);
-    }
-  }
-  return latest;
+  // TODO(next stage): latest lesson_feedback per teacher in the in-charge's departments (RLS: reports_to_id chain, admin).
+  return [];
 }
 
 /** Average dimension score; used to flag lessons/teachers for review. */
@@ -192,29 +167,9 @@ export function avgScore(f: FeedbackView): number {
   return round2((d.engagement + d.questioning + d.clarity + d.rapport) / 4);
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function mapRow(row: any): FeedbackView {
-  const session = row.session ?? {};
-  return {
-    session_id: row.session_id,
-    teacher_id: row.teacher_id,
-    teacher_name: row.teacher?.display_name ?? "Teacher",
-    course_name: session.course?.name ?? "Lesson",
-    student_name: session.student?.display_name ?? "Student",
-    created_at: row.created_at,
-    summary: row.summary ?? "",
-    strengths: row.strengths ?? [],
-    suggestions: row.suggestions ?? [],
-    moments: row.moments ?? [],
-    dimension_scores: row.dimension_scores ?? { engagement: 0, questioning: 0, clarity: 0, rapport: 0 },
-    metrics: session.metrics ?? null,
-  };
-}
-
 /**
  * Coaching detail for one lesson: feedback + moments + transcript + the live
- * nudges shown during the lesson. RLS limits transcripts/feedback/events to
- * the session's teacher and admins; the page re-checks the caller anyway.
+ * nudges shown during the lesson.
  */
 export async function getFeedbackDetail(sessionId: string): Promise<FeedbackDetail | null> {
   if (isDemoMode) {
@@ -222,38 +177,9 @@ export async function getFeedbackDetail(sessionId: string): Promise<FeedbackDeta
     if (!view) return null;
     return { ...view, segments: demoSegments(), nudges: demoNudges(view.created_at) };
   }
-
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase
-    .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
-    .eq("session_id", sessionId)
-    .maybeSingle();
-  if (error || !data) return null;
-
-  const [transcript, events] = await Promise.all([
-    supabase.from("transcripts").select("segments").eq("session_id", sessionId).maybeSingle(),
-    supabase
-      .from("live_events")
-      .select("type, payload, created_at")
-      .eq("session_id", sessionId)
-      .order("created_at"),
-  ]);
-
-  return {
-    ...mapRow(data),
-    segments: ((transcript.data?.segments ?? []) as TranscriptSegment[]) ?? [],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    nudges: (events.data ?? []).map((e: any) => ({
-      type: e.type,
-      message: String(e.payload?.message ?? ""),
-      created_at: e.created_at,
-    })),
-  };
+  // TODO(next stage): lesson_feedback + lesson_metrics + lesson_transcripts.segments + lesson_events for sessionId.
+  void sessionId;
+  return null;
 }
 
 function demoSegments(): TranscriptSegment[] {

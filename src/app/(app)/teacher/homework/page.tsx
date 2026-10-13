@@ -6,11 +6,12 @@ import { EmptyState } from "@/components/empty-state";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { getSubmittedForTeacher } from "@/lib/data/homework";
 
 export default async function TeacherHomeworkPage() {
   const teacher = await requireRole("teacher");
+  const tz = viewerTimeZone(teacher);
   const submitted = await getSubmittedForTeacher(teacher);
 
   return (
@@ -38,7 +39,7 @@ export default async function TeacherHomeworkPage() {
                 </div>
                 {hw.submitted_at && (
                   <div className="text-xs text-muted-foreground">
-                    submitted {DateTime.fromISO(hw.submitted_at, { zone: "utc" }).setZone(teacher.timezone).toRelative()}
+                    submitted {DateTime.fromISO(hw.submitted_at, { zone: "utc" }).setZone(tz).toRelative()}
                   </div>
                 )}
               </div>

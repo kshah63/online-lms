@@ -8,23 +8,27 @@ import { useNotebookSync } from "@/lib/notebook/use-notebook-sync";
 import { notebookEditorAtom } from "@/lib/notebook/editor-atom";
 
 /**
- * §5 Collaborative notebook. tldraw wired to Supabase Realtime so the teacher
- * and student edit live, with the running document persisted per student/course.
+ * Collaborative notebook. tldraw wired to Supabase Realtime so the teacher
+ * and student edit live, with the running document persisted per student per
+ * course on lesson_notebooks.
  * Without Supabase configured it falls back to local IndexedDB persistence.
  */
 export function NotebookPanel({
   notebookId,
+  saveId,
   userId,
   userName,
   initialSnapshot,
 }: {
   notebookId: string;
+  saveId: string | null;
   userId: string;
   userName: string;
   initialSnapshot: unknown | null;
 }) {
   const { onMount, dispose, syncing } = useNotebookSync({
     notebookId,
+    saveId,
     userId,
     userName,
     initialSnapshot,

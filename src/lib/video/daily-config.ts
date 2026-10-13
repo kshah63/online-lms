@@ -64,6 +64,26 @@ export function roomPropertiesFor(input: RoomPolicyInput): DailyRoomProperties {
   return { privacy: "private", properties };
 }
 
+/**
+ * mv-app's lesson_consents (recording | transcript | ai_analysis |
+ * integrity_camera) plus the room's own recording flag (lesson_rooms.
+ * recording_enabled, set by an admin per department) → what the Daily room may
+ * capture. There is no video-recording consent kind in mv-app, so a granted
+ * recording consent means cloud audio only. Transcription needs the transcript
+ * consent; the live coach and the post-session analysis need ai_analysis on top,
+ * which the room checks separately.
+ */
+export function consentsToRoomPolicy(
+  consents: { recording: boolean; transcript: boolean; ai_analysis: boolean },
+  recordingEnabled: boolean,
+): LessonConsents {
+  return {
+    ai_analysis: consents.transcript,
+    recording: recordingEnabled && consents.recording,
+    video_recording: false,
+  };
+}
+
 /** Retention: recordings are deleted after this many days unless a review hold is placed. */
 export const RECORDING_RETENTION_DAYS = 90;
 

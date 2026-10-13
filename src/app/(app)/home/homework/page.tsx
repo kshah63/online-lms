@@ -2,11 +2,12 @@ import { ClipboardCheck } from "lucide-react";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { HomeworkList } from "@/components/homework/homework-list";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { getHomeworkForProfile } from "@/lib/data/homework";
 
 export default async function HomeworkPage() {
   const profile = await requireRole("student", "parent");
+  const tz = viewerTimeZone(profile);
   const items = await getHomeworkForProfile(profile);
 
   const nowISO = new Date().toISOString();
@@ -40,19 +41,19 @@ export default async function HomeworkPage() {
           {toDo.length > 0 && (
             <section>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">To do</h2>
-              <HomeworkList items={toDo} viewerTz={profile.timezone} showStudent={profile.role === "parent"} />
+              <HomeworkList items={toDo} viewerTz={tz} showStudent={profile.role === "parent"} />
             </section>
           )}
           {submitted.length > 0 && (
             <section>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Submitted — awaiting review</h2>
-              <HomeworkList items={submitted} viewerTz={profile.timezone} showStudent={profile.role === "parent"} />
+              <HomeworkList items={submitted} viewerTz={tz} showStudent={profile.role === "parent"} />
             </section>
           )}
           {done.length > 0 && (
             <section>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Verified</h2>
-              <HomeworkList items={done} viewerTz={profile.timezone} showStudent={profile.role === "parent"} />
+              <HomeworkList items={done} viewerTz={tz} showStudent={profile.role === "parent"} />
             </section>
           )}
         </div>

@@ -7,13 +7,15 @@ import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScoreBars } from "@/components/coaching/score-bars";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
+import { OFFICE_ROLES } from "@/lib/permissions";
 import { avgScore, getAllTeachersLatest } from "@/lib/data/coaching";
 
 const FLAG_THRESHOLD = 3; // flag teachers whose engagement is below this for review
 
 export default async function AdminCoachingPage() {
-  const admin = await requireRole("admin");
+  const admin = await requireRole(...OFFICE_ROLES);
+  const tz = viewerTimeZone(admin);
   const latest = await getAllTeachersLatest();
 
   return (
@@ -37,7 +39,7 @@ export default async function AdminCoachingPage() {
                     <div className="min-w-0 flex-1">
                       <CardTitle className="text-base">{f.teacher_name}</CardTitle>
                       <p className="text-xs text-muted-foreground">
-                        {f.course_name} · {DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(admin.timezone).toFormat("d LLL")}
+                        {f.course_name} · {DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(tz).toFormat("d LLL")}
                       </p>
                     </div>
                     <div className="text-right">

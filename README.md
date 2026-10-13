@@ -16,54 +16,60 @@ Supabase (Postgres + Auth + Realtime) · tldraw (notebook) · Luxon (timezones) 
 
 ## Quick start (demo mode — no setup)
 
-With **no Supabase keys configured**, the app runs in **demo mode**: a built-in dataset and a persona
-switcher stand in for real auth + Postgres, so every screen is explorable offline.
+With **no Supabase keys configured**, the room runs in **demo mode**: a built-in dataset in mv-app's
+shapes (profiles with mv roles and a family, departments, courses, course_topics, online
+session_requests) and a persona switcher stand in for real auth + Postgres, so every screen is
+explorable offline.
 
 ```bash
 pnpm install
 pnpm dev
-# open http://localhost:3000 → pick a persona (Admin / Teacher / Student / Parent)
+# open http://localhost:3000 → pick a persona
 ```
 
-Demo personas:
+Demo personas (ids are stable so scripts can set the `demo_persona` cookie directly):
 
-| Role    | Name          | Timezone         | Sees                                                |
-|---------|---------------|------------------|-----------------------------------------------------|
-| Admin   | Admin Office  | Asia/Singapore   | Daily schedule board, scheduling & assignment, people |
-| Teacher | Maya Chen     | Asia/Singapore   | Today's lessons, join the live room, availability   |
-| Student | Aarav Sharma  | Asia/Singapore   | Upcoming lessons, reports, join live                |
-| Parent  | Priya Sharma  | Asia/Singapore   | Their child's lessons and reports                   |
+| Role (mv-app)     | Name          | Id suffix | Sees                                                      |
+|-------------------|---------------|-----------|-----------------------------------------------------------|
+| admin             | Admin Office  | …01       | Every online lesson, observer seat, coaching QA           |
+| staff (in-charge) | Grace Lim     | …d1       | Online Mathematics lessons as an observer, follow-ups     |
+| support           | Ravi Menon    | …d2       | Today's online lessons, observer seat                     |
+| teacher           | Maya Chen     | …a1       | Today's lessons, host the room, reports and coaching      |
+| student           | Sofia Rossi   | …b2       | Join the live lesson as the learner, homework             |
+| student           | Aarav Sharma  | …b1       | Upcoming lessons, homework, progress                      |
+| parent            | Priya Sharma  | …c1       | Aarav's lessons (no seat in the room), reports, progress  |
 
-> In demo mode, **mutations aren't persisted** (a banner makes this clear). Connect Supabase to go live.
+> In demo mode, **mutations aren't persisted** (a banner makes this clear). Connect the MathVision
+> Supabase project to go live.
 
 ---
 
-## Going live with Supabase
+## Going live on mv-app's Supabase project
 
-1. Create a Supabase project and copy the keys into `.env.local`:
+The room runs on the MathVision app's project — one `auth.users`, one `profiles` row per person — and
+reads everything through its RPCs (`my_profile`, `my_online_lessons`, `lesson_room_state`,
+`lesson_join`, `lesson_end`, `save_lesson_notebook`, …). See `docs/INTEGRATION.md`. The SQL lives in
+mv-app's `supabase/migrations/`; nothing here creates tables.
+
+1. Copy the keys into `.env.local`:
 
    ```bash
    cp .env.example .env.local
-   # set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY
+   # set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY of the mv-app project,
+   # and ROOM_REDEEM_SECRET (shared with the room-redeem edge function)
    ```
 
-2. Apply the schema, policies, and seed. Using the Supabase CLI:
-
-   ```bash
-   supabase db reset       # runs supabase/migrations/* then supabase/seed.sql
-   ```
-
-   Or paste the files in `supabase/migrations/` (in order) and `supabase/seed.sql` into the SQL editor.
-
-3. Run it:
+2. Run it:
 
    ```bash
    pnpm dev
    ```
 
-   The login screen switches from the persona picker to a real email/password form. Seed accounts all
-   use the dev password **`password123`** (e.g. `admin@lessons.dev`, `maya@lessons.dev`,
-   `aarav@lessons.dev`). The presence of `NEXT_PUBLIC_SUPABASE_URL` is what flips the app out of demo mode.
+   The login screen switches from the persona picker to the two doors the app has: families and
+   students sign in with a six-digit email code, the team with email (or portal username) and
+   password, then their authenticator. Lessons opened from the app arrive by ticket at `/join` and
+   need no sign-in at all. The presence of `NEXT_PUBLIC_SUPABASE_URL` is what flips the app out of
+   demo mode.
 
 ---
 

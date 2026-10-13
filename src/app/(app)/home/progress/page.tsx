@@ -2,7 +2,7 @@ import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { ProgressDashboard } from "@/components/progress/progress-dashboard";
 import { requireRole } from "@/lib/data/auth";
-import { getChildren } from "@/lib/data/people";
+import { getChildren } from "@/lib/data/family";
 import { getProgressView } from "@/lib/data/progress";
 import { BarChart3 } from "lucide-react";
 

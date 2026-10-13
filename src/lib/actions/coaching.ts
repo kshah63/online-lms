@@ -1,6 +1,5 @@
 "use server";
 
-import { revalidatePath } from "next/cache";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
@@ -9,9 +8,14 @@ import { computeMetrics, type TranscriptSegment } from "@/lib/coaching/metrics";
 import { analyzeLesson, type TeacherFeedback } from "@/lib/coaching/analyze";
 
 /**
- * §7.3 On session end: persist the transcript + metrics, run the post-session
- * AI analysis, and save the teacher feedback. Returns the feedback so the UI
- * can show it immediately. In demo mode nothing is persisted.
+ * On session end: run the post-session analysis on the transcript the room
+ * held and return the teacher feedback so the UI can show it immediately.
+ *
+ * Nothing is persisted here any more: rpc lesson_end (src/lib/actions/lesson.ts)
+ * stores the transcript on lesson_transcripts and invokes the lesson-finalize
+ * edge function, which writes lesson_metrics and lesson_feedback with the
+ * service role. This local pass keeps the coaching UI working until that
+ * pipeline is live; the coaching pages read lesson_feedback.
  */
 export async function finalizeLesson(
   sessionId: string,
@@ -21,42 +25,16 @@ export async function finalizeLesson(
   const profile = await getCurrentProfile();
   const metrics = computeMetrics(segments);
 
-  // Cap Opus spend per teacher; over the limit we still return a (heuristic) report.
+  // Cap model spend per teacher; over the limit we still return a (heuristic) report.
   const useAi = await rateLimit(
-    `ai:finalize:${profile?.id ?? "anon"}`,
+    `ai:finalize:${profile?.id ?? "anon"}:${sessionId}`,
     LIMITS.finalizeLesson.limit,
     LIMITS.finalizeLesson.windowSeconds,
   );
-  const feedback = await analyzeLesson(segments, metrics, ctx, { useAi });
-
-  if (isDemoMode) return feedback;
-
-  const supabase = createSupabaseServerClient()!;
-
-  await supabase.from("transcripts").upsert({ session_id: sessionId, segments });
-  await supabase
-    .from("session_metrics")
-    .upsert({ session_id: sessionId, ...metrics, computed_at: new Date().toISOString() });
-  await supabase.from("teacher_feedback").upsert({
-    session_id: sessionId,
-    teacher_id: profile?.id ?? null,
-    summary: feedback.summary,
-    strengths: feedback.strengths,
-    suggestions: feedback.suggestions,
-    moments: feedback.moments,
-    dimension_scores: feedback.dimension_scores,
-  });
-  await supabase
-    .from("sessions")
-    .update({ status: "completed", actual_end: new Date().toISOString() })
-    .eq("id", sessionId);
-
-  revalidatePath("/teacher/coaching");
-  revalidatePath("/admin/coaching");
-  return feedback;
+  return analyzeLesson(segments, metrics, ctx, { useAi });
 }
 
-/** §7.2 Log a live nudge that was shown to the teacher. */
+/** Log a live nudge that was shown to the teacher (lesson_events, append-only). */
 export async function logLiveEvent(
   sessionId: string,
   type: string,
@@ -64,5 +42,6 @@ export async function logLiveEvent(
 ): Promise<void> {
   if (isDemoMode) return;
   const supabase = createSupabaseServerClient()!;
-  await supabase.from("live_events").insert({ session_id: sessionId, type, payload });
+  const { error } = await supabase.rpc("log_lesson_event", { p_session_id: sessionId, p_kind: type, p_payload: payload });
+  if (error) console.error("log_lesson_event failed:", error.message);
 }

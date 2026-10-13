@@ -6,11 +6,13 @@ import { EmptyState } from "@/components/empty-state";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
 import { getTeacherReportQueue } from "@/lib/data/reports";
 
+/** TODO(next stage): the queue is my_online_lessons rows with draft_ready / report_status; writing goes through submit_report. */
 export default async function TeacherReportsPage() {
   const teacher = await requireRole("teacher");
+  const tz = viewerTimeZone(teacher);
   const queue = await getTeacherReportQueue(teacher);
 
   const pending = queue.filter((q) => !q.report?.published_at);
@@ -18,7 +20,7 @@ export default async function TeacherReportsPage() {
 
   return (
     <div>
-      <PageHeader title="Reports" description="Write AI-drafted reports for completed lessons, then publish to parents." />
+      <PageHeader title="Reports" description="Write AI-drafted reports for completed lessons, then submit them to the centre." />
 
       {queue.length === 0 ? (
         <EmptyState icon={<ClipboardList className="h-5 w-5" />} title="No completed lessons yet" description="Reports become available once a lesson is completed." />
@@ -28,14 +30,13 @@ export default async function TeacherReportsPage() {
             <section>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Awaiting a report ({pending.length})</h2>
               <div className="space-y-3">
-                {pending.map(({ session, report }) => (
+                {pending.map(({ lesson, report }) => (
                   <Row
-                    key={session.id}
-                    sessionId={session.id}
-                    studentName={session.student.display_name}
-                    avatarSrc={session.student.avatar_url}
-                    course={session.course.name}
-                    when={DateTime.fromISO(session.scheduled_start, { zone: "utc" }).setZone(teacher.timezone).toFormat("ccc d LLL")}
+                    key={lesson.session_id}
+                    sessionId={lesson.session_id}
+                    studentName={lesson.student_name}
+                    course={lesson.subject ?? "Lesson"}
+                    when={DateTime.fromISO(lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL")}
                     state={report ? "draft" : "none"}
                   />
                 ))}
@@ -47,14 +48,13 @@ export default async function TeacherReportsPage() {
             <section>
               <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Published ({done.length})</h2>
               <div className="space-y-3">
-                {done.map(({ session }) => (
+                {done.map(({ lesson }) => (
                   <Row
-                    key={session.id}
-                    sessionId={session.id}
-                    studentName={session.student.display_name}
-                    avatarSrc={session.student.avatar_url}
-                    course={session.course.name}
-                    when={DateTime.fromISO(session.scheduled_start, { zone: "utc" }).setZone(teacher.timezone).toFormat("ccc d LLL")}
+                    key={lesson.session_id}
+                    sessionId={lesson.session_id}
+                    studentName={lesson.student_name}
+                    course={lesson.subject ?? "Lesson"}
+                    when={DateTime.fromISO(lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("ccc d LLL")}
                     state="published"
                   />
                 ))}
@@ -70,21 +70,19 @@ export default async function TeacherReportsPage() {
 function Row({
   sessionId,
   studentName,
-  avatarSrc,
   course,
   when,
   state,
 }: {
   sessionId: string;
   studentName: string;
-  avatarSrc: string | null;
   course: string;
   when: string;
   state: "none" | "draft" | "published";
 }) {
   return (
     <div className="flex items-center gap-3 rounded-xl border bg-card p-4 shadow-sm">
-      <Avatar name={studentName} src={avatarSrc} size={36} />
+      <Avatar name={studentName} size={36} />
       <div className="min-w-0 flex-1">
         <div className="font-medium">{studentName}</div>
         <div className="text-sm text-muted-foreground">

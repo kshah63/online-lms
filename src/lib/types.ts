@@ -1,72 +1,161 @@
 // ============================================================================
-// Domain types — mirror the Supabase schema (supabase/migrations).
+// Domain types — mirror mv-app's schema and RPCs (docs/INTEGRATION.md). The room
+// runs on mv-app's Supabase project: profiles, session_requests, courses and the
+// lesson_* tables live there, and everything the room reads comes back from a
+// SECURITY DEFINER RPC (my_profile, my_online_lessons, lesson_room_state) so the
+// column wall on profiles.email / phone never has to be crossed here.
 // ============================================================================
 
-export type Role = "admin" | "teacher" | "student" | "parent";
+/** profiles.role (enum user_role). */
+export type Role = "parent" | "student" | "teacher" | "staff" | "support" | "admin" | "ambassador";
 
-export type SessionStatus =
-  | "scheduled"
-  | "confirmed"
-  | "in_progress"
-  | "completed"
-  | "cancelled"
-  | "no_show";
+export const ROLES: readonly Role[] = ["parent", "student", "teacher", "staff", "support", "admin", "ambassador"];
 
-export type ConsentType = "recording" | "ai_analysis" | "teacher_eval";
+/** What rpc room_access / lesson_room_state give a viewer in a lesson room. */
+export type Seat = "host" | "learner" | "observer";
 
+/** my_online_lessons also lists a parent's children's lessons, with no seat in the room. */
+export type LessonSeat = Seat | "family";
+
+/** The signed-in person: the columns of rpc my_profile() the room needs. Email and
+ * phone are deliberately absent — the room never reads them. */
 export interface Profile {
   id: string;
   role: Role;
-  display_name: string;
-  email: string | null;
-  phone: string | null;
+  full_name: string;
+  preferred_name: string | null;
+  family_id: string | null;
+  grade_level: string | null;
+  time_zone: string | null;
   avatar_url: string | null;
-  timezone: string;
-  created_at: string;
+  approved_at: string | null;
+  deactivated_at: string | null;
+  report_auto_approve: boolean;
 }
 
+/** The name to show for a person: preferred first, full name otherwise. */
+export function displayName(p: Pick<Profile, "full_name" | "preferred_name">): string {
+  const preferred = (p.preferred_name ?? "").trim();
+  if (preferred) return preferred;
+  const full = (p.full_name ?? "").trim();
+  return full || "Someone";
+}
+
+/** First name for greetings. */
+export function firstName(p: Pick<Profile, "full_name" | "preferred_name">): string {
+  return displayName(p).split(/\s+/)[0] ?? "";
+}
+
+/** session_requests.status. */
+export type SessionStatus =
+  | "pending"
+  | "alternate_proposed"
+  | "confirmed"
+  | "declined"
+  | "cancelled"
+  | "completed";
+
+export type SessionMode = "in_person" | "online";
+
+export const SESSION_STATUS_LABEL: Record<SessionStatus, string> = {
+  pending: "Pending",
+  alternate_proposed: "Alternate proposed",
+  confirmed: "Confirmed",
+  declined: "Declined",
+  cancelled: "Cancelled",
+  completed: "Completed",
+};
+
+/** courses (synced from the portal). */
 export interface Course {
   id: string;
   name: string;
-  subject: string | null;
-  materials_course_id: string | null;
-  created_at: string;
+  department_id: string | null;
+  group_name: string | null;
 }
 
-export interface Session {
-  id: string;
+/** course_topics — the booking form's option list for a course. */
+export interface CourseTopic {
   course_id: string;
-  student_id: string;
-  teacher_id: string | null;
-  scheduled_start: string; // UTC ISO
-  scheduled_end: string; // UTC ISO
-  actual_start: string | null; // set when both join (UTC ISO)
-  actual_end: string | null; // set when the lesson is ended
+  label: string;
+  grade_level: string | null;
+}
+
+/** One row of rpc my_online_lessons(p_days). */
+export interface OnlineLesson {
+  session_id: string;
+  student_id: string | null;
+  student_name: string;
+  subject: string | null;
+  topic: string | null;
+  effective_start: string; // UTC ISO
+  ends_at: string | null; // UTC ISO
+  duration_minutes: number | null;
   status: SessionStatus;
-  video_room_id: string | null;
-  recording_url: string | null;
+  mode: SessionMode;
+  arrived_at: string | null;
+  departed_at: string | null;
+  meeting_url: string | null;
+  teacher_id: string | null;
+  teacher_name: string | null;
+  report_id: string | null;
+  report_status: string | null;
+  draft_ready: boolean;
+  time_zone: string | null;
+  seat: LessonSeat;
+}
+
+/** lesson_consents kinds, as the consents jsonb on lesson_room_state carries them. */
+export type LessonConsentKind = "recording" | "transcript" | "ai_analysis" | "integrity_camera";
+
+export type RoomConsents = Record<LessonConsentKind, boolean>;
+
+export const NO_CONSENTS: RoomConsents = {
+  recording: false,
+  transcript: false,
+  ai_analysis: false,
+  integrity_camera: false,
+};
+
+/** One row of rpc lesson_room_state(p_session_id) — none when the viewer has no seat. */
+export interface LessonRoomState {
+  session_id: string;
+  seat: Seat;
+  status: SessionStatus;
+  mode: SessionMode;
+  effective_start: string;
+  ends_at: string | null;
+  duration_minutes: number | null;
+  time_zone: string | null;
+  topic: string | null;
+  subject: string | null;
+  course_id: string | null;
+  course_name: string | null;
+  department_id: string | null;
+  department_name: string | null;
+  student_id: string | null;
+  student_name: string;
+  student_grade: string | null;
+  teacher_id: string | null;
+  teacher_name: string | null;
+  family_id: string | null;
+  arrived_at: string | null;
+  departed_at: string | null;
+  meeting_url: string | null;
+  materials_course_id: string | null;
   notebook_id: string | null;
-  series_id: string | null;
-  agenda: string | null;
-  cancel_reason: string | null;
-  created_at: string;
+  room_opened_at: string | null;
+  room_closed_at: string | null;
+  recording_enabled: boolean;
+  consents: RoomConsents;
 }
 
-/** A session joined with the names it needs to render. */
-export interface SessionView extends Session {
-  course: Pick<Course, "id" | "name" | "subject" | "materials_course_id">;
-  student: Pick<Profile, "id" | "display_name" | "timezone" | "avatar_url">;
-  teacher: Pick<Profile, "id" | "display_name" | "timezone" | "avatar_url"> | null;
-}
-
-export interface TeacherAvailability {
-  id: string;
-  teacher_id: string;
-  weekday: number; // 0 Sun .. 6 Sat
-  start_time: string;
-  end_time: string;
-  timezone: string;
-}
+// ============================================================================
+// LEGACY — online-lms shapes that the integration retires. The pages that read
+// them (homework, reports, follow-ups) still compile behind the data layer; the
+// next stage ports them onto session_reports, lesson_report_drafts,
+// lesson_followups and homework_submissions, or removes them.
+// ============================================================================
 
 export interface Report {
   session_id: string;
@@ -145,21 +234,8 @@ export interface Followup {
 
 /** A follow-up joined with the student (and parent) it concerns. */
 export interface FollowupView extends Followup {
-  student: Pick<Profile, "id" | "display_name" | "timezone" | "avatar_url" | "phone">;
-  parent: Pick<Profile, "id" | "display_name" | "phone"> | null;
-}
-
-export interface OutboundMessage {
-  id: string;
-  channel: "whatsapp" | "email";
-  to_profile: string | null;
-  to_phone: string | null;
-  body: string;
-  status: "queued" | "sent" | "failed" | "simulated";
-  provider_ref: string | null;
-  followup_id: string | null;
-  sent_by: string | null;
-  created_at: string;
+  student: { id: string; name: string; avatar_url: string | null };
+  parent: { id: string; name: string } | null;
 }
 
 export const FOLLOWUP_LABEL: Record<FollowupType, string> = {
@@ -168,31 +244,4 @@ export const FOLLOWUP_LABEL: Record<FollowupType, string> = {
   report_flag: "Report flagged",
   low_rating: "Low rating",
   homework_overdue: "Homework overdue",
-};
-
-export interface Consent {
-  profile_id: string;
-  type: ConsentType;
-  granted_by: string | null;
-  granted_at: string;
-}
-
-export interface Notification {
-  id: string;
-  profile_id: string;
-  type: string;
-  title: string;
-  body: string | null;
-  session_id: string | null;
-  read_at: string | null;
-  created_at: string;
-}
-
-export const SESSION_STATUS_LABEL: Record<SessionStatus, string> = {
-  scheduled: "Scheduled",
-  confirmed: "Confirmed",
-  in_progress: "Live now",
-  completed: "Completed",
-  cancelled: "Cancelled",
-  no_show: "No-show",
 };

@@ -1,26 +1,24 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { getCurrentProfile } from "@/lib/data/auth";
-import { getSessionById } from "@/lib/data/sessions";
+import { getMyOnlineLesson } from "@/lib/data/lessons";
 import { getSessionTranscript } from "@/lib/data/reports";
 import { rateLimit, LIMITS } from "@/lib/rate-limit";
-import { logAudit } from "@/lib/audit";
-import { notifyReportPublished } from "@/lib/messaging/notify";
 import { draftReport, type ReportDraft } from "@/lib/reports/draft";
 import type { ActionResult } from "@/lib/actions/types";
 
-/** §8 Ask AI for a draft from the teacher's notes + the lesson transcript/metrics. */
+/** Ask AI for a draft from the teacher's notes + the lesson transcript/metrics. */
 export async function generateReportDraft(sessionId: string, notes: string): Promise<ReportDraft> {
   const profile = await getCurrentProfile();
-  const session = await getSessionById(sessionId);
+  if (!profile) throw new Error("Not signed in");
+  const lesson = await getMyOnlineLesson(profile, sessionId);
   const { segments, metrics } = await getSessionTranscript(sessionId);
 
-  // Cap Opus spend per teacher; over the limit we fall back to the notes heuristic.
+  // Cap model spend per teacher; over the limit we fall back to the notes heuristic.
   const useAi = await rateLimit(
-    `ai:report_draft:${profile?.id ?? "anon"}`,
+    `ai:report_draft:${profile.id}`,
     LIMITS.reportDraft.limit,
     LIMITS.reportDraft.windowSeconds,
   );
@@ -31,8 +29,8 @@ export async function generateReportDraft(sessionId: string, notes: string): Pro
     metrics,
     useAi,
     ctx: {
-      studentName: session?.student.display_name ?? "the student",
-      course: session?.course.name ?? "the lesson",
+      studentName: lesson?.student_name ?? "the student",
+      course: lesson?.subject ?? "the lesson",
     },
   });
 }
@@ -51,84 +49,19 @@ export interface ReportInput {
   homework_due: string | null;
 }
 
-/** Save a draft or publish. On publish, assign homework + raise any follow-ups. */
-export async function saveReport(
-  sessionId: string,
-  input: ReportInput,
-  publish: boolean,
-): Promise<ActionResult> {
+/**
+ * Save a draft or publish. online-lms's reports table is retired: the centre's
+ * report is written by mv-app's submit_report RPC (session_reports) from the
+ * centre-format editor, and the AI draft lives on lesson_report_drafts.
+ * TODO(next stage): submit through rpc submit_report with the lesson_report_drafts
+ * draft; until then this legacy editor cannot persist outside demo mode.
+ */
+export async function saveReport(sessionId: string, input: ReportInput, publish: boolean): Promise<ActionResult> {
+  void sessionId;
+  void input;
   if (isDemoMode) {
     revalidatePath("/teacher/reports");
     return { ok: true, message: publish ? "Demo mode: report not persisted." : "Demo mode: draft not saved." };
   }
-
-  const profile = await getCurrentProfile();
-  const session = await getSessionById(sessionId);
-  const supabase = createSupabaseServerClient()!;
-  const published_at = publish ? new Date().toISOString() : null;
-
-  const { error } = await supabase.from("reports").upsert({
-    session_id: sessionId,
-    teacher_id: profile?.id ?? null,
-    topics_covered: input.topics_covered,
-    how_student_did: input.how_student_did,
-    strengths: input.strengths,
-    areas_to_work: input.areas_to_work,
-    homework: input.homework,
-    rating: input.rating,
-    teacher_notes: input.teacher_notes,
-    ai_drafted: input.ai_drafted,
-    needs_followup: input.needs_followup,
-    followup_reason: input.followup_reason || null,
-    published_at,
-  });
-  if (error) return { ok: false, message: error.message };
-
-  if (publish && session) {
-    if (input.homework.trim()) {
-      await supabase.from("homework").insert({
-        session_id: sessionId,
-        student_id: session.student_id,
-        course_id: session.course_id,
-        description: input.homework.trim(),
-        due_at: input.homework_due,
-        notebook_id: session.notebook_id, // do it on the same running notebook
-      });
-    }
-    if (input.needs_followup) {
-      await supabase.from("followups").insert({
-        student_id: session.student_id,
-        session_id: sessionId,
-        type: "report_flag",
-        priority: "high",
-        reason: input.followup_reason || "Teacher flagged this report for follow-up.",
-      });
-    } else if (input.rating <= 2) {
-      await supabase.from("followups").insert({
-        student_id: session.student_id,
-        session_id: sessionId,
-        type: "low_rating",
-        priority: "normal",
-        reason: `Low lesson rating (${input.rating}/5) in ${session.course.name}.`,
-      });
-    }
-
-    // Tell the family their report is ready (no-op without opt-in/provider).
-    await notifyReportPublished({
-      studentId: session.student_id,
-      studentName: session.student.display_name,
-      course: session.course.name,
-      sessionId,
-    });
-    await logAudit(profile, "report.publish", { type: "session", id: sessionId }, {
-      student_id: session.student_id,
-      rating: input.rating,
-      needs_followup: input.needs_followup,
-    });
-  }
-
-  revalidatePath("/teacher/reports");
-  revalidatePath("/home/reports");
-  revalidatePath("/admin/followups");
-  return { ok: true, message: publish ? "Report published." : "Draft saved." };
+  return { ok: false, message: "Reports are submitted to the centre app (submit_report) — that arrives with the next integration stage." };
 }

@@ -1,37 +1,36 @@
 import Link from "next/link";
-import { BookOpen, UserRound, Video } from "lucide-react";
+import { BookOpen, Eye, UserRound, Video } from "lucide-react";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/status-badge";
-import { formatRange, tzAbbrev, dayLabel, withinJoinWindow } from "@/lib/time";
+import { formatRange, tzAbbrev, dayLabel } from "@/lib/time";
+import { lessonEndISO, lessonIsLive, roomIsOpen } from "@/lib/lessons/window";
 import { cn } from "@/lib/utils";
-import type { SessionView } from "@/lib/types";
+import type { OnlineLesson } from "@/lib/types";
 
-type Perspective = "admin" | "teacher" | "student" | "parent";
+type Perspective = "office" | "teacher" | "student" | "parent";
 
-export function SessionCard({
-  session,
+/** One online lesson (a my_online_lessons row) as a card, with the room link its seat allows. */
+export function LessonCard({
+  lesson,
   viewerTz,
   perspective,
   showDay = false,
   action,
 }: {
-  session: SessionView;
+  lesson: OnlineLesson;
   viewerTz: string;
   perspective: Perspective;
   showDay?: boolean;
   action?: React.ReactNode;
 }) {
-  const unassigned = !session.teacher;
-  const live = session.status === "in_progress";
-  const joinable = live || session.status === "confirmed" || session.status === "scheduled";
-  // Students/parents can enter from ~10 min before start (waiting room) so they
-  // don't depend on the teacher having flipped the lesson "live".
-  const studentCanJoin =
-    live ||
-    ((session.status === "scheduled" || session.status === "confirmed") &&
-      withinJoinWindow(session.scheduled_start, session.scheduled_end));
+  const live = lessonIsLive(lesson);
+  const endISO = lessonEndISO(lesson);
+  // A parent's "family" seat has no place in a 1-1 lesson; everyone else may
+  // enter while room_access would give them a seat.
+  const canEnter = lesson.seat !== "family" && roomIsOpen(lesson);
+  const observer = lesson.seat === "observer";
 
   return (
     <div
@@ -42,45 +41,52 @@ export function SessionCard({
     >
       {/* Time gutter */}
       <div className="flex shrink-0 flex-col sm:w-32">
-        {showDay && (
-          <span className="text-xs font-medium text-muted-foreground">{dayLabel(session.scheduled_start, viewerTz)}</span>
-        )}
-        <span className="text-sm font-semibold tabular-nums">
-          {formatRange(session.scheduled_start, session.scheduled_end, viewerTz)}
-        </span>
-        <span className="text-xs text-muted-foreground">{tzAbbrev(viewerTz, session.scheduled_start)}</span>
+        {showDay && <span className="text-xs font-medium text-muted-foreground">{dayLabel(lesson.effective_start, viewerTz)}</span>}
+        <span className="text-sm font-semibold tabular-nums">{formatRange(lesson.effective_start, endISO, viewerTz)}</span>
+        <span className="text-xs text-muted-foreground">{tzAbbrev(viewerTz, lesson.effective_start)}</span>
       </div>
 
       {/* Body */}
       <div className="min-w-0 flex-1">
         <div className="flex flex-wrap items-center gap-2">
-          <span className="font-medium">{session.course.name}</span>
-          <StatusBadge status={session.status} />
+          <span className="font-medium">{lesson.subject ?? "Online lesson"}</span>
+          {live ? (
+            <Badge variant="success">
+              <span className="relative flex h-2 w-2">
+                <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+                <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+              </span>
+              Live now
+            </Badge>
+          ) : (
+            <StatusBadge status={lesson.status} />
+          )}
         </div>
-        {session.agenda && (
+        {lesson.topic && (
           <p className="mt-0.5 line-clamp-1 flex items-center gap-1.5 text-sm text-muted-foreground">
             <BookOpen className="h-3.5 w-3.5 shrink-0" />
-            {session.agenda}
+            {lesson.topic}
           </p>
         )}
 
         <div className="mt-2.5 flex flex-wrap items-center gap-x-5 gap-y-2 text-sm">
           {perspective !== "student" && (
             <span className="flex items-center gap-1.5">
-              <Avatar name={session.student.display_name} src={session.student.avatar_url} size={22} />
-              <span className="text-muted-foreground">{session.student.display_name}</span>
+              <Avatar name={lesson.student_name} size={22} />
+              <span className="text-muted-foreground">{lesson.student_name}</span>
             </span>
           )}
           {perspective !== "teacher" &&
-            (unassigned ? (
-              <Badge variant="warning" className="gap-1">
-                <UserRound className="h-3 w-3" /> Unassigned
-              </Badge>
-            ) : (
+            (lesson.teacher_name ? (
               <span className="flex items-center gap-1.5">
-                <Avatar name={session.teacher!.display_name} src={session.teacher!.avatar_url} size={22} />
-                <span className="text-muted-foreground">{session.teacher!.display_name}</span>
+                <Avatar name={lesson.teacher_name} size={22} />
+                <span className="text-muted-foreground">{lesson.teacher_name}</span>
               </span>
+            ) : (
+              // Neutral, never a warning: staffing is decided in the room on the day.
+              <Badge variant="secondary" className="gap-1">
+                <UserRound className="h-3 w-3" /> No teacher added
+              </Badge>
             ))}
         </div>
       </div>
@@ -88,17 +94,11 @@ export function SessionCard({
       {/* Action */}
       <div className="flex shrink-0 items-center gap-2 sm:flex-col sm:items-end">
         {action ??
-          (perspective === "teacher" && joinable ? (
+          (canEnter ? (
             <Button asChild size="sm" variant={live ? "success" : "default"}>
-              <Link href={`/lesson/${session.id}`}>
-                <Video className="h-4 w-4" />
-                {live ? "Join now" : "Open room"}
-              </Link>
-            </Button>
-          ) : studentCanJoin && (perspective === "student" || perspective === "parent") ? (
-            <Button asChild size="sm" variant={live ? "success" : "default"}>
-              <Link href={`/lesson/${session.id}`}>
-                <Video className="h-4 w-4" /> {live ? "Join" : "Join early"}
+              <Link href={`/lesson/${lesson.session_id}`}>
+                {observer ? <Eye className="h-4 w-4" /> : <Video className="h-4 w-4" />}
+                {observer ? "Observe" : live ? "Join now" : "Open room"}
               </Link>
             </Button>
           ) : null)}

@@ -2,34 +2,35 @@ import Link from "next/link";
 import { CalendarDays, CheckCircle2, Radio, Video } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
-import { SessionCard } from "@/components/session-card";
+import { LessonCard } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { requireRole } from "@/lib/data/auth";
-import { getTeacherToday, getUpcomingForProfile } from "@/lib/data/sessions";
-import { formatRange } from "@/lib/time";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
+import { lessonEndISO, lessonIsLive, roomIsOpen } from "@/lib/lessons/window";
+import { dayWindowUTC, formatRange } from "@/lib/time";
+import { firstName } from "@/lib/types";
 
+/** The teacher's online lessons: my_online_lessons rows where they are the host. */
 export default async function TeacherTodayPage() {
   const teacher = await requireRole("teacher");
-  const tz = teacher.timezone;
+  const tz = viewerTimeZone(teacher);
 
-  const [today, upcoming] = await Promise.all([
-    getTeacherToday(teacher),
-    getUpcomingForProfile(teacher, 8),
-  ]);
+  const lessons = (await listMyOnlineLessons(teacher, 14)).filter((l) => l.seat === "host");
+  const { startUTC, endUTC } = dayWindowUTC(tz);
+  const today = lessons.filter((l) => l.effective_start >= startUTC && l.effective_start < endUTC);
+  const nowISO = new Date().toISOString();
+  const upcomingLater = lessons.filter((l) => l.effective_start >= endUTC && l.status === "confirmed").slice(0, 8);
 
-  const live = today.find((s) => s.status === "in_progress");
-  const completed = today.filter((s) => s.status === "completed").length;
-  const remaining = today.filter((s) => ["scheduled", "confirmed", "in_progress"].includes(s.status)).length;
-  const upcomingLater = upcoming.filter((s) => !today.some((t) => t.id === s.id));
-
-  const firstName = teacher.display_name.split(" ")[0];
+  const live = today.find((l) => lessonIsLive(l) && roomIsOpen(l));
+  const completed = today.filter((l) => l.status === "completed" || lessonEndISO(l) < nowISO).length;
+  const remaining = today.filter((l) => l.status === "confirmed" && lessonEndISO(l) >= nowISO).length;
 
   return (
     <div>
       <PageHeader
-        title={`Good ${greeting(tz)}, ${firstName}`}
+        title={`Good ${greeting(tz)}, ${firstName(teacher)}`}
         description={DateTime.now().setZone(tz).toFormat("cccc, d LLLL")}
       />
 
@@ -42,14 +43,12 @@ export default async function TeacherTodayPage() {
             <div className="min-w-0 flex-1">
               <div className="text-xs font-semibold uppercase tracking-wide text-success">Live now</div>
               <div className="font-medium">
-                {live.course.name} · {live.student.display_name}
+                {live.subject} · {live.student_name}
               </div>
-              <div className="text-sm text-muted-foreground">
-                {formatRange(live.scheduled_start, live.scheduled_end, tz)}
-              </div>
+              <div className="text-sm text-muted-foreground">{formatRange(live.effective_start, lessonEndISO(live), tz)}</div>
             </div>
             <Button asChild variant="success" size="lg">
-              <Link href={`/lesson/${live.id}`}>
+              <Link href={`/lesson/${live.session_id}`}>
                 <Video className="h-4 w-4" /> Join lesson
               </Link>
             </Button>
@@ -60,20 +59,20 @@ export default async function TeacherTodayPage() {
       <div className="mb-6 grid grid-cols-3 gap-3">
         <StatCard label="Today" value={today.length} icon={<CalendarDays className="h-4 w-4" />} />
         <StatCard label="Remaining" value={remaining} tone="primary" />
-        <StatCard label="Completed" value={completed} tone="success" icon={<CheckCircle2 className="h-4 w-4" />} />
+        <StatCard label="Done" value={completed} tone="success" icon={<CheckCircle2 className="h-4 w-4" />} />
       </div>
 
-      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Today&rsquo;s lessons</h2>
+      <h2 className="mb-3 text-sm font-semibold text-muted-foreground">Today&rsquo;s online lessons</h2>
       {today.length === 0 ? (
         <EmptyState
           icon={<CalendarDays className="h-5 w-5" />}
-          title="No lessons today"
-          description="Enjoy the breather — your next sessions are below."
+          title="No online lessons today"
+          description="Lessons booked in the MathVision app with mode online appear here, with the room link from 15 minutes before the start."
         />
       ) : (
         <div className="space-y-3">
-          {today.map((s) => (
-            <SessionCard key={s.id} session={s} viewerTz={tz} perspective="teacher" />
+          {today.map((l) => (
+            <LessonCard key={l.session_id} lesson={l} viewerTz={tz} perspective="teacher" />
           ))}
         </div>
       )}
@@ -86,8 +85,8 @@ export default async function TeacherTodayPage() {
               <CardTitle className="text-base">Next {upcomingLater.length} lessons</CardTitle>
             </CardHeader>
             <CardContent className="space-y-3">
-              {upcomingLater.map((s) => (
-                <SessionCard key={s.id} session={s} viewerTz={tz} perspective="teacher" showDay />
+              {upcomingLater.map((l) => (
+                <LessonCard key={l.session_id} lesson={l} viewerTz={tz} perspective="teacher" showDay />
               ))}
             </CardContent>
           </Card>

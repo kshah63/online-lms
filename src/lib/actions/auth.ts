@@ -1,12 +1,23 @@
 "use server";
 
-import { cookies, headers } from "next/headers";
+import { cookies } from "next/headers";
 import { redirect } from "next/navigation";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { DEMO_COOKIE, homePathForRole } from "@/lib/data/auth";
 import { demoProfiles } from "@/lib/demo/data";
 import { isDemoMode } from "@/lib/env";
-import { rateLimit, getClientIp, LIMITS } from "@/lib/rate-limit";
+
+// ============================================================================
+// Two sign-in doors, mirroring mv-app's app/(auth)/family.tsx and team.tsx.
+// Account management (passwords, resets, sign-up) belongs to the app; the room
+// only signs people in with the credentials they already have.
+// ============================================================================
+
+export type FamilyCodeState =
+  | { stage: "ask"; error?: string }
+  | { stage: "code"; email: string; error?: string };
+
+export type TeamSignInState = { error: string } | null;
 
 /** Demo-mode: adopt one of the seed personas (sets a cookie, no real auth). */
 export async function setDemoPersona(formData: FormData) {
@@ -23,77 +34,80 @@ export async function setDemoPersona(formData: FormData) {
   redirect(homePathForRole(profile.role));
 }
 
-/** Real-mode email/password sign-in. Redirects to /mfa when 2FA is enrolled. */
-export async function signIn(formData: FormData): Promise<{ error: string } | void> {
-  const email = String(formData.get("email") ?? "");
-  const password = String(formData.get("password") ?? "");
+/**
+ * A portal username resolves to an email through the anon RPC
+ * email_for_username; an address is used as typed. One copy for both doors
+ * (the same rule as mv-app's resolveEmail), so it cannot drift between them.
+ */
+async function resolveEmail(
+  supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>,
+  identifier: string,
+): Promise<string> {
+  const entered = identifier.trim().toLowerCase();
+  if (entered.includes("@")) return entered;
+  const { data, error } = await supabase.rpc("email_for_username", { p_username: entered });
+  if (error) throw new Error(`email_for_username failed: ${error.message}`);
+  return (data as string | null) ?? entered;
+}
+
+/** Family door, step 1: email a six-digit code. Never creates an account. */
+export async function requestFamilyCode(_prev: FamilyCodeState, formData: FormData): Promise<FamilyCodeState> {
+  const identifier = String(formData.get("identifier") ?? "").trim();
+  if (!identifier) return { stage: "ask", error: "Enter the email address or portal username MathVision has for you." };
 
   const supabase = createSupabaseServerClient();
-  if (!supabase) return { error: "Auth is not configured." };
+  if (!supabase) return { stage: "ask", error: "Sign-in is not configured." };
+
+  let email: string;
+  try {
+    email = await resolveEmail(supabase, identifier);
+  } catch (err) {
+    return { stage: "ask", error: err instanceof Error ? err.message : "Could not look up that username." };
+  }
+
+  const { error } = await supabase.auth.signInWithOtp({ email, options: { shouldCreateUser: false } });
+  if (error) return { stage: "ask", error: friendlyOtpError(error.message) };
+  return { stage: "code", email };
+}
+
+/** Family door, step 2: verify the code; an enrolled authenticator still owes its code. */
+export async function verifyFamilyCode(_prev: FamilyCodeState, formData: FormData): Promise<FamilyCodeState> {
+  const email = String(formData.get("email") ?? "").trim().toLowerCase();
+  const token = String(formData.get("code") ?? "").replace(/\D/g, "");
+  if (!email) return { stage: "ask", error: "Start again — the email to check was lost." };
+  if (token.length !== 6) return { stage: "code", email, error: "Enter the six digits from the email." };
+
+  const supabase = createSupabaseServerClient();
+  if (!supabase) return { stage: "code", email, error: "Sign-in is not configured." };
+
+  const { error } = await supabase.auth.verifyOtp({ email, token, type: "email" });
+  if (error) return { stage: "code", email, error: friendlyOtpError(error.message) };
+
+  if (await needsSecondFactor(supabase)) redirect("/mfa");
+  redirect("/");
+}
+
+/** Team door: email or portal username plus password; enrolled accounts go through /mfa. */
+export async function signInTeam(_prev: TeamSignInState, formData: FormData): Promise<TeamSignInState> {
+  const identifier = String(formData.get("identifier") ?? "").trim();
+  const password = String(formData.get("password") ?? "");
+  if (!identifier || !password) return { error: "Enter your email and password to continue." };
+
+  const supabase = createSupabaseServerClient();
+  if (!supabase) return { error: "Sign-in is not configured." };
+
+  let email: string;
+  try {
+    email = await resolveEmail(supabase, identifier);
+  } catch (err) {
+    return { error: err instanceof Error ? err.message : "Could not look up that username." };
+  }
 
   const { error } = await supabase.auth.signInWithPassword({ email, password });
-  if (error) return { error: error.message };
+  if (error) return { error: friendlyPasswordError(error.message) };
 
-  // If this account has a verified TOTP factor, the session is only AAL1 so
-  // far — finish with the 2FA challenge before landing anywhere.
-  const { data: factors } = await supabase.auth.mfa.listFactors();
-  const hasTotp = (factors?.totp ?? []).some((f) => f.status === "verified");
-  if (hasTotp) redirect("/mfa");
-
-  const { data } = await supabase.from("profiles").select("role").eq("email", email).maybeSingle();
-  redirect(homePathForRole((data?.role as never) ?? "student"));
-}
-
-/** The site origin, derived from the request (works on Vercel + localhost). */
-function requestOrigin(): string {
-  const h = headers();
-  const host = h.get("x-forwarded-host") ?? h.get("host") ?? "localhost:3000";
-  const proto = h.get("x-forwarded-proto") ?? (host.startsWith("localhost") ? "http" : "https");
-  return `${proto}://${host}`;
-}
-
-/** Send a password-reset email. Always reports success (never reveals whether
- * an email is registered) and is rate-limited per IP. */
-export async function requestPasswordReset(
-  formData: FormData,
-): Promise<{ ok: boolean; message: string }> {
-  const email = String(formData.get("email") ?? "").trim().toLowerCase();
-  if (!email) return { ok: false, message: "Enter your email address." };
-
-  const sent = { ok: true, message: "If that email has an account, a reset link is on its way." };
-  if (isDemoMode) return sent;
-
-  const allowed = await rateLimit(
-    `pw_reset:${getClientIp()}`,
-    LIMITS.passwordReset.limit,
-    LIMITS.passwordReset.windowSeconds,
-  );
-  if (!allowed) return { ok: false, message: "Too many reset requests — try again later." };
-
-  const supabase = createSupabaseServerClient();
-  if (!supabase) return { ok: false, message: "Auth is not configured." };
-
-  await supabase.auth.resetPasswordForEmail(email, {
-    redirectTo: `${requestOrigin()}/auth/callback?next=/reset-password`,
-  });
-  return sent; // same response either way — no account enumeration
-}
-
-/** Set a new password (requires a session — normal or recovery). */
-export async function updatePassword(
-  formData: FormData,
-): Promise<{ ok: boolean; message: string }> {
-  const password = String(formData.get("password") ?? "");
-  const confirm = String(formData.get("confirm") ?? "");
-  if (password.length < 8) return { ok: false, message: "Use at least 8 characters." };
-  if (password !== confirm) return { ok: false, message: "Passwords don't match." };
-
-  const supabase = createSupabaseServerClient();
-  if (!supabase) return { ok: false, message: "Auth is not configured." };
-
-  const { error } = await supabase.auth.updateUser({ password });
-  if (error) return { ok: false, message: error.message };
-  return { ok: true, message: "Password updated — you can sign in with it now." };
+  if (await needsSecondFactor(supabase)) redirect("/mfa");
+  redirect("/");
 }
 
 /** Sign out (real mode) or clear the demo persona cookie. */
@@ -105,4 +119,28 @@ export async function signOut() {
     await supabase?.auth.signOut();
   }
   redirect("/login");
+}
+
+// --- helpers ----------------------------------------------------------------
+
+async function needsSecondFactor(supabase: NonNullable<ReturnType<typeof createSupabaseServerClient>>) {
+  const { data: levels } = await supabase.auth.mfa.getAuthenticatorAssuranceLevel();
+  return levels?.nextLevel === "aal2" && levels.nextLevel !== levels.currentLevel;
+}
+
+/** Supabase's refusals, said in this screen's voice (the same readings as the app). */
+function friendlyOtpError(text: string): string {
+  if (/signups? not allowed/i.test(text)) {
+    return "We could not find an account for that email address. Work at MathVision? The office can look up your sign-in email.";
+  }
+  if (/rate limit|too many/i.test(text)) return "Too many codes requested — give it a minute, then try again.";
+  if (/token has expired|invalid|expired/i.test(text)) return "That code did not work. Check the digits, or send a fresh one.";
+  return text;
+}
+
+function friendlyPasswordError(text: string): string {
+  if (/invalid login credentials/i.test(text)) return "That email and password do not match.";
+  if (/banned|not active/i.test(text)) return "This account is not active. Ask the office if that is unexpected.";
+  if (/email not confirmed/i.test(text)) return "This address has not been confirmed yet — open the link the office sent you, or ask for a new one in the app.";
+  return text;
 }

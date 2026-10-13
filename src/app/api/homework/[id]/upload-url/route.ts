@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { getCurrentProfile } from "@/lib/data/auth";
-import { getChildren } from "@/lib/data/people";
+import { getChildren } from "@/lib/data/family";
+import { isOffice } from "@/lib/permissions";
 import { getHomework } from "@/lib/data/homework";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
@@ -20,7 +21,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
   if (!hw) return NextResponse.json({ error: "Not found" }, { status: 404 });
 
   const kids = await getChildren(profile);
-  if (!(profile.role === "admin" || kids.some((k) => k.id === hw.student_id))) {
+  if (!(isOffice(profile.role) || kids.some((k) => k.id === hw.student_id))) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 

@@ -1,40 +1,38 @@
 import { NextResponse } from "next/server";
 import { getCurrentProfile } from "@/lib/data/auth";
-import { getSessionById } from "@/lib/data/sessions";
-import { getChildren } from "@/lib/data/people";
+import { getLessonRoomState } from "@/lib/data/lessons";
 import { dailyConfigured, ensureRoom, mintToken } from "@/lib/video/daily";
+import { consentsToRoomPolicy } from "@/lib/video/daily-config";
+import { displayName } from "@/lib/types";
+
+export const dynamic = "force-dynamic";
 
 /**
- * Issues a Daily room URL + meeting token for a lesson. Re-enforces §4:
- * a teacher may only join a session they are assigned to. The assigned teacher
- * joins as owner (record/transcribe rights); the student joins as a guest.
+ * Issues a Daily room URL + meeting token for a lesson, gated on the seat rpc
+ * lesson_room_state gives the caller: the host joins as owner (record /
+ * transcribe rights); learners and observers join as guests. No seat, no token.
  */
 export async function POST(_req: Request, { params }: { params: { sessionId: string } }) {
   const profile = await getCurrentProfile();
   if (!profile) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-  const session = await getSessionById(params.sessionId);
-  if (!session) return NextResponse.json({ error: "Not found" }, { status: 404 });
-
-  const isTeacher = profile.role === "teacher";
-  let allowed = profile.role === "admin";
-  if (isTeacher) allowed = session.teacher_id === profile.id;
-  if (profile.role === "student") allowed = session.student_id === profile.id;
-  if (profile.role === "parent") {
-    const children = await getChildren(profile);
-    allowed = children.some((c) => c.id === session.student_id);
+  let state;
+  try {
+    state = await getLessonRoomState(profile, params.sessionId);
+  } catch (err) {
+    return NextResponse.json({ error: err instanceof Error ? err.message : "Room lookup failed" }, { status: 502 });
   }
-  if (!allowed) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
+  if (!state) return NextResponse.json({ error: "Forbidden" }, { status: 403 });
 
   if (!dailyConfigured) {
-    return NextResponse.json({ configured: false });
+    return NextResponse.json({ configured: false, seat: state.seat });
   }
 
   try {
-    const roomUrl = await ensureRoom(session.id);
-    const isOwner = isTeacher || profile.role === "admin";
-    const token = await mintToken(session.id, profile.display_name, isOwner);
-    return NextResponse.json({ configured: true, roomUrl, token, isOwner });
+    const roomUrl = await ensureRoom(state.session_id, consentsToRoomPolicy(state.consents, state.recording_enabled));
+    const isOwner = state.seat === "host";
+    const token = await mintToken(state.session_id, { userId: profile.id, userName: displayName(profile), isOwner });
+    return NextResponse.json({ configured: true, roomUrl, token, isOwner, seat: state.seat });
   } catch (err) {
     return NextResponse.json(
       { error: err instanceof Error ? err.message : "Video provisioning failed" },

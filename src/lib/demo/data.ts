@@ -1,116 +1,287 @@
 import { DateTime } from "luxon";
+import { roomIsOpen } from "@/lib/lessons/window";
 import type {
-  Consent,
   Course,
+  CourseTopic,
+  LessonRoomState,
+  LessonSeat,
+  OnlineLesson,
   Profile,
   Report,
-  SessionView,
-  TeacherAvailability,
+  Role,
+  RoomConsents,
+  Seat,
+  SessionStatus,
 } from "@/lib/types";
+import { displayName, NO_CONSENTS } from "@/lib/types";
 
 // ============================================================================
-// Demo dataset — mirrors supabase/seed.sql so the app is fully explorable
-// without a Supabase project. Sessions are anchored to "now" so the daily
-// board is always populated. Used only when isDemoMode is true.
+// Demo dataset — mv-app's shapes (profiles with mv roles and a family_id,
+// families, departments, courses, course_topics, session_requests) so the app is
+// explorable without a Supabase project. Sessions are anchored to "now" so a
+// lesson is always live. Used only when isDemoMode is true.
+//
+// Ids are stable: the demo teacher is ...a1, students ...b1/...b2, parent ...c1,
+// admin ...01, so existing scripts keep working. staff is ...d1, support ...d2.
 // ============================================================================
 
-export const demoProfiles: Profile[] = [
-  p("00000000-0000-0000-0000-000000000001", "admin", "Admin Office", "admin@lessons.dev", "Asia/Singapore"),
-  p("00000000-0000-0000-0000-0000000000a1", "teacher", "Maya Chen", "maya@lessons.dev", "Asia/Singapore"),
-  p("00000000-0000-0000-0000-0000000000a2", "teacher", "Daniel Okafor", "daniel@lessons.dev", "Europe/London"),
-  p("00000000-0000-0000-0000-0000000000b1", "student", "Aarav Sharma", "aarav@lessons.dev", "Asia/Singapore"),
-  p("00000000-0000-0000-0000-0000000000b2", "student", "Sofia Rossi", "sofia@lessons.dev", "America/New_York"),
-  p("00000000-0000-0000-0000-0000000000b3", "student", "Lena Park", "lena@lessons.dev", "Asia/Seoul"),
-  p("00000000-0000-0000-0000-0000000000c1", "parent", "Priya Sharma", "priya@lessons.dev", "Asia/Singapore", "+6591234567"),
-  p("00000000-0000-0000-0000-0000000000c2", "parent", "Marco Rossi", "marco@lessons.dev", "America/New_York", "+13475550123"),
+export const CENTRE_TZ = "Asia/Singapore";
+
+const ID = {
+  admin: "00000000-0000-0000-0000-000000000001",
+  maya: "00000000-0000-0000-0000-0000000000a1",
+  daniel: "00000000-0000-0000-0000-0000000000a2",
+  aarav: "00000000-0000-0000-0000-0000000000b1",
+  sofia: "00000000-0000-0000-0000-0000000000b2",
+  lena: "00000000-0000-0000-0000-0000000000b3",
+  priya: "00000000-0000-0000-0000-0000000000c1",
+  marco: "00000000-0000-0000-0000-0000000000c2",
+  grace: "00000000-0000-0000-0000-0000000000d1",
+  ravi: "00000000-0000-0000-0000-0000000000d2",
+} as const;
+
+export const DEMO_IDS = ID;
+
+export const demoFamilies = [
+  { id: "f0000000-0000-0000-0000-000000000001", name: "Sharma", student_names: ["Aarav"] },
+  { id: "f0000000-0000-0000-0000-000000000002", name: "Rossi", student_names: ["Sofia"] },
+  { id: "f0000000-0000-0000-0000-000000000003", name: "Park", student_names: ["Lena"] },
 ];
 
-export const demoParentStudent: Record<string, string[]> = {
-  "00000000-0000-0000-0000-0000000000c1": ["00000000-0000-0000-0000-0000000000b1"],
-  "00000000-0000-0000-0000-0000000000c2": ["00000000-0000-0000-0000-0000000000b2"],
+export const demoDepartments = [
+  { id: "d0000000-0000-0000-0000-000000000001", name: "Online Mathematics" },
+  { id: "d0000000-0000-0000-0000-000000000002", name: "Online Physics" },
+];
+
+const [SHARMA, ROSSI, PARK] = demoFamilies;
+const [MATHS, PHYSICS] = demoDepartments;
+
+export const demoProfiles: Profile[] = [
+  p(ID.admin, "admin", "Admin Office", null, null, CENTRE_TZ),
+  p(ID.grace, "staff", "Grace Lim", null, null, CENTRE_TZ),
+  p(ID.ravi, "support", "Ravi Menon", null, null, CENTRE_TZ),
+  p(ID.maya, "teacher", "Maya Chen", null, null, CENTRE_TZ),
+  p(ID.daniel, "teacher", "Daniel Okafor", null, null, "Europe/London"),
+  p(ID.aarav, "student", "Aarav Sharma", SHARMA.id, "Sec 3", CENTRE_TZ),
+  p(ID.sofia, "student", "Sofia Rossi", ROSSI.id, "Grade 11", "America/New_York"),
+  p(ID.lena, "student", "Lena Park", PARK.id, "JC 1", "Asia/Seoul"),
+  p(ID.priya, "parent", "Priya Sharma", SHARMA.id, null, CENTRE_TZ),
+  p(ID.marco, "parent", "Marco Rossi", ROSSI.id, null, "America/New_York"),
+];
+
+/** The in-charge's room: staff ...d1 is in charge of Online Mathematics. */
+export const demoInchargeDepartments: Record<string, string[]> = {
+  [ID.grace]: [MATHS.id],
 };
 
 export const demoCourses: Course[] = [
-  c("10000000-0000-0000-0000-000000000001", "IGCSE Mathematics", "Mathematics", "aaaa0000-0000-0000-0000-000000000001"),
-  c("10000000-0000-0000-0000-000000000002", "SAT Math Prep", "Mathematics", "aaaa0000-0000-0000-0000-000000000002"),
-  c("10000000-0000-0000-0000-000000000003", "A-Level Physics", "Physics", "aaaa0000-0000-0000-0000-000000000003"),
+  { id: "10000000-0000-0000-0000-000000000001", name: "IGCSE Mathematics", department_id: MATHS.id, group_name: "Secondary" },
+  { id: "10000000-0000-0000-0000-000000000002", name: "SAT Math Prep", department_id: MATHS.id, group_name: "Test prep" },
+  { id: "10000000-0000-0000-0000-000000000003", name: "A-Level Physics", department_id: PHYSICS.id, group_name: "Pre-university" },
 ];
 
-export const demoTeacherCourse: Record<string, string[]> = {
-  "00000000-0000-0000-0000-0000000000a1": [
-    "10000000-0000-0000-0000-000000000001",
-    "10000000-0000-0000-0000-000000000002",
-  ],
-  "00000000-0000-0000-0000-0000000000a2": [
-    "10000000-0000-0000-0000-000000000003",
-    "10000000-0000-0000-0000-000000000001",
-  ],
+const [IGCSE, SAT, PHYS] = demoCourses;
+
+export const demoCourseTopics: CourseTopic[] = [
+  { course_id: IGCSE.id, label: "Quadratic equations", grade_level: "Sec 3" },
+  { course_id: IGCSE.id, label: "Completing the square", grade_level: "Sec 3" },
+  { course_id: IGCSE.id, label: "Trigonometry — sine rule", grade_level: "Sec 3" },
+  { course_id: IGCSE.id, label: "Functions and graphs", grade_level: "Sec 4" },
+  { course_id: SAT.id, label: "Function transformations", grade_level: null },
+  { course_id: SAT.id, label: "Linear systems", grade_level: null },
+  { course_id: PHYS.id, label: "Newtonian mechanics — momentum", grade_level: "JC 1" },
+  { course_id: PHYS.id, label: "Circular motion", grade_level: "JC 1" },
+];
+
+/** lesson_course_materials: course → the materials portal's course id. */
+export const demoCourseMaterials: Record<string, string> = {
+  [IGCSE.id]: "aaaa0000-0000-0000-0000-000000000001",
+  [SAT.id]: "aaaa0000-0000-0000-0000-000000000002",
+  [PHYS.id]: "aaaa0000-0000-0000-0000-000000000003",
 };
 
-export const demoEnrollments: Record<string, string[]> = {
-  "00000000-0000-0000-0000-0000000000b1": [
-    "10000000-0000-0000-0000-000000000001",
-    "10000000-0000-0000-0000-000000000003",
-  ],
-  "00000000-0000-0000-0000-0000000000b2": ["10000000-0000-0000-0000-000000000002"],
-  "00000000-0000-0000-0000-0000000000b3": ["10000000-0000-0000-0000-000000000003"],
+/** lesson_consents, per student (granted_by the parent). */
+export const demoConsents: Record<string, RoomConsents> = {
+  [ID.aarav]: { recording: true, transcript: true, ai_analysis: true, integrity_camera: false },
+  [ID.sofia]: { recording: true, transcript: true, ai_analysis: true, integrity_camera: true },
+  [ID.lena]: { ...NO_CONSENTS, transcript: true, ai_analysis: true },
 };
 
-export const demoAvailability: TeacherAvailability[] = [
-  av("00000000-0000-0000-0000-0000000000a1", 1, "09:00", "17:00", "Asia/Singapore"),
-  av("00000000-0000-0000-0000-0000000000a1", 2, "09:00", "17:00", "Asia/Singapore"),
-  av("00000000-0000-0000-0000-0000000000a1", 3, "09:00", "17:00", "Asia/Singapore"),
-  av("00000000-0000-0000-0000-0000000000a1", 4, "09:00", "17:00", "Asia/Singapore"),
-  av("00000000-0000-0000-0000-0000000000a1", 5, "09:00", "13:00", "Asia/Singapore"),
-  av("00000000-0000-0000-0000-0000000000a2", 1, "08:00", "16:00", "Europe/London"),
-  av("00000000-0000-0000-0000-0000000000a2", 3, "08:00", "16:00", "Europe/London"),
-  av("00000000-0000-0000-0000-0000000000a2", 5, "08:00", "16:00", "Europe/London"),
-];
-
-export const demoConsents: Consent[] = [
-  { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "ai_analysis", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000b2", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c2", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000a1", type: "teacher_eval", granted_by: "00000000-0000-0000-0000-0000000000a1", granted_at: nowISO() },
-];
+/** A session_requests row (the columns the room reads), mode online. */
+export interface DemoSessionRequest {
+  id: string;
+  family_id: string | null;
+  student_id: string;
+  student_name: string;
+  subject: string;
+  topic: string | null;
+  mode: "online";
+  effective_start: string;
+  ends_at: string;
+  duration_minutes: number;
+  status: SessionStatus;
+  department_id: string;
+  assigned_teacher_id: string | null;
+  course_id: string;
+  meeting_url: string | null;
+  arrived_at: string | null;
+  departed_at: string | null;
+  time_zone: string;
+}
 
 /** Sessions are rebuilt on each read so they stay anchored to the current day. */
-export function buildDemoSessions(): SessionView[] {
+export function buildDemoSessionRequests(): DemoSessionRequest[] {
   const now = DateTime.utc();
-  const sgt = "Asia/Singapore";
-  const nineAmTodaySGT = DateTime.now().setZone(sgt).set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
+  const nineAmTodaySGT = DateTime.now().setZone(CENTRE_TZ).set({ hour: 9, minute: 0, second: 0, millisecond: 0 });
 
   return [
-    sv("20000000-0000-0000-0000-000000000001", 0, 1, "b1", "a1",
-       nineAmTodaySGT.toUTC().toISO()!, nineAmTodaySGT.plus({ hours: 1 }).toUTC().toISO()!,
-       "completed", "room-aarav-001", "Quadratic equations — completing the square"),
-    sv("20000000-0000-0000-0000-000000000002", 1, 1, "b2", "a1",
-       now.minus({ minutes: 10 }).toISO()!, now.plus({ minutes: 50 }).toISO()!,
-       "in_progress", "room-sofia-002", "SAT Math — function transformations"),
-    sv("20000000-0000-0000-0000-000000000003", 2, 2, "b3", "a2",
-       now.plus({ hours: 2 }).toISO()!, now.plus({ hours: 3 }).toISO()!,
-       "confirmed", "room-lena-003", "Newtonian mechanics — momentum"),
-    sv("20000000-0000-0000-0000-000000000004", 2, 2, "b1", null,
-       now.plus({ hours: 4 }).toISO()!, now.plus({ hours: 5 }).toISO()!,
-       "scheduled", null, "Physics — circular motion intro"),
-    sv("20000000-0000-0000-0000-000000000005", 0, 0, "b1", "a2",
-       now.minus({ hours: 3 }).toISO()!, now.minus({ hours: 2 }).toISO()!,
-       "no_show", "room-aarav-005", "Trigonometry — sine rule"),
-    sv("20000000-0000-0000-0000-000000000010", 1, 1, "b2", "a1",
-       now.plus({ days: 7 }).toISO()!, now.plus({ days: 7, hours: 1 }).toISO()!,
-       "scheduled", null, "SAT Math — weekly slot", "30000000-0000-0000-0000-000000000001"),
-    // A completed lesson yesterday with no report yet — so the teacher's report
-    // queue has something to write.
-    sv("20000000-0000-0000-0000-000000000006", 0, 0, "b1", "a1",
-       now.minus({ days: 1, hours: 2 }).toISO()!, now.minus({ days: 1, hours: 1 }).toISO()!,
-       "completed", "room-aarav-006", "Quadratics — the quadratic formula"),
+    // This morning, done and reported.
+    sr("20000000-0000-0000-0000-000000000001", IGCSE, ID.aarav, ID.maya,
+      nineAmTodaySGT.toUTC(), 60, "completed", "Quadratic equations — completing the square",
+      { arrived_at: nineAmTodaySGT.toUTC().toISO()!, departed_at: nineAmTodaySGT.plus({ minutes: 58 }).toUTC().toISO()! }),
+    // Live right now: the lesson the persona picker flow opens.
+    sr("20000000-0000-0000-0000-000000000002", SAT, ID.sofia, ID.maya,
+      now.minus({ minutes: 10 }), 60, "confirmed", "SAT Math — function transformations"),
+    sr("20000000-0000-0000-0000-000000000003", PHYS, ID.lena, ID.daniel,
+      now.plus({ hours: 2 }), 60, "confirmed", "Newtonian mechanics — momentum"),
+    // Booked, no teacher added yet (staffing is decided in the room on the day).
+    sr("20000000-0000-0000-0000-000000000004", PHYS, ID.aarav, null,
+      now.plus({ hours: 4 }), 60, "confirmed", "Physics — circular motion intro"),
+    // Earlier today, nobody joined.
+    sr("20000000-0000-0000-0000-000000000005", IGCSE, ID.aarav, ID.daniel,
+      now.minus({ hours: 3 }), 60, "completed", "Trigonometry — sine rule"),
+    sr("20000000-0000-0000-0000-000000000010", SAT, ID.sofia, ID.maya,
+      now.plus({ days: 7 }), 60, "confirmed", "SAT Math — weekly slot"),
+    // Yesterday, completed, no report yet — so the teacher's report queue has work.
+    sr("20000000-0000-0000-0000-000000000006", IGCSE, ID.aarav, ID.maya,
+      now.minus({ days: 1, hours: 2 }), 60, "completed", "Quadratics — the quadratic formula",
+      { arrived_at: now.minus({ days: 1, hours: 2 }).toISO()!, departed_at: now.minus({ days: 1, hours: 1 }).toISO()! }),
   ];
 }
+
+// --- the RPCs, as the demo answers them ------------------------------------
+
+/** rpc room_access: the viewer's seat on a session, or null. */
+export function demoRoomAccess(viewer: Profile, s: DemoSessionRequest, nowMs = Date.now()): Seat | null {
+  const open = roomIsOpen(s, nowMs);
+  if (s.assigned_teacher_id === viewer.id && open) return "host";
+  if (s.student_id === viewer.id && open) return "learner";
+  if (viewer.role === "admin") return "observer";
+  if (viewer.role === "staff" && (demoInchargeDepartments[viewer.id] ?? []).includes(s.department_id)) return "observer";
+  if (viewer.role === "support") return "observer";
+  return null;
+}
+
+/** rpc lesson_room_state: one row for the viewer, or null when they have no seat. */
+export function buildDemoLessonRoomState(sessionId: string, viewer: Profile, nowMs = Date.now()): LessonRoomState | null {
+  const s = buildDemoSessionRequests().find((x) => x.id === sessionId);
+  if (!s) return null;
+  const seat = demoRoomAccess(viewer, s, nowMs);
+  if (!seat) return null;
+  const course = demoCourses.find((c) => c.id === s.course_id)!;
+  const department = demoDepartments.find((d) => d.id === s.department_id)!;
+  const student = demoProfiles.find((x) => x.id === s.student_id)!;
+  const teacher = demoProfiles.find((x) => x.id === s.assigned_teacher_id) ?? null;
+  return {
+    session_id: s.id,
+    seat,
+    status: s.status,
+    mode: s.mode,
+    effective_start: s.effective_start,
+    ends_at: s.ends_at,
+    duration_minutes: s.duration_minutes,
+    time_zone: s.time_zone,
+    topic: s.topic,
+    subject: s.subject,
+    course_id: course.id,
+    course_name: course.name,
+    department_id: department.id,
+    department_name: department.name,
+    student_id: s.student_id,
+    student_name: s.student_name,
+    student_grade: student.grade_level,
+    teacher_id: teacher?.id ?? null,
+    teacher_name: teacher ? displayName(teacher) : null,
+    family_id: s.family_id,
+    arrived_at: s.arrived_at,
+    departed_at: s.departed_at,
+    meeting_url: s.meeting_url,
+    materials_course_id: demoCourseMaterials[course.id] ?? null,
+    notebook_id: demoNotebookId(s.student_id, course.id),
+    room_opened_at: s.arrived_at,
+    room_closed_at: s.departed_at,
+    recording_enabled: true,
+    consents: demoConsents[s.student_id] ?? NO_CONSENTS,
+  };
+}
+
+/** lesson_notebooks is unique(student_id, course_id): one running notebook per student per course. */
+export function demoNotebookId(studentId: string, courseId: string): string {
+  const short = Object.entries(ID).find(([, v]) => v === studentId)?.[0] ?? studentId.slice(-2);
+  return `nb-${short}-${courseId}`;
+}
+
+/** rpc my_online_lessons(p_days): the viewer's online lessons within ±p_days. */
+export function buildDemoOnlineLessons(viewer: Profile, days = 14, nowMs = Date.now()): OnlineLesson[] {
+  const from = nowMs - days * 86_400_000;
+  const to = nowMs + days * 86_400_000;
+  const out: OnlineLesson[] = [];
+  for (const s of buildDemoSessionRequests()) {
+    const start = Date.parse(s.effective_start);
+    if (start < from || start > to) continue;
+    const seat = demoListingSeat(viewer, s);
+    if (!seat) continue;
+    const teacher = demoProfiles.find((x) => x.id === s.assigned_teacher_id) ?? null;
+    const report = demoReports.find((r) => r.session_id === s.id) ?? null;
+    out.push({
+      session_id: s.id,
+      student_id: s.student_id,
+      student_name: s.student_name,
+      subject: s.subject,
+      topic: s.topic,
+      effective_start: s.effective_start,
+      ends_at: s.ends_at,
+      duration_minutes: s.duration_minutes,
+      status: s.status,
+      mode: s.mode,
+      arrived_at: s.arrived_at,
+      departed_at: s.departed_at,
+      meeting_url: s.meeting_url,
+      teacher_id: teacher?.id ?? null,
+      teacher_name: teacher ? displayName(teacher) : null,
+      report_id: report ? `rep-${s.id}` : null,
+      report_status: report ? (report.published_at ? "published" : "draft") : null,
+      draft_ready: s.status === "completed" && !report,
+      time_zone: s.time_zone,
+      seat,
+    });
+  }
+  return out.sort((a, b) => a.effective_start.localeCompare(b.effective_start));
+}
+
+/** The seat my_online_lessons reports: the listing ignores the time window. */
+function demoListingSeat(viewer: Profile, s: DemoSessionRequest): LessonSeat | null {
+  if (s.assigned_teacher_id === viewer.id) return "host";
+  if (s.student_id === viewer.id) return "learner";
+  if (viewer.role === "parent" && viewer.family_id && s.family_id === viewer.family_id) return "family";
+  if (viewer.role === "admin" || viewer.role === "support") return "observer";
+  if (viewer.role === "staff" && (demoInchargeDepartments[viewer.id] ?? []).includes(s.department_id)) return "observer";
+  return null;
+}
+
+/** A parent's children: the students in their family. */
+export function demoChildren(parent: Profile): Profile[] {
+  if (parent.role === "student") return [parent];
+  if (parent.role !== "parent" || !parent.family_id) return [];
+  return demoProfiles.filter((x) => x.role === "student" && x.family_id === parent.family_id);
+}
+
+// --- legacy shapes still shown by the reports pages in demo -----------------
 
 export const demoReports: Report[] = [
   {
     session_id: "20000000-0000-0000-0000-000000000001",
-    teacher_id: "00000000-0000-0000-0000-0000000000a1",
+    teacher_id: ID.maya,
     topics_covered: "Completing the square; vertex form of a parabola.",
     how_student_did: "Aarav worked through 6 problems and reached vertex form independently by the end.",
     strengths: "Strong algebraic manipulation; asked good clarifying questions.",
@@ -127,77 +298,52 @@ export const demoReports: Report[] = [
 
 // --- tiny builders -----------------------------------------------------------
 
-function nowISO() {
-  return DateTime.utc().toISO()!;
-}
-
-function p(
-  id: string,
-  role: Profile["role"],
-  name: string,
-  email: string,
-  tz: string,
-  phone: string | null = null,
-): Profile {
-  return { id, role, display_name: name, email, phone, avatar_url: null, timezone: tz, created_at: nowISO() };
-}
-
-function c(id: string, name: string, subject: string, materials: string): Course {
-  return { id, name, subject, materials_course_id: materials, created_at: nowISO() };
-}
-
-function av(teacher_id: string, weekday: number, start_time: string, end_time: string, timezone: string): TeacherAvailability {
-  return { id: `${teacher_id}-${weekday}`, teacher_id, weekday, start_time, end_time, timezone };
-}
-
-const SHORT_TO_ID: Record<string, string> = {
-  a1: "00000000-0000-0000-0000-0000000000a1",
-  a2: "00000000-0000-0000-0000-0000000000a2",
-  b1: "00000000-0000-0000-0000-0000000000b1",
-  b2: "00000000-0000-0000-0000-0000000000b2",
-  b3: "00000000-0000-0000-0000-0000000000b3",
-};
-
-function profileLite(short: string) {
-  const prof = demoProfiles.find((x) => x.id === SHORT_TO_ID[short])!;
-  return { id: prof.id, display_name: prof.display_name, timezone: prof.timezone, avatar_url: prof.avatar_url };
-}
-
-function sv(
-  id: string,
-  courseIdx: number,
-  _unused: number,
-  studentShort: string,
-  teacherShort: string | null,
-  start: string,
-  end: string,
-  status: SessionView["status"],
-  room: string | null,
-  agenda: string,
-  series_id: string | null = null,
-): SessionView {
-  const course = demoCourses[courseIdx];
-  const student = profileLite(studentShort);
-  const teacher = teacherShort ? profileLite(teacherShort) : null;
+function p(id: string, role: Role, name: string, family_id: string | null, grade: string | null, tz: string): Profile {
   return {
     id,
-    course_id: course.id,
+    role,
+    full_name: name,
+    preferred_name: null,
+    family_id,
+    grade_level: grade,
+    time_zone: tz,
+    avatar_url: null,
+    approved_at: DateTime.utc().minus({ months: 6 }).toISO(),
+    deactivated_at: null,
+    report_auto_approve: false,
+  };
+}
+
+function sr(
+  id: string,
+  course: Course,
+  studentId: string,
+  teacherId: string | null,
+  start: DateTime,
+  durationMinutes: number,
+  status: SessionStatus,
+  topic: string,
+  attendance: { arrived_at: string | null; departed_at: string | null } = { arrived_at: null, departed_at: null },
+): DemoSessionRequest {
+  const student = demoProfiles.find((x) => x.id === studentId)!;
+  return {
+    id,
+    family_id: student.family_id,
     student_id: student.id,
-    teacher_id: teacher?.id ?? null,
-    scheduled_start: start,
-    scheduled_end: end,
-    actual_start: null,
-    actual_end: null,
+    student_name: displayName(student),
+    subject: course.name,
+    topic,
+    mode: "online",
+    effective_start: start.toUTC().toISO()!,
+    ends_at: start.plus({ minutes: durationMinutes }).toUTC().toISO()!,
+    duration_minutes: durationMinutes,
     status,
-    video_room_id: room,
-    recording_url: null,
-    notebook_id: `nb-${studentShort}-${course.id}`,
-    series_id,
-    agenda,
-    cancel_reason: null,
-    created_at: nowISO(),
-    course: { id: course.id, name: course.name, subject: course.subject, materials_course_id: course.materials_course_id },
-    student,
-    teacher,
+    department_id: course.department_id!,
+    assigned_teacher_id: teacherId,
+    course_id: course.id,
+    meeting_url: `/lesson/${id}`,
+    arrived_at: attendance.arrived_at,
+    departed_at: attendance.departed_at,
+    time_zone: CENTRE_TZ,
   };
 }

@@ -6,6 +6,7 @@ import Link from "next/link";
 import {
   BellOff,
   ChevronLeft,
+  Eye,
   ListChecks,
   Clock,
   Loader2,
@@ -22,15 +23,16 @@ import { MaterialsPanel } from "@/components/lesson/materials-panel";
 import { ProviderBadge } from "@/components/lesson/video-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ScoreBars } from "@/components/coaching/score-bars";
 import { useLiveCoach } from "@/lib/coaching/use-live-coach";
 import { DEMO_LESSON_TRANSCRIPT } from "@/lib/coaching/demo-transcript";
 import { finalizeLesson } from "@/lib/actions/coaching";
-import { startSessionClock } from "@/lib/actions/sessions";
+import { endLesson, joinLesson } from "@/lib/actions/lesson";
 import type { TeacherFeedback } from "@/lib/coaching/analyze";
-import type { SessionStatus } from "@/lib/types";
+import type { RoomConsents, Seat, SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
 // tldraw is browser-only.
@@ -48,42 +50,75 @@ const NotebookPanel = dynamic(
 
 type Tab = "notebook" | "video" | "materials" | "activity";
 
-export function LessonRoom({
-  sessionId,
-  notebookId,
-  materialsCourseId,
-  courseName,
-  status,
-  backHref,
-  selfId,
-  selfName,
-  peerName,
-  isTeacher,
-  initialSnapshot,
-  actualStartISO,
-  demoCoaching,
-  activitySets,
-}: {
+export interface LessonRoomProps {
   sessionId: string;
+  /** The viewer's seat, as rpc lesson_room_state decided it. */
+  seat: Seat;
+  /** The realtime channel key for the notebook (the lesson_notebooks id, or a session key). */
   notebookId: string;
-  materialsCourseId: string | null;
+  /** The lesson_notebooks row to persist to; null when the lesson has none yet. */
+  saveId: string | null;
   courseName: string;
+  topic: string | null;
   status: SessionStatus;
   backHref: string;
   selfId: string;
   selfName: string;
-  peerName: string;
-  isTeacher: boolean;
+  studentName: string;
+  teacherName: string | null;
+  /** The booked slot, UTC ISO. */
+  startISO: string;
+  endISO: string;
+  /** session_requests.arrived_at — set by rpc lesson_join when the learner first joined. */
+  arrivedAtISO: string | null;
+  /** session_requests.departed_at / lesson_rooms.closed_at — set by rpc lesson_end. */
+  endedAtISO: string | null;
+  consents: RoomConsents;
   initialSnapshot: unknown | null;
-  actualStartISO: string | null;
   demoCoaching: boolean;
-  /** Practice sets the teacher can push into the room. */
+  /** Practice sets the host can push into the room. */
   activitySets: ActivitySet[];
-}) {
-  const [tab, setTab] = useState<Tab>("notebook");
-  const coach = useLiveCoach(sessionId, isTeacher);
+}
 
-  // In-lesson activities: the teacher pushes a quick check; the student answers
+export function LessonRoom({
+  sessionId,
+  seat,
+  notebookId,
+  saveId,
+  courseName,
+  topic,
+  status,
+  backHref,
+  selfId,
+  selfName,
+  studentName,
+  teacherName,
+  arrivedAtISO,
+  endedAtISO,
+  consents,
+  initialSnapshot,
+  demoCoaching,
+  activitySets,
+}: LessonRoomProps) {
+  const isHost = seat === "host";
+  const isLearner = seat === "learner";
+  const isObserver = seat === "observer";
+
+  // Who the viewer is in the room with.
+  const peerName = isHost
+    ? studentName
+    : isLearner
+      ? (teacherName ?? "Teacher (not yet added)")
+      : `${teacherName ?? "Teacher"} and ${studentName}`;
+
+  const [tab, setTab] = useState<Tab>("notebook");
+
+  // The live coach is the host's, and only with the family's consent to AI
+  // analysis. Observers never see it.
+  const coachOn = isHost && consents.ai_analysis;
+  const coach = useLiveCoach(sessionId, coachOn);
+
+  // In-lesson activities: the host pushes a quick check; the learner answers
   // in the side panel, which opens itself when something arrives.
   const [activityOpen, setActivityOpen] = useState(false);
   const handleActivityArrived = useCallback(() => {
@@ -93,12 +128,12 @@ export function LessonRoom({
   const activity = useLessonActivity({
     sessionId,
     selfId,
-    role: isTeacher ? "teacher" : "student",
+    role: isHost ? "teacher" : "student",
     onActivity: handleActivityArrived,
   });
   const activityPanel = (
     <ActivityPanel
-      isTeacher={isTeacher}
+      isTeacher={isHost}
       sets={activitySets}
       activity={activity.activity}
       submission={activity.submission}
@@ -116,25 +151,35 @@ export function LessonRoom({
     />
   );
 
-  // The lesson clock runs from when BOTH join (actual_start), not booking time.
-  const [startedAtMs, setStartedAtMs] = useState<number | null>(
-    actualStartISO ? Date.parse(actualStartISO) : null,
-  );
-  const [endedAtMs, setEndedAtMs] = useState<number | null>(null);
-  const startedRef = useRef<boolean>(Boolean(actualStartISO));
+  // The lesson clock runs from the learner's arrival (arrived_at), not booking time.
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(arrivedAtISO ? Date.parse(arrivedAtISO) : null);
+  const [endedAtMs, setEndedAtMs] = useState<number | null>(endedAtISO ? Date.parse(endedAtISO) : null);
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const joinedRef = useRef<boolean>(Boolean(arrivedAtISO));
 
+  // The learner's first successful join is the attendance write: rpc lesson_join
+  // sets arrived_at on the booking (the one place the room decides attendance).
+  const handleJoined = useCallback(() => {
+    if (!isLearner || joinedRef.current) return;
+    joinedRef.current = true;
+    joinLesson(sessionId)
+      .then((r) => setStartedAtMs(Date.parse(r.arrived_at)))
+      .catch((e) => {
+        joinedRef.current = false;
+        setJoinError(e instanceof Error ? e.message : "Your arrival could not be recorded.");
+      });
+  }, [isLearner, sessionId]);
+
+  // The host (and an observer) see the clock start when the learner is in the room.
   const handlePeerPresent = useCallback(() => {
-    if (startedRef.current) return;
-    startedRef.current = true;
-    startSessionClock(sessionId)
-      .then((r) => setStartedAtMs(Date.parse(r.actual_start)))
-      .catch(() => setStartedAtMs(Date.now()));
-  }, [sessionId]);
+    if (isLearner) return;
+    setStartedAtMs((cur) => cur ?? Date.now());
+  }, [isLearner]);
 
-  // §7.2 periodic AI live-coaching pass: every ~2.5 min, send the recent
+  // Periodic AI live-coaching pass: every ~2.5 min, send the recent
   // transcript to Claude for a subtler nudge than the threshold rules.
   useEffect(() => {
-    if (!isTeacher) return;
+    if (!coachOn) return;
     const id = setInterval(async () => {
       const segs = coach.getSegments();
       if (segs.length < 4) return;
@@ -151,19 +196,19 @@ export function LessonRoom({
       }
     }, 150_000);
     return () => clearInterval(id);
-  }, [isTeacher, coach]);
+  }, [coachOn, coach]);
 
   // Time-based cues (silence, praise drought) need a tick, not just segments.
   // Real-time only — demo uses the scripted transcript on its own clock.
   useEffect(() => {
-    if (!isTeacher || demoCoaching) return;
+    if (!coachOn || demoCoaching) return;
     const id = setInterval(() => coach.tick(), 15_000);
     return () => clearInterval(id);
-  }, [isTeacher, demoCoaching, coach]);
+  }, [coachOn, demoCoaching, coach]);
 
   // Demo: drive the live coach from a scripted transcript (no live audio).
   useEffect(() => {
-    if (!demoCoaching || !isTeacher) return;
+    if (!demoCoaching || !coachOn) return;
     let i = 0;
     const id = setInterval(() => {
       if (i >= DEMO_LESSON_TRANSCRIPT.length) {
@@ -174,7 +219,7 @@ export function LessonRoom({
       i++;
     }, 3_500);
     return () => clearInterval(id);
-  }, [demoCoaching, isTeacher, coach]);
+  }, [demoCoaching, coachOn, coach]);
 
   // The video stage must mount EXACTLY ONCE — the Daily SDK allows a single
   // call object per page, so rendering it in both the desktop rail and the
@@ -186,17 +231,19 @@ export function LessonRoom({
       sessionId={sessionId}
       selfName={selfName}
       peerName={peerName}
-      isTeacher={isTeacher}
-      onTranscript={coach.ingest}
+      isHost={isHost}
+      onTranscript={coachOn ? coach.ingest : undefined}
       onPeerPresent={handlePeerPresent}
+      onJoined={handleJoined}
     />
   );
 
-  const liveStatus: SessionStatus = endedAtMs ? "completed" : startedAtMs ? "in_progress" : status;
+  const ended = Boolean(endedAtMs);
+  const live = Boolean(startedAtMs) && !ended;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* Header — Leave, lesson info, live clock, and (teacher) End button. */}
+      {/* Header — Leave, lesson info, live clock, and (host) End button. */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 md:px-4">
         <Button asChild variant="ghost" size="sm">
           <Link href={backHref}>
@@ -207,44 +254,53 @@ export function LessonRoom({
         <div className="min-w-0">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{courseName}</span>
-            <StatusBadge status={liveStatus} />
+            {live ? <LiveBadge /> : ended ? <Badge variant="secondary">Ended</Badge> : <StatusBadge status={status} />}
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Avatar name={peerName} size={16} />
-            <span className="truncate">with {peerName}</span>
+            {isObserver ? <Eye className="h-3.5 w-3.5" /> : <Avatar name={peerName} size={16} />}
+            <span className="truncate">
+              {isObserver ? `Observing ${peerName}` : `with ${peerName}`}
+              {topic ? ` · ${topic}` : ""}
+            </span>
           </div>
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          <Button
-            variant={activityOpen ? "secondary" : "ghost"}
-            size="sm"
-            onClick={() => {
-              const next = !activityOpen;
-              setActivityOpen(next);
-              setTab(next ? "activity" : "notebook");
-            }}
-            title="Activity: send a quick check or mini test"
-          >
-            <ListChecks className="h-4 w-4" />
-            <span className="hidden sm:inline">Activity</span>
-            {activity.activity && !activityOpen && <span className="h-2 w-2 rounded-full bg-primary" />}
-          </Button>
+          {!isObserver && (
+            <Button
+              variant={activityOpen ? "secondary" : "ghost"}
+              size="sm"
+              onClick={() => {
+                const next = !activityOpen;
+                setActivityOpen(next);
+                setTab(next ? "activity" : "notebook");
+              }}
+              title="Activity: send a quick check or mini test"
+            >
+              <ListChecks className="h-4 w-4" />
+              <span className="hidden sm:inline">Activity</span>
+              {activity.activity && !activityOpen && <span className="h-2 w-2 rounded-full bg-primary" />}
+            </Button>
+          )}
           <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} />
           <ProviderBadge />
-          {isTeacher && (
+          {isHost && (
             <EndLessonButton
               sessionId={sessionId}
               courseName={courseName}
               selfName={selfName}
               peerName={peerName}
               getSegments={coach.getSegments}
-              ended={Boolean(endedAtMs)}
+              ended={ended}
               onEnded={() => setEndedAtMs(Date.now())}
             />
           )}
         </div>
       </header>
+
+      {joinError && (
+        <div className="border-b bg-destructive/10 px-4 py-1.5 text-center text-xs text-destructive">{joinError}</div>
+      )}
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* Mobile tab switcher */}
@@ -252,7 +308,9 @@ export function LessonRoom({
           <TabButton active={tab === "notebook"} onClick={() => setTab("notebook")} icon={<NotebookPen className="h-4 w-4" />} label="Notebook" />
           <TabButton active={tab === "video"} onClick={() => setTab("video")} icon={<Video className="h-4 w-4" />} label="Video" />
           <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
-          <TabButton active={tab === "activity"} onClick={() => { setTab("activity"); setActivityOpen(true); }} icon={<ListChecks className="h-4 w-4" />} label="Activity" />
+          {!isObserver && (
+            <TabButton active={tab === "activity"} onClick={() => { setTab("activity"); setActivityOpen(true); }} icon={<ListChecks className="h-4 w-4" />} label="Activity" />
+          )}
         </div>
 
         {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
@@ -260,19 +318,19 @@ export function LessonRoom({
           <aside className="flex w-80 shrink-0 flex-col border-r xl:w-96">
             <div className="h-[46%] min-h-[240px] border-b">{videoStage}</div>
             <div className="min-h-0 flex-1">
-              <MaterialsPanel materialsCourseId={materialsCourseId} />
+              <MaterialsPanel sessionId={sessionId} />
             </div>
           </aside>
         )}
 
         {/* Notebook (centerpiece) */}
         <main className={cn("relative min-h-[60vh] flex-1 bg-muted/30 lg:block", tab === "notebook" ? "block" : "hidden")}>
-          <NotebookPanel notebookId={notebookId} userId={selfId} userName={selfName} initialSnapshot={initialSnapshot} />
-          {isTeacher && <CoachChip coach={coach} />}
+          <NotebookPanel notebookId={notebookId} saveId={saveId} userId={selfId} userName={selfName} initialSnapshot={initialSnapshot} />
+          {coachOn && <CoachChip coach={coach} />}
         </main>
 
         {/* Activity panel (desktop): a right-hand rail beside the notebook */}
-        {isDesktop === true && activityOpen && (
+        {isDesktop === true && activityOpen && !isObserver && (
           <aside className="flex w-[400px] shrink-0 flex-col border-l bg-card">{activityPanel}</aside>
         )}
 
@@ -281,9 +339,9 @@ export function LessonRoom({
           <>
             <div className={cn("min-h-[60vh]", tab === "video" ? "block" : "hidden")}>{videoStage}</div>
             <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
-              <MaterialsPanel materialsCourseId={materialsCourseId} />
+              <MaterialsPanel sessionId={sessionId} />
             </div>
-            <div className={cn("min-h-[60vh]", tab === "activity" ? "block" : "hidden")}>{activityPanel}</div>
+            {!isObserver && <div className={cn("min-h-[60vh]", tab === "activity" ? "block" : "hidden")}>{activityPanel}</div>}
           </>
         )}
       </div>
@@ -291,7 +349,19 @@ export function LessonRoom({
   );
 }
 
-/** Live elapsed time since both joined (or final duration once ended). */
+function LiveBadge() {
+  return (
+    <Badge variant="success">
+      <span className="relative flex h-2 w-2">
+        <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-75" />
+        <span className="relative inline-flex h-2 w-2 rounded-full bg-success" />
+      </span>
+      Live now
+    </Badge>
+  );
+}
+
+/** Live elapsed time since the learner arrived (or final duration once ended). */
 function Elapsed({ startedAtMs, endedAtMs }: { startedAtMs: number | null; endedAtMs: number | null }) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -349,7 +419,7 @@ function useIsDesktop(): boolean | null {
   return isDesktop;
 }
 
-/** §7.2 The live coach nudge — teacher-only, glanceable, mutable, dismissible. */
+/** The live coach nudge — host-only, glanceable, mutable, dismissible. */
 function CoachChip({ coach }: { coach: ReturnType<typeof useLiveCoach> }) {
   if (coach.muted) {
     return (
@@ -385,7 +455,11 @@ function CoachChip({ coach }: { coach: ReturnType<typeof useLiveCoach> }) {
   );
 }
 
-/** Ends the lesson: runs the §7.3 post-session analysis and shows the feedback. */
+/**
+ * Ends the lesson: rpc lesson_end writes departed_at, stores the transcript and
+ * starts the server-side analysis; the local analysis still runs for now so the
+ * feedback shows immediately.
+ */
 function EndLessonButton({
   sessionId,
   courseName,
@@ -405,17 +479,23 @@ function EndLessonButton({
 }) {
   const [loading, setLoading] = useState(false);
   const [feedback, setFeedback] = useState<TeacherFeedback | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
   async function end() {
     setLoading(true);
+    setError(null);
     try {
-      const fb = await finalizeLesson(sessionId, getSegments(), {
+      const segments = getSegments();
+      if (!ended) await endLesson(sessionId, segments);
+      onEnded();
+      const fb = await finalizeLesson(sessionId, segments, {
         teacherName: selfName,
         studentName: peerName,
         course: courseName,
       });
-      onEnded();
       setFeedback(fb);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "The lesson could not be ended.");
     } finally {
       setLoading(false);
     }
@@ -423,11 +503,12 @@ function EndLessonButton({
 
   return (
     <>
-      <Button onClick={end} disabled={loading} size="sm" variant={ended ? "outline" : "default"}>
+      <Button onClick={end} disabled={loading} size="sm" variant={ended ? "outline" : "default"} title={error ?? undefined}>
         {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareCheckBig className="h-4 w-4" />}
         <span className="hidden sm:inline">{ended ? "View feedback" : "End & get feedback"}</span>
         <span className="sm:hidden">{ended ? "Feedback" : "End"}</span>
       </Button>
+      {error && <span className="hidden max-w-[16rem] truncate text-xs text-destructive md:inline">{error}</span>}
 
       <Dialog open={!!feedback} onOpenChange={(o) => !o && setFeedback(null)}>
         <DialogContent className="max-h-[90vh] overflow-y-auto">

@@ -7,14 +7,10 @@
 // explorable in development.
 // ============================================================================
 
-export type ActingRole = "student" | "teacher" | "in_charge" | "admin";
+import type { MaterialsRole } from "@/lib/permissions";
 
-/** The lessons-app role → the portal's acting role (teacher-only gating happens on the portal). */
-export function actingRoleFor(role: string): ActingRole {
-  if (role === "admin") return "admin";
-  if (role === "teacher") return "teacher";
-  return "student";
-}
+/** The portal's acting roles. The mapping from an mv-app role plus seat lives in src/lib/permissions.ts (canSeeMaterialsAs). */
+export type ActingRole = MaterialsRole;
 
 export interface MaterialFile {
   id: string;

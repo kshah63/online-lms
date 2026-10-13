@@ -25,6 +25,8 @@ interface RoomProps {
   peerName: string;
   onTranscript?: (seg: TranscriptSegment) => void;
   onPeerPresent?: () => void;
+  /** This participant's own join completed (fires once). */
+  onJoined?: () => void;
 }
 
 export function DailyRoom(props: RoomProps) {
@@ -53,7 +55,7 @@ export function DailyRoom(props: RoomProps) {
   );
 }
 
-function RoomInner({ isOwner, isTeacher, selfName, peerName, onTranscript, onPeerPresent }: RoomProps) {
+function RoomInner({ isOwner, isTeacher, selfName, peerName, onTranscript, onPeerPresent, onJoined }: RoomProps) {
   const daily = useDaily();
   const localId = useLocalSessionId();
   const remoteIds = useParticipantIds({ filter: "remote" });
@@ -63,6 +65,18 @@ function RoomInner({ isOwner, isTeacher, selfName, peerName, onTranscript, onPee
   const [cam, setCam] = useState(true);
   const [transcription, setTranscription] = useState<"idle" | "on" | "error">("idle");
   const [transcriptionError, setTranscriptionError] = useState<string | null>(null);
+
+  // Our own join completed — the learner's lesson_join hangs off this (once).
+  const joinedRef = useRef(false);
+  const announceJoined = useCallback(() => {
+    if (joinedRef.current) return;
+    joinedRef.current = true;
+    onJoined?.();
+  }, [onJoined]);
+  useDailyEvent("joined-meeting", announceJoined);
+  useEffect(() => {
+    if (daily?.meetingState?.() === "joined-meeting") announceJoined();
+  }, [daily, announceJoined]);
 
   // Both participants are in the room — start the real session clock (once).
   const announcedRef = useRef(false);

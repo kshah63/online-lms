@@ -18,7 +18,9 @@ import { saveNotebookSnapshot } from "@/lib/actions/notebook";
 // §5 Real-time collaborative notebook sync on Supabase Realtime.
 //   - document changes broadcast both ways and merge as remote changes
 //   - presence (live cursors) broadcast with staleness cleanup
-//   - the running document is persisted to `notebooks.tldraw_snapshot`
+//   - the running document is persisted to lesson_notebooks.tldraw_snapshot
+//     through rpc save_lesson_notebook (saveId); the channel is keyed by
+//     notebookId so a lesson with no notebook row yet still syncs live
 // When Supabase isn't configured, returns no onMount and the caller falls back
 // to tldraw's local IndexedDB persistence.
 // ============================================================================
@@ -26,13 +28,16 @@ import { saveNotebookSnapshot } from "@/lib/actions/notebook";
 const AVATAR_COLORS = ["#6366f1", "#0ea5e9", "#10b981", "#f59e0b", "#ef4444", "#8b5cf6"];
 
 interface SyncArgs {
+  /** The realtime channel key. */
   notebookId: string;
+  /** The lesson_notebooks id to persist to; null when the lesson has none yet. */
+  saveId: string | null;
   userId: string;
   userName: string;
   initialSnapshot: unknown | null;
 }
 
-export function useNotebookSync({ notebookId, userId, userName, initialSnapshot }: SyncArgs) {
+export function useNotebookSync({ notebookId, saveId, userId, userName, initialSnapshot }: SyncArgs) {
   const supabase = createSupabaseBrowserClient();
   const cleanupRef = useRef<(() => void) | null>(null);
 
@@ -111,7 +116,7 @@ export function useNotebookSync({ notebookId, userId, userName, initialSnapshot 
           if (saveTimer) clearTimeout(saveTimer);
           saveTimer = setTimeout(() => {
             const snap = getSnapshot(editor.store);
-            void saveNotebookSnapshot(notebookId, snap).catch(() => {});
+            void saveNotebookSnapshot(saveId, snap).catch((e) => console.error("notebook save failed:", e));
           }, 2_000);
         },
         { source: "user", scope: "document" },
@@ -128,7 +133,7 @@ export function useNotebookSync({ notebookId, userId, userName, initialSnapshot 
         supabase.removeChannel(channel);
       };
     },
-    [supabase, notebookId, userId, userName, initialSnapshot],
+    [supabase, notebookId, saveId, userId, userName, initialSnapshot],
   );
 
   const dispose = useCallback(() => {

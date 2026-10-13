@@ -12,10 +12,12 @@ import { cn } from "@/lib/utils";
 
 /**
  * The course's material, as the portal serves it: nested folders, teacher-only
- * rows already filtered by the portal for the caller's role. Opening a file
- * mints a 60-second signed URL through the server proxy.
+ * rows already filtered by the portal for the caller's role. The course is the
+ * lesson's lesson_course_materials mapping and the role is the viewer's seat,
+ * both resolved server-side from the session. Opening a file mints a
+ * 60-second signed URL through the server proxy.
  */
-export function MaterialsPanel({ materialsCourseId }: { materialsCourseId: string | null }) {
+export function MaterialsPanel({ sessionId }: { sessionId: string }) {
   const [tree, setTree] = useState<MaterialsTree | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -28,7 +30,7 @@ export function MaterialsPanel({ materialsCourseId }: { materialsCourseId: strin
     let cancelled = false;
     (async () => {
       try {
-        const res = await fetch(`/api/materials/tree?course=${encodeURIComponent(materialsCourseId ?? "")}`);
+        const res = await fetch(`/api/materials/tree?session=${encodeURIComponent(sessionId)}`);
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok) throw new Error(data.error ?? "Failed");
@@ -42,7 +44,7 @@ export function MaterialsPanel({ materialsCourseId }: { materialsCourseId: strin
     return () => {
       cancelled = true;
     };
-  }, [materialsCourseId]);
+  }, [sessionId]);
 
   async function openFile(file: MaterialFile) {
     setOpening(file.id);
@@ -50,7 +52,7 @@ export function MaterialsPanel({ materialsCourseId }: { materialsCourseId: strin
       const res = await fetch("/api/materials/view-url", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ fileId: file.id }),
+        body: JSON.stringify({ fileId: file.id, sessionId }),
       });
       const data = await res.json();
       if (res.ok && data.url) window.open(data.url, "_blank", "noopener");
@@ -60,7 +62,7 @@ export function MaterialsPanel({ materialsCourseId }: { materialsCourseId: strin
   }
 
   async function viewUrlFor(fileId: string): Promise<string> {
-    const res = await fetch("/api/materials/view-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fileId }) });
+    const res = await fetch("/api/materials/view-url", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ fileId, sessionId }) });
     const data = await res.json();
     if (!res.ok || !data.url) throw new Error(data.error ?? "Could not open the file");
     return data.url as string;

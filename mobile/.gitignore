@@ -1,9 +1,0 @@
-node_modules/
-.expo/
-dist/
-web-build/
-*.log
-.env
-.env*.local
-expo-env.d.ts
-.DS_Store

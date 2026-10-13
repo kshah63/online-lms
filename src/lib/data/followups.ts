@@ -1,22 +1,27 @@
 import { DateTime } from "luxon";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { demoParentStudent, demoProfiles } from "@/lib/demo/data";
-import type { FollowupView } from "@/lib/types";
+import { demoProfiles } from "@/lib/demo/data";
+import { displayName, type FollowupView } from "@/lib/types";
 
-// ---------------------------------------------------------------------------
-// Demo follow-ups — one of each meaningful type, all on students whose parents
-// have a phone so the WhatsApp action is exercised.
-// ---------------------------------------------------------------------------
+// ============================================================================
+// Follow-ups, behind the data layer. online-lms's followups table is retired:
+// the lesson's follow-ups are mv-app's lesson_followups (proposed from the
+// transcript, approved by the in-charge in the app, which raises message_tasks
+// and student_notes). TODO(next stage): read lesson_followups here, or drop this
+// page in favour of the app's queue. The live path returns nothing until then.
+// ============================================================================
+
 function parentOf(studentId: string) {
-  const parentId = Object.entries(demoParentStudent).find(([, kids]) => kids.includes(studentId))?.[0];
-  const parent = parentId ? demoProfiles.find((p) => p.id === parentId) : null;
-  return parent ? { id: parent.id, display_name: parent.display_name, phone: parent.phone } : null;
+  const student = demoProfiles.find((p) => p.id === studentId);
+  const parent = student?.family_id
+    ? demoProfiles.find((p) => p.role === "parent" && p.family_id === student.family_id)
+    : null;
+  return parent ? { id: parent.id, name: displayName(parent) } : null;
 }
 
 function studentLite(studentId: string) {
   const s = demoProfiles.find((p) => p.id === studentId)!;
-  return { id: s.id, display_name: s.display_name, timezone: s.timezone, avatar_url: s.avatar_url, phone: s.phone };
+  return { id: s.id, name: displayName(s), avatar_url: s.avatar_url };
 }
 
 function demoFollowups(): FollowupView[] {
@@ -57,34 +62,12 @@ function demoFollowups(): FollowupView[] {
   ];
 }
 
-/** Open + snoozed follow-ups for the admin dashboard, with student + parent. */
+/** Open + snoozed follow-ups for the office, with student + parent. */
 export async function getOpenFollowups(): Promise<FollowupView[]> {
   if (isDemoMode) {
     const order = { high: 0, normal: 1, low: 2 } as const;
     return demoFollowups().sort((a, b) => order[a.priority] - order[b.priority]);
   }
-
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase
-    .from("followups")
-    .select(`*, student:profiles!followups_student_id_fkey(id,display_name,timezone,avatar_url,phone)`)
-    .in("status", ["open", "snoozed"])
-    .order("priority")
-    .order("created_at", { ascending: false });
-  if (error) throw error;
-
-  const rows = (data ?? []) as unknown as FollowupView[];
-  // Resolve parents in one query.
-  const studentIds = [...new Set(rows.map((r) => r.student_id))];
-  if (studentIds.length) {
-    const { data: links } = await supabase
-      .from("parent_student")
-      .select(`student_id, parent:profiles!parent_student_parent_id_fkey(id,display_name,phone)`)
-      .in("student_id", studentIds);
-    const byStudent = new Map<string, FollowupView["parent"]>();
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    (links ?? []).forEach((l: any) => byStudent.set(l.student_id, l.parent));
-    rows.forEach((r) => (r.parent = byStudent.get(r.student_id) ?? null));
-  }
-  return rows;
+  // TODO(next stage): lesson_followups with status proposed for the in-charge's departments (RLS: is_incharge_of, admin).
+  return [];
 }

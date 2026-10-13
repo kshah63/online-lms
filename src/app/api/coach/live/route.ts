@@ -7,7 +7,8 @@ import type { TranscriptSegment } from "@/lib/coaching/metrics";
 /** §7.2 periodic LLM live-coaching pass — teacher-only, called on an interval. */
 export async function POST(req: Request) {
   const profile = await getCurrentProfile();
-  if (!profile || (profile.role !== "teacher" && profile.role !== "admin")) {
+  // The live coach belongs to the host; a staff member who teaches is a host too.
+  if (!profile || (profile.role !== "teacher" && profile.role !== "staff" && profile.role !== "admin")) {
     return NextResponse.json({ nudge: null });
   }
 

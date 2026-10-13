@@ -1,28 +1,28 @@
-import Link from "next/link";
-import { BookOpen, FileText, GraduationCap, Lightbulb, PlayCircle, Star, Target } from "lucide-react";
+import { BookOpen, FileText, GraduationCap, Lightbulb, Star, Target } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { Avatar } from "@/components/ui/avatar";
-import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Separator } from "@/components/ui/separator";
-import { requireRole } from "@/lib/data/auth";
-import { getPastForProfile } from "@/lib/data/sessions";
-import { getReportForSession } from "@/lib/data/people";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
+import { getReport } from "@/lib/data/reports";
 
+/**
+ * Published lesson reports. TODO(next stage): read mv-app's session_reports
+ * (my_online_lessons.report_id, status published) instead of the legacy shape.
+ */
 export default async function ReportsPage() {
   const profile = await requireRole("student", "parent");
-  const tz = profile.timezone;
+  const tz = viewerTimeZone(profile);
   // Parents don't see the individual teacher's name on reports.
   const showTeacher = profile.role !== "parent";
 
-  const past = await getPastForProfile(profile, 30);
+  const nowISO = new Date().toISOString();
+  const past = (await listMyOnlineLessons(profile, 30)).filter((l) => l.effective_start < nowISO).reverse();
   const withReports = (
-    await Promise.all(
-      past.map(async (s) => ({ session: s, report: await getReportForSession(s.id) })),
-    )
+    await Promise.all(past.map(async (lesson) => ({ lesson, report: await getReport(lesson.session_id) })))
   ).filter((x) => x.report?.published_at);
 
   return (
@@ -33,23 +33,22 @@ export default async function ReportsPage() {
         <EmptyState
           icon={<FileText className="h-5 w-5" />}
           title="No published reports yet"
-          description="After each lesson, your teacher publishes a report here."
+          description="After each lesson, your teacher's report is approved by the centre and appears here and in the MathVision app."
         />
       ) : (
         <div className="space-y-4">
-          {withReports.map(({ session, report }) => (
-            <Card key={session.id}>
+          {withReports.map(({ lesson, report }) => (
+            <Card key={lesson.session_id}>
               <CardHeader className="pb-3">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>
-                    <CardTitle className="text-base">{session.course.name}</CardTitle>
+                    <CardTitle className="text-base">{lesson.subject ?? "Lesson"}</CardTitle>
                     <p className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                      <span>
-                        {DateTime.fromISO(session.scheduled_start, { zone: "utc" }).setZone(tz).toFormat("cccc, d LLL yyyy")}
-                      </span>
-                      {showTeacher && session.teacher && (
+                      <span>{DateTime.fromISO(lesson.effective_start, { zone: "utc" }).setZone(tz).toFormat("cccc, d LLL yyyy")}</span>
+                      {profile.role === "parent" && <span>{lesson.student_name}</span>}
+                      {showTeacher && lesson.teacher_name && (
                         <span className="flex items-center gap-1.5">
-                          <Avatar name={session.teacher.display_name} size={18} /> {session.teacher.display_name}
+                          <Avatar name={lesson.teacher_name} size={18} /> {lesson.teacher_name}
                         </span>
                       )}
                     </p>
@@ -72,13 +71,6 @@ export default async function ReportsPage() {
                       <p className="mt-1 text-sm">{report!.homework}</p>
                     </div>
                   </>
-                )}
-                {session.recording_url && (
-                  <Button asChild variant="outline" size="sm">
-                    <Link href={session.recording_url}>
-                      <PlayCircle className="h-4 w-4" /> Rewatch recording
-                    </Link>
-                  </Button>
                 )}
               </CardContent>
             </Card>
@@ -105,10 +97,7 @@ function Stars({ rating }: { rating: number }) {
   return (
     <div className="flex items-center gap-0.5">
       {Array.from({ length: 5 }).map((_, i) => (
-        <Star
-          key={i}
-          className={i < rating ? "h-4 w-4 fill-warning text-warning" : "h-4 w-4 text-muted-foreground/30"}
-        />
+        <Star key={i} className={i < rating ? "h-4 w-4 fill-warning text-warning" : "h-4 w-4 text-muted-foreground/30"} />
       ))}
     </div>
   );

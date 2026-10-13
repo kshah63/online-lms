@@ -1,76 +1,24 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { useFormState, useFormStatus } from "react-dom";
-import { KeyRound, Loader2, ShieldCheck, ShieldOff } from "lucide-react";
+import { Loader2, ShieldCheck, ShieldOff } from "lucide-react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { updatePassword } from "@/lib/actions/auth";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Badge } from "@/components/ui/badge";
 
 // ============================================================================
-// Account security: change password + TOTP two-factor auth (enroll / remove).
-// All of it runs against Supabase Auth from the browser; RLS/auth policies do
-// the enforcement.
+// Account security: TOTP two-factor auth (enroll / remove). Passwords and
+// resets belong to the MathVision app, which owns account management. This
+// runs against Supabase Auth from the browser; auth policies do the enforcement.
 // ============================================================================
 
 export function SecuritySettings({ demoMode }: { demoMode: boolean }) {
   return (
     <div className="grid gap-6 lg:grid-cols-2">
-      <ChangePasswordCard demoMode={demoMode} />
       <TwoFactorCard demoMode={demoMode} />
     </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Change password
-// ---------------------------------------------------------------------------
-
-type PwState = { ok: boolean; message: string } | null;
-
-function ChangePasswordCard({ demoMode }: { demoMode: boolean }) {
-  const [state, formAction] = useFormState<PwState, FormData>(
-    async (_, fd) =>
-      demoMode ? { ok: true, message: "Demo mode: password not changed." } : updatePassword(fd),
-    null,
-  );
-
-  return (
-    <section className="rounded-xl border bg-card p-5">
-      <div className="mb-1 flex items-center gap-2">
-        <KeyRound className="h-4 w-4 text-primary" />
-        <h2 className="font-semibold">Password</h2>
-      </div>
-      <p className="mb-4 text-sm text-muted-foreground">Use at least 8 characters.</p>
-
-      <form action={formAction} className="space-y-3">
-        <div className="space-y-1.5">
-          <Label htmlFor="password">New password</Label>
-          <Input id="password" name="password" type="password" minLength={8} required />
-        </div>
-        <div className="space-y-1.5">
-          <Label htmlFor="confirm">Confirm new password</Label>
-          <Input id="confirm" name="confirm" type="password" minLength={8} required />
-        </div>
-        {state && (
-          <p className={`text-sm ${state.ok ? "text-emerald-600" : "text-destructive"}`}>{state.message}</p>
-        )}
-        <PwSubmit />
-      </form>
-    </section>
-  );
-}
-
-function PwSubmit() {
-  const { pending } = useFormStatus();
-  return (
-    <Button type="submit" disabled={pending}>
-      {pending && <Loader2 className="h-4 w-4 animate-spin" />}
-      Update password
-    </Button>
   );
 }
 

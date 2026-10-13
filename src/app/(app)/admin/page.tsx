@@ -1,59 +1,60 @@
 import Link from "next/link";
-import { BellRing, CalendarClock, CalendarX2, Radio, UserRoundX, Users, X } from "lucide-react";
+import { CalendarClock, Radio, Users, X } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
-import { SessionCard } from "@/components/session-card";
+import { LessonCard } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
-import { requireRole } from "@/lib/data/auth";
-import { getSessionsForDay } from "@/lib/data/sessions";
-import { getAdminActionItems } from "@/lib/data/approvals";
-import type { SessionView } from "@/lib/types";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
+import { listMyOnlineLessons } from "@/lib/data/lessons";
+import { lessonIsLive, roomIsOpen } from "@/lib/lessons/window";
+import { dayWindowUTC } from "@/lib/time";
+import { OFFICE_ROLES } from "@/lib/permissions";
+import type { OnlineLesson } from "@/lib/types";
 
 const FILTERS = {
   live: {
     label: "Live now",
-    match: (s: SessionView) => s.status === "in_progress",
-    empty: "No lessons are live right now.",
+    match: (l: OnlineLesson) => lessonIsLive(l) && roomIsOpen(l),
+    empty: "No online lessons are live right now.",
   },
-  unassigned: {
-    label: "Unassigned",
-    match: (s: SessionView) => !s.teacher_id,
-    empty: "Every lesson on this day has a teacher assigned.",
-  },
-  no_show: {
-    label: "No-shows",
-    match: (s: SessionView) => s.status === "no_show",
-    empty: "No missed lessons on this day.",
+  unstaffed: {
+    label: "No teacher added",
+    match: (l: OnlineLesson) => !l.teacher_id,
+    empty: "Every online lesson on this day has a teacher added.",
   },
 } as const;
 
 type FilterKey = keyof typeof FILTERS;
 
+/**
+ * The office's view of the online lessons: an admin sees every room, an
+ * in-charge their own room, support the lessons they may observe — whatever
+ * my_online_lessons returns as observer rows. Bookings, staffing, follow-ups
+ * and approvals all live in the MathVision app; this page only opens rooms.
+ */
 export default async function AdminBoardPage({
   searchParams,
 }: {
   searchParams: { date?: string; filter?: string };
 }) {
-  const admin = await requireRole("admin");
-  const tz = admin.timezone;
+  const viewer = await requireRole(...OFFICE_ROLES);
+  const tz = viewerTimeZone(viewer);
 
   const dayISO = searchParams.date ?? DateTime.now().setZone(tz).toISODate()!;
-  const [sessions, actionItems] = await Promise.all([
-    getSessionsForDay(tz, dayISO),
-    getAdminActionItems(tz),
-  ]);
+  const { startUTC, endUTC } = dayWindowUTC(tz, dayISO);
+  const lessons = (await listMyOnlineLessons(viewer, 14)).filter(
+    (l) => l.seat === "observer" && l.effective_start >= startUTC && l.effective_start < endUTC,
+  );
 
-  const filter = (searchParams.filter && searchParams.filter in FILTERS
-    ? searchParams.filter
-    : undefined) as FilterKey | undefined;
+  const filter = (searchParams.filter && searchParams.filter in FILTERS ? searchParams.filter : undefined) as
+    | FilterKey
+    | undefined;
 
-  const liveNow = sessions.filter(FILTERS.live.match).length;
-  const unassigned = sessions.filter(FILTERS.unassigned.match).length;
-  const noShows = sessions.filter(FILTERS.no_show.match).length;
-
-  const visible = filter ? sessions.filter(FILTERS[filter].match) : sessions;
+  const liveNow = lessons.filter(FILTERS.live.match).length;
+  const unstaffed = lessons.filter(FILTERS.unstaffed.match).length;
+  const visible = filter ? lessons.filter(FILTERS[filter].match) : lessons;
 
   const today = DateTime.now().setZone(tz).toISODate()!;
   const prev = DateTime.fromISO(dayISO, { zone: tz }).minus({ days: 1 }).toISODate()!;
@@ -69,8 +70,8 @@ export default async function AdminBoardPage({
   return (
     <div>
       <PageHeader
-        title="Daily schedule board"
-        description={`Every lesson today in your timezone (${tz.replace(/_/g, " ")}).`}
+        title="Online lessons"
+        description={`Every online lesson you can observe, in your time zone (${tz.replace(/_/g, " ")}).`}
         actions={
           <div className="flex items-center gap-1">
             <Button asChild variant="outline" size="sm">
@@ -88,60 +89,19 @@ export default async function AdminBoardPage({
         }
       />
 
-      {/* At a glance: workload counts + everything waiting on an admin. */}
-      <div className="mb-4 flex flex-wrap items-center gap-x-4 gap-y-1.5 rounded-lg border bg-card px-3 py-2 text-sm">
-        <span className="text-muted-foreground">
-          <span className="font-semibold text-foreground">{actionItems.sessionsToday}</span>{" "}
-          {actionItems.sessionsToday === 1 ? "lesson" : "lessons"} today
-        </span>
-        <span className="text-muted-foreground">
-          <span className="font-semibold text-foreground">{actionItems.sessionsUpcoming}</span> upcoming overall
-        </span>
-
-        {actionItems.totalActions > 0 && (
-          <>
-            <span className="hidden h-4 w-px bg-border sm:block" aria-hidden />
-            <span className="flex items-center gap-1.5 font-medium text-warning-foreground">
-              <BellRing className="h-4 w-4" />
-              {actionItems.totalActions} action {actionItems.totalActions === 1 ? "item" : "items"}:
-            </span>
-            {actionItems.accountRequests > 0 && (
-              <Link href="/admin/people" className="text-primary hover:underline">
-                {actionItems.accountRequests} account {actionItems.accountRequests === 1 ? "request" : "requests"} →
-              </Link>
-            )}
-            {actionItems.enrollmentRequests > 0 && (
-              <Link href="/admin/courses" className="text-primary hover:underline">
-                {actionItems.enrollmentRequests} course {actionItems.enrollmentRequests === 1 ? "request" : "requests"} →
-              </Link>
-            )}
-            {actionItems.unassignedSessions > 0 && (
-              <Link href="/admin/sessions" className="text-primary hover:underline">
-                {actionItems.unassignedSessions} unassigned {actionItems.unassignedSessions === 1 ? "lesson" : "lessons"} →
-              </Link>
-            )}
-            {actionItems.openFollowups > 0 && (
-              <Link href="/admin/followups" className="text-primary hover:underline">
-                {actionItems.openFollowups} open {actionItems.openFollowups === 1 ? "follow-up" : "follow-ups"} →
-              </Link>
-            )}
-          </>
-        )}
-      </div>
-
       <div className="mb-4 flex items-center gap-2">
         <CalendarClock className="h-4 w-4 text-muted-foreground" />
         <span className="text-sm font-medium">{heading}</span>
         {dayISO === today && <Badge variant="default">Today</Badge>}
       </div>
 
-      {/* Clickable stat cards — each filters the list below to those sessions. */}
-      <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
+      {/* Clickable stat cards — each filters the list below to those lessons. */}
+      <div className="mb-6 grid grid-cols-3 gap-3">
         <Link href={base}>
           <StatCard
             className={card}
             label="Lessons"
-            value={sessions.length}
+            value={lessons.length}
             hint={filter ? "Show all" : undefined}
             icon={<CalendarClock className="h-4 w-4" />}
           />
@@ -156,31 +116,20 @@ export default async function AdminBoardPage({
             icon={<Radio className="h-4 w-4" />}
           />
         </Link>
-        <Link href={cardHref("unassigned")}>
+        <Link href={cardHref("unstaffed")}>
           <StatCard
-            className={`${card} ${filter === "unassigned" ? activeCard : ""}`}
-            label="Unassigned"
-            value={unassigned}
-            tone={unassigned ? "warning" : "default"}
-            hint={unassigned ? "Needs a teacher" : "All assigned"}
-            icon={<UserRoundX className="h-4 w-4" />}
-          />
-        </Link>
-        <Link href={cardHref("no_show")}>
-          <StatCard
-            className={`${card} ${filter === "no_show" ? activeCard : ""}`}
-            label="No-shows"
-            value={noShows}
-            tone={noShows ? "warning" : "default"}
-            hint={noShows ? "Click to see who" : undefined}
-            icon={<CalendarX2 className="h-4 w-4" />}
+            className={`${card} ${filter === "unstaffed" ? activeCard : ""}`}
+            label="No teacher added"
+            value={unstaffed}
+            hint="Staffing is decided in the app"
+            icon={<Users className="h-4 w-4" />}
           />
         </Link>
       </div>
 
       {filter && (
         <div className="mb-4 flex items-center gap-2 text-sm">
-          <Badge variant={filter === "live" ? "success" : "warning"}>{FILTERS[filter].label}</Badge>
+          <Badge variant={filter === "live" ? "success" : "secondary"}>{FILTERS[filter].label}</Badge>
           <span className="text-muted-foreground">
             {visible.length} {visible.length === 1 ? "lesson" : "lessons"}
           </span>
@@ -195,38 +144,24 @@ export default async function AdminBoardPage({
       {visible.length === 0 ? (
         <EmptyState
           icon={<Users className="h-5 w-5" />}
-          title={filter ? FILTERS[filter].empty : "No lessons scheduled"}
+          title={filter ? FILTERS[filter].empty : "No online lessons on this day"}
           description={
             filter
               ? "Clear the filter to see the full day."
-              : "There are no sessions on this day. Schedule one from the Sessions console."
+              : "Online sessions are booked in the MathVision app; departments with the lesson platform turned on appear here."
           }
           action={
             filter ? (
               <Button asChild variant="outline">
                 <Link href={base}>Show all lessons</Link>
               </Button>
-            ) : (
-              <Button asChild>
-                <Link href="/admin/sessions">Go to Sessions</Link>
-              </Button>
-            )
+            ) : undefined
           }
         />
       ) : (
         <div className="space-y-3">
-          {visible.map((s) => (
-            <SessionCard
-              key={s.id}
-              session={s}
-              viewerTz={tz}
-              perspective="admin"
-              action={
-                <Button asChild variant="outline" size="sm">
-                  <Link href={`/admin/sessions?focus=${s.id}`}>Manage</Link>
-                </Button>
-              }
-            />
+          {visible.map((l) => (
+            <LessonCard key={l.session_id} lesson={l} viewerTz={tz} perspective="office" />
           ))}
         </div>
       )}

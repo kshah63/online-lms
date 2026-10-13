@@ -5,9 +5,6 @@ import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
 import {
   BarChart3,
-  Bell,
-  BookOpen,
-  CalendarClock,
   CalendarDays,
   ClipboardCheck,
   ClipboardList,
@@ -16,10 +13,8 @@ import {
   LayoutDashboard,
   ListChecks,
   LogOut,
-  ScrollText,
   ShieldCheck,
   Sparkles,
-  Users,
 } from "lucide-react";
 import { DateTime } from "luxon";
 import { Avatar } from "@/components/ui/avatar";
@@ -33,66 +28,68 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { signOut } from "@/lib/actions/auth";
-import { TimezoneSync } from "@/components/timezone-sync";
 import { BrandMark, BrandWordmark } from "@/components/brand";
 import { cn } from "@/lib/utils";
-import type { Profile, Role } from "@/lib/types";
+import { displayName, type Profile, type Role } from "@/lib/types";
 
 type NavItem = { href: string; label: string; icon: React.ComponentType<{ className?: string }> };
 
+const OFFICE_NAV: NavItem[] = [
+  { href: "/admin", label: "Online lessons", icon: LayoutDashboard },
+  { href: "/admin/followups", label: "Follow-ups", icon: ListChecks },
+  { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
+];
+
+const FAMILY_NAV: NavItem[] = [
+  { href: "/home", label: "Dashboard", icon: LayoutDashboard },
+  { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
+  { href: "/home/progress", label: "Progress", icon: BarChart3 },
+  { href: "/home/reports", label: "Reports", icon: FileText },
+];
+
 const NAV: Record<Role, NavItem[]> = {
-  admin: [
-    { href: "/admin", label: "Schedule board", icon: LayoutDashboard },
-    { href: "/admin/sessions", label: "Sessions", icon: CalendarClock },
-    { href: "/admin/followups", label: "Follow-ups", icon: ListChecks },
-    { href: "/admin/courses", label: "Courses", icon: BookOpen },
-    { href: "/admin/people", label: "People", icon: Users },
-    { href: "/admin/coaching", label: "Coaching QA", icon: Sparkles },
-    { href: "/admin/audit", label: "Audit log", icon: ScrollText },
-  ],
+  admin: OFFICE_NAV,
+  staff: OFFICE_NAV,
+  support: [OFFICE_NAV[0]],
   teacher: [
     { href: "/teacher", label: "Today", icon: LayoutDashboard },
     { href: "/teacher/reports", label: "Reports", icon: ClipboardList },
     { href: "/teacher/homework", label: "Homework", icon: ClipboardCheck },
     { href: "/teacher/coaching", label: "Coaching", icon: Sparkles },
-    { href: "/teacher/availability", label: "Availability", icon: Clock },
   ],
-  student: [
-    { href: "/home", label: "Dashboard", icon: LayoutDashboard },
-    { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
-    { href: "/home/progress", label: "Progress", icon: BarChart3 },
-    { href: "/home/reports", label: "Reports", icon: FileText },
-  ],
-  parent: [
-    { href: "/home", label: "Dashboard", icon: LayoutDashboard },
-    { href: "/home/homework", label: "Homework", icon: ClipboardCheck },
-    { href: "/home/progress", label: "Progress", icon: BarChart3 },
-    { href: "/home/reports", label: "Reports", icon: FileText },
-  ],
+  student: FAMILY_NAV,
+  parent: FAMILY_NAV,
+  ambassador: [FAMILY_NAV[0]],
 };
 
 const ROLE_LABEL: Record<Role, string> = {
-  admin: "Administrator",
+  admin: "Admin",
+  staff: "Staff",
+  support: "Support",
   teacher: "Teacher",
   student: "Student",
   parent: "Parent",
+  ambassador: "Ambassador",
 };
 
 export function AppShell({
   profile,
+  tz,
   demoMode,
   children,
 }: {
   profile: Profile;
+  /** The zone times are shown in (the profile's, else the centre's). */
+  tz: string;
   demoMode: boolean;
   children: React.ReactNode;
 }) {
   const pathname = usePathname();
   const nav = NAV[profile.role];
+  const name = displayName(profile);
 
   return (
     <div className="flex min-h-screen bg-background">
-      <TimezoneSync currentTz={profile.timezone} enabled={!demoMode} />
       {/* Sidebar */}
       <aside className="hidden w-64 shrink-0 flex-col border-r bg-card/60 px-4 py-5 md:flex">
         <Link href="/" className="mb-7 flex items-center px-1">
@@ -125,9 +122,9 @@ export function AppShell({
 
         <div className="mt-auto rounded-lg bg-secondary/60 p-3">
           <div className="mb-1 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <CalendarDays className="h-3.5 w-3.5" /> Your timezone
+            <CalendarDays className="h-3.5 w-3.5" /> Your time zone
           </div>
-          <div className="text-sm font-medium">{profile.timezone.replace(/_/g, " ")}</div>
+          <div className="text-sm font-medium">{tz.replace(/_/g, " ")}</div>
         </div>
       </aside>
 
@@ -139,7 +136,7 @@ export function AppShell({
             <BrandMark size={28} />
           </Link>
 
-          <Clock12 tz={profile.timezone} />
+          <Clock12 tz={tz} />
 
           <div className="ml-auto flex items-center gap-2">
             {demoMode && (
@@ -147,21 +144,15 @@ export function AppShell({
                 Demo mode
               </Badge>
             )}
-            <button className="relative rounded-full p-2 text-muted-foreground hover:bg-secondary hover:text-foreground">
-              <Bell className="h-[18px] w-[18px]" />
-              <span className="absolute right-1.5 top-1.5 h-2 w-2 rounded-full bg-primary" />
-            </button>
 
             <DropdownMenu>
               <DropdownMenuTrigger className="flex items-center gap-2 rounded-full pl-1 outline-none focus-visible:ring-2 focus-visible:ring-ring">
-                <Avatar name={profile.display_name} src={profile.avatar_url} size={32} />
+                <Avatar name={name} src={profile.avatar_url} size={32} />
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
                 <DropdownMenuLabel>
-                  <div className="font-semibold">{profile.display_name}</div>
-                  <div className="text-xs font-normal text-muted-foreground">
-                    {ROLE_LABEL[profile.role]} · {profile.email}
-                  </div>
+                  <div className="font-semibold">{name}</div>
+                  <div className="text-xs font-normal text-muted-foreground">{ROLE_LABEL[profile.role]}</div>
                 </DropdownMenuLabel>
                 <DropdownMenuSeparator />
                 <DropdownMenuItem asChild className="cursor-pointer">
@@ -188,8 +179,8 @@ export function AppShell({
 
         {demoMode && (
           <div className="border-b bg-warning/10 px-4 py-2 text-center text-xs text-warning-foreground md:px-6">
-            Running in <strong>demo mode</strong> with built-in data. Connect a Supabase project (see README) to go live.
-            Mutations aren&rsquo;t persisted.
+            Running in <strong>demo mode</strong> with built-in data. Connect the MathVision Supabase project (see
+            README) to go live. Mutations aren&rsquo;t persisted.
           </div>
         )}
 
@@ -199,7 +190,7 @@ export function AppShell({
   );
 }
 
-/** Live clock in the viewer's timezone. */
+/** Live clock in the viewer's time zone. */
 function Clock12({ tz }: { tz: string }) {
   const [now, setNow] = useState<string>("");
   useEffect(() => {

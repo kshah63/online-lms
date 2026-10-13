@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScoreBars } from "@/components/coaching/score-bars";
 import { cn } from "@/lib/utils";
-import { requireRole } from "@/lib/data/auth";
+import { requireRole, viewerTimeZone } from "@/lib/data/auth";
+import { isOffice, OFFICE_ROLES } from "@/lib/permissions";
 import { getFeedbackDetail } from "@/lib/data/coaching";
 import type { TranscriptSegment } from "@/lib/coaching/metrics";
 
@@ -29,7 +30,8 @@ function pct(x: number) {
 }
 
 export default async function CoachingDetailPage({ params }: { params: { sessionId: string } }) {
-  const profile = await requireRole("teacher", "admin");
+  const profile = await requireRole("teacher", ...OFFICE_ROLES);
+  const tz = viewerTimeZone(profile);
   const detail = await getFeedbackDetail(params.sessionId);
   if (!detail) notFound();
   // Teachers may only open their own lessons (RLS enforces this for the
@@ -37,16 +39,16 @@ export default async function CoachingDetailPage({ params }: { params: { session
   if (profile.role === "teacher" && detail.teacher_id !== profile.id) notFound();
 
   const when = DateTime.fromISO(detail.created_at, { zone: "utc" })
-    .setZone(profile.timezone)
+    .setZone(tz)
     .toFormat("cccc d LLL yyyy, h:mm a");
-  const backHref = profile.role === "admin" ? "/admin/coaching" : "/teacher/coaching";
+  const backHref = isOffice(profile.role) ? "/admin/coaching" : "/teacher/coaching";
   const m = detail.metrics;
 
   return (
     <div>
       <PageHeader
         title={`${detail.course_name} — coaching detail`}
-        description={`${detail.student_name} · ${when}${profile.role === "admin" ? ` · ${detail.teacher_name}` : ""}`}
+        description={`${detail.student_name} · ${when}${isOffice(profile.role) ? ` · ${detail.teacher_name}` : ""}`}
         actions={
           <Button asChild variant="outline" size="sm">
             <Link href={backHref}>
@@ -225,7 +227,7 @@ export default async function CoachingDetailPage({ params }: { params: { session
                       <span>
                         {n.message || n.type.replace(/_/g, " ")}
                         <span className="ml-1 text-xs text-muted-foreground">
-                          ({DateTime.fromISO(n.created_at, { zone: "utc" }).setZone(profile.timezone).toFormat("h:mm a")})
+                          ({DateTime.fromISO(n.created_at, { zone: "utc" }).setZone(tz).toFormat("h:mm a")})
                         </span>
                       </span>
                     </li>

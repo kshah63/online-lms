@@ -1,11 +1,11 @@
 import { notFound } from "next/navigation";
 import { HomeworkCanvasLoader } from "@/components/homework/homework-canvas-loader";
 import { requireProfile, homePathForRole } from "@/lib/data/auth";
-import { getChildren } from "@/lib/data/people";
+import { getChildren } from "@/lib/data/family";
 import { getHomework } from "@/lib/data/homework";
 import { loadNotebookSnapshot } from "@/lib/actions/notebook";
-import { isDemoMode } from "@/lib/env";
-import { demoTeacherCourse } from "@/lib/demo/data";
+import { isOffice } from "@/lib/permissions";
+import { displayName } from "@/lib/types";
 
 /** Full-screen homework canvas — one route, mode adapts to the viewer's role. */
 export default async function HomeworkCanvasPage({ params }: { params: { id: string } }) {
@@ -17,7 +17,7 @@ export default async function HomeworkCanvasPage({ params }: { params: { id: str
   let mode: "student" | "review" | "view" = "view";
   let backHref = homePathForRole(profile.role);
 
-  if (profile.role === "admin") {
+  if (isOffice(profile.role)) {
     allowed = true;
   } else if (profile.role === "student") {
     allowed = hw.student_id === profile.id;
@@ -30,8 +30,8 @@ export default async function HomeworkCanvasPage({ params }: { params: { id: str
   } else if (profile.role === "teacher") {
     mode = "review";
     backHref = "/teacher/homework";
-    // Real mode: RLS already scoped getHomework to the teacher's students.
-    allowed = isDemoMode ? (demoTeacherCourse[profile.id] ?? []).includes(hw.course_id ?? "") : true;
+    // RLS scopes getHomework to the teacher's students (homework_submissions: assigned teacher).
+    allowed = true;
   }
   if (!allowed) notFound();
 
@@ -49,7 +49,7 @@ export default async function HomeworkCanvasPage({ params }: { params: { id: str
       notebookId={notebookId}
       pageId={hw.notebook_page_id}
       userId={profile.id}
-      userName={profile.display_name}
+      userName={displayName(profile)}
       initialSnapshot={initialSnapshot}
       mode={mode}
       backHref={backHref}

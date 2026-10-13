@@ -1,81 +1,51 @@
-import Link from "next/link";
 import { notFound } from "next/navigation";
-import { Clock, ShieldX } from "lucide-react";
 import { LessonRoom } from "@/components/lesson/lesson-room";
-import { Button } from "@/components/ui/button";
 import { requireProfile, homePathForRole } from "@/lib/data/auth";
-import { getSessionById } from "@/lib/data/sessions";
-import { getChildren } from "@/lib/data/people";
+import { getLessonRoomState } from "@/lib/data/lessons";
 import { loadNotebookSnapshot } from "@/lib/actions/notebook";
+import { lessonEndISO } from "@/lib/lessons/window";
 import { isDemoMode } from "@/lib/env";
 import { SAMPLE_QUESTIONS } from "@/lib/practice/samples";
+import { displayName } from "@/lib/types";
 
+export const dynamic = "force-dynamic";
+
+/**
+ * The lesson room. The booking is the lesson: rpc lesson_room_state returns one
+ * row when session_requests holds the id and room_access gives this viewer a
+ * seat (host, learner or observer), and none otherwise — which is a 404 here,
+ * so a lesson "created only on the web" cannot exist.
+ */
 export default async function LessonPage({ params }: { params: { sessionId: string } }) {
   const profile = await requireProfile();
-  const session = await getSessionById(params.sessionId);
-  if (!session) notFound();
+  const state = await getLessonRoomState(profile, params.sessionId);
+  if (!state) notFound();
 
-  // ----- Access control (§4) ------------------------------------------------
-  const isTeacher = profile.role === "teacher";
-  const children = await getChildren(profile); // self for student, kids for parent
-  const childIds = children.map((c) => c.id);
-
-  let allowed = profile.role === "admin";
-  if (isTeacher) allowed = session.teacher_id === profile.id; // assigned-teacher-only
-  if (profile.role === "student") allowed = session.student_id === profile.id;
-  if (profile.role === "parent") allowed = childIds.includes(session.student_id);
-
-  if (!allowed) {
-    return <AccessDenied isTeacher={isTeacher} backHref={homePathForRole(profile.role)} />;
-  }
-
-  // The "other" participant.
-  const peerName = isTeacher
-    ? session.student.display_name
-    : session.teacher?.display_name ?? "Teacher (unassigned)";
-
-  const notebookId = session.notebook_id ?? session.id;
-  const initialSnapshot = await loadNotebookSnapshot(notebookId);
+  const notebookChannel = state.notebook_id ?? `session:${state.session_id}`;
+  const initialSnapshot = await loadNotebookSnapshot(state.notebook_id);
 
   return (
     <LessonRoom
-      sessionId={session.id}
-      notebookId={notebookId}
-      materialsCourseId={session.course.materials_course_id}
-      courseName={session.course.name}
-      status={session.status}
+      sessionId={state.session_id}
+      seat={state.seat}
+      notebookId={notebookChannel}
+      saveId={state.notebook_id}
+      courseName={state.course_name ?? state.subject ?? "Lesson"}
+      topic={state.topic}
+      status={state.status}
       backHref={homePathForRole(profile.role)}
       selfId={profile.id}
-      selfName={profile.display_name}
-      peerName={peerName}
-      isTeacher={isTeacher}
+      selfName={displayName(profile)}
+      studentName={state.student_name}
+      teacherName={state.teacher_name}
+      startISO={state.effective_start}
+      endISO={lessonEndISO(state)}
+      arrivedAtISO={state.arrived_at}
+      endedAtISO={state.room_closed_at ?? state.departed_at}
+      consents={state.consents}
       initialSnapshot={initialSnapshot}
-      actualStartISO={session.actual_start}
       demoCoaching={isDemoMode}
       activitySets={isDemoMode ? [{ id: "sample-quadratics", title: "Quadratics — quick check", questions: SAMPLE_QUESTIONS }] : []}
     />
-  );
-}
-
-function AccessDenied({ isTeacher, backHref }: { isTeacher: boolean; backHref: string }) {
-  return (
-    <div className="flex h-screen flex-col items-center justify-center gap-4 px-6 text-center">
-      <div className="flex h-14 w-14 items-center justify-center rounded-full bg-destructive/10 text-destructive">
-        <ShieldX className="h-7 w-7" />
-      </div>
-      <div>
-        <h1 className="text-lg font-semibold">You can&rsquo;t join this lesson</h1>
-        <p className="mt-1 max-w-sm text-sm text-muted-foreground">
-          {isTeacher
-            ? "Teachers can only join sessions they are assigned to. Ask an admin to assign you if this is yours."
-            : "This lesson belongs to a different student."}
-        </p>
-      </div>
-      <Button asChild variant="outline">
-        <Link href={backHref}>
-          <Clock className="h-4 w-4" /> Back to dashboard
-        </Link>
-      </Button>
-    </div>
   );
 }

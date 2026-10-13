@@ -1,30 +1,34 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { getCurrentProfile } from "@/lib/data/auth";
-import { logAudit } from "@/lib/audit";
+
+// ============================================================================
+// Homework writes, behind the data layer. online-lms's homework table is
+// retired; hand-ins become homework_submissions and marks go on the row
+// (verified_by, mark, feedback). TODO(next stage): write through mv-app RPCs or
+// RLS-covered inserts on homework_submissions. Until then the live paths refuse
+// loudly rather than pretend.
+// ============================================================================
+
+function notPortedYet(): never {
+  throw new Error("Homework is submitted and marked in the MathVision app until the next integration stage.");
+}
 
 /** Persist the tldraw page created for this homework the first time it's opened. */
 export async function setHomeworkPage(id: string, pageId: string): Promise<void> {
   if (isDemoMode) return;
-  const supabase = createSupabaseServerClient()!;
-  await supabase.from("homework").update({ notebook_page_id: pageId }).eq("id", id).is("notebook_page_id", null);
+  void id;
+  void pageId;
+  notPortedYet();
 }
 
 /** Student submits their work on the notebook for review. */
 export async function submitHomework(id: string): Promise<void> {
-  if (!isDemoMode) {
-    const supabase = createSupabaseServerClient()!;
-    await supabase
-      .from("homework")
-      .update({ status: "submitted", submitted_at: new Date().toISOString() })
-      .eq("id", id);
-  }
+  if (!isDemoMode) notPortedYet();
   revalidatePath("/home/homework");
   revalidatePath("/home");
-  revalidatePath(`/home/homework/${id}`);
+  revalidatePath(`/hw/${id}`);
 }
 
 export interface HomeworkGrade {
@@ -35,32 +39,11 @@ export interface HomeworkGrade {
   feedback?: string | null;
 }
 
-/** Teacher grades the submitted work: marks (quantifiable) + comment, and
- * verifies complete or sends it back. */
+/** Teacher grades the submitted work: marks (quantifiable) + comment, and verifies complete or sends it back. */
 export async function gradeHomework(id: string, grade: HomeworkGrade): Promise<void> {
   if (!isDemoMode) {
-    const profile = await getCurrentProfile();
-    const supabase = createSupabaseServerClient()!;
-    const now = new Date().toISOString();
-    await supabase
-      .from("homework")
-      .update({
-        status: grade.verified ? "completed" : "incomplete",
-        verified_by: profile?.id ?? null,
-        verified_at: now,
-        completed_at: grade.verified ? now : null,
-        mark_correct: grade.correct ?? null,
-        mark_incorrect: grade.incorrect ?? null,
-        mark_not_done: grade.notDone ?? null,
-        feedback: grade.feedback ?? null,
-        review_note: grade.verified ? null : grade.feedback ?? null,
-      })
-      .eq("id", id);
-    await logAudit(profile, "homework.grade", { type: "homework", id }, {
-      verified: grade.verified,
-      correct: grade.correct ?? null,
-      incorrect: grade.incorrect ?? null,
-    });
+    void grade;
+    notPortedYet();
   }
   revalidatePath("/teacher/homework");
   revalidatePath(`/hw/${id}`);

@@ -11,22 +11,27 @@ const DailyRoom = dynamic(() => import("@/components/lesson/daily-room").then((m
   ssr: false,
 });
 
-type Config = { configured: boolean; roomUrl?: string; token?: string; isOwner?: boolean };
+type Config = { configured: boolean; roomUrl?: string; token?: string; isOwner?: boolean; error?: string };
 
 export function VideoStage({
   sessionId,
   selfName,
   peerName,
-  isTeacher,
+  isHost,
   onTranscript,
   onPeerPresent,
+  onJoined,
 }: {
   sessionId: string;
   selfName: string;
   peerName: string;
-  isTeacher: boolean;
+  /** The host joins as the Daily owner: record and transcribe rights. */
+  isHost: boolean;
   onTranscript?: (seg: TranscriptSegment) => void;
+  /** The other party is in the room. */
   onPeerPresent?: () => void;
+  /** This viewer's own join succeeded (the learner's attendance write hangs off it). */
+  onJoined?: () => void;
 }) {
   const [config, setConfig] = useState<Config | null>(null);
 
@@ -41,12 +46,14 @@ export function VideoStage({
     };
   }, [sessionId]);
 
-  // Mock panel can't detect a real peer — start the clock on mount so the
-  // flow is testable without a video provider configured.
+  // The mock panel can't detect a real peer or a real join — fire both on mount
+  // so the flow is testable without a video provider configured.
   const usingMock = Boolean(config && !(config.configured && config.roomUrl && config.token));
   useEffect(() => {
-    if (usingMock) onPeerPresent?.();
-  }, [usingMock, onPeerPresent]);
+    if (!usingMock) return;
+    onJoined?.();
+    onPeerPresent?.();
+  }, [usingMock, onJoined, onPeerPresent]);
 
   if (!config) {
     return (
@@ -62,11 +69,12 @@ export function VideoStage({
         roomUrl={config.roomUrl}
         token={config.token}
         isOwner={Boolean(config.isOwner)}
-        isTeacher={isTeacher}
+        isTeacher={isHost}
         selfName={selfName}
         peerName={peerName}
         onTranscript={onTranscript}
         onPeerPresent={onPeerPresent}
+        onJoined={onJoined}
       />
     );
   }
