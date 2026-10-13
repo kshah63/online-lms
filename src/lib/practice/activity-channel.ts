@@ -1,27 +1,37 @@
 "use client";
 
 // ============================================================================
-// In-lesson activities: the teacher pushes a quick check, a practice set or a
-// short test into the room; the student answers in a side panel (or on the
-// notebook for worked questions); the teacher watches results live.
+// In-lesson activities, on mv-app's practice RPCs. The host picks questions and
+// sends a quick check: create_practice_set(kind quick_check, p_session_id) and
+// assign_practice(in_session) for the session's student — both through server
+// actions. What travels on the lesson's broadcast channel is only a NUDGE
+// carrying the assignment id (and the title, for the dot in the header): the
+// student's panel then starts the attempt and runs it against the database,
+// and the host watches live_attempts. A late joiner says hello and the host
+// re-sends the nudge; a student who missed both finds the assignment by a
+// slow poll of their own practice_assignments for the session.
 //
-// Transport is Supabase Realtime broadcast on the lesson's channel when a
-// project is configured; otherwise the browser's BroadcastChannel, which
-// makes the whole flow work across two tabs in demo mode and in tests.
-// Persistence (attempts, marks) is the caller's: see onSubmitted.
+// Transport is Supabase Realtime broadcast when a project is configured;
+// otherwise the browser's BroadcastChannel, which carries the nudge across two
+// tabs in demo mode.
 // ============================================================================
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createSupabaseBrowserClient } from "@/lib/supabase/client";
-import { markSet } from "@/lib/practice/marking";
+import { myOpenActivityAction, pushQuickCheckAction } from "@/lib/actions/attempts";
+import { canOpen } from "@/lib/practice/attempts";
 import type { MarkResult, Question, Response } from "@/lib/practice/model";
 
 export type ActivityMode = "practice" | "test";
 
+/** The current in-lesson activity: a practice_assignments row the room knows about. */
 export interface PushedActivity {
+  /** The assignment id. */
   id: string;
+  set_id: string;
   title: string;
   mode: ActivityMode;
+  /** The host's picked questions (the student's panel reads its own copy through attempt_questions). */
   questions: Question[];
   time_limit_s: number | null;
   pushed_at: string;
@@ -29,10 +39,7 @@ export interface PushedActivity {
 
 export type ActivityMessage =
   | { kind: "activity.hello"; from: string; role: "teacher" | "student" }
-  | { kind: "activity.push"; activity: PushedActivity }
-  | { kind: "activity.response"; activity_id: string; question_id: string; response: Response; from: string }
-  | { kind: "activity.submit"; activity_id: string; responses: Record<string, Response | null>; from: string; submitted_at: string }
-  | { kind: "activity.release"; activity_id: string; marks: Record<string, MarkResult>; score: number; max: number }
+  | { kind: "activity.push"; assignment_id: string; set_id: string; title: string; question_count: number; pushed_at: string }
   | { kind: "activity.close"; activity_id: string };
 
 export interface ActivityTransport {
@@ -81,6 +88,10 @@ export function createActivityTransport(sessionId: string): ActivityTransport {
   return { send: () => undefined, subscribe: () => () => undefined, close: () => undefined };
 }
 
+/**
+ * Kept for the room's prop contract: the panel now reads marks from the
+ * database (live_attempts, attempt_questions), so nothing fills this any more.
+ */
 export interface StudentSubmission {
   from: string;
   responses: Record<string, Response | null>;
@@ -95,68 +106,51 @@ export interface UseLessonActivityArgs {
   sessionId: string;
   selfId: string;
   role: "teacher" | "student";
-  /** Teacher side: called when a student submits (persist the attempt here). */
+  /** Unused since marks live in the database; kept so the room's call site type-checks. */
   onSubmitted?: (activity: PushedActivity, submission: StudentSubmission) => void;
   /** Student side: called when an activity arrives (so the room can open the panel). */
   onActivity?: (activity: PushedActivity) => void;
 }
 
+export interface PushInput {
+  title: string;
+  questions: Question[];
+  mode?: ActivityMode;
+  time_limit_s?: number | null;
+}
+
+const LATE_JOINER_POLL_MS = 15_000;
+
 export function useLessonActivity({ sessionId, selfId, role, onSubmitted, onActivity }: UseLessonActivityArgs) {
   const transportRef = useRef<ActivityTransport | null>(null);
   const [activity, setActivity] = useState<PushedActivity | null>(null);
-  const [liveResponses, setLiveResponses] = useState<Record<string, Response>>({});
-  const [submission, setSubmission] = useState<StudentSubmission | null>(null);
-  const [released, setReleased] = useState<{ marks: Record<string, MarkResult>; score: number; max: number } | null>(null);
+  const [pushError, setPushError] = useState<string | null>(null);
   const activityRef = useRef<PushedActivity | null>(null);
   activityRef.current = activity;
   const callbacks = useRef({ onSubmitted, onActivity });
   callbacks.current = { onSubmitted, onActivity };
+
+  const arrive = useCallback((next: PushedActivity) => {
+    if (activityRef.current?.id === next.id) return;
+    setActivity(next);
+    callbacks.current.onActivity?.(next);
+  }, []);
 
   useEffect(() => {
     const t = createActivityTransport(sessionId);
     transportRef.current = t;
     const unsub = t.subscribe((msg) => {
       switch (msg.kind) {
-        case "activity.hello":
-          // A late joiner asks what is on; the teacher re-sends the current activity.
-          if (role === "teacher" && activityRef.current) t.send({ kind: "activity.push", activity: activityRef.current });
-          break;
-        case "activity.push":
-          if (role === "student") {
-            setActivity(msg.activity);
-            setSubmission(null);
-            setReleased(null);
-            setLiveResponses({});
-            callbacks.current.onActivity?.(msg.activity);
-          }
-          break;
-        case "activity.response":
-          if (role === "teacher" && msg.activity_id === activityRef.current?.id) {
-            setLiveResponses((prev) => ({ ...prev, [msg.question_id]: msg.response }));
-          }
-          break;
-        case "activity.submit": {
+        case "activity.hello": {
           const act = activityRef.current;
-          if (role === "teacher" && act && msg.activity_id === act.id) {
-            const set = markSet(act.questions.map((q) => ({ question: q, response: msg.responses[q.id] ?? null })));
-            const marks: Record<string, MarkResult> = {};
-            act.questions.forEach((q, i) => (marks[q.id] = set.results[i]!));
-            const sub: StudentSubmission = { from: msg.from, responses: msg.responses, marks, score: set.score, max: set.max, pending: set.pending, submitted_at: msg.submitted_at };
-            setSubmission(sub);
-            callbacks.current.onSubmitted?.(act, sub);
-          }
+          if (role === "teacher" && act) t.send({ kind: "activity.push", assignment_id: act.id, set_id: act.set_id, title: act.title, question_count: act.questions.length, pushed_at: act.pushed_at });
           break;
         }
-        case "activity.release":
-          if (role === "student" && msg.activity_id === activityRef.current?.id) setReleased({ marks: msg.marks, score: msg.score, max: msg.max });
+        case "activity.push":
+          if (role === "student") arrive({ id: msg.assignment_id, set_id: msg.set_id, title: msg.title, mode: "practice", questions: [], time_limit_s: null, pushed_at: msg.pushed_at });
           break;
         case "activity.close":
-          if (msg.activity_id === activityRef.current?.id) {
-            setActivity(null);
-            setSubmission(null);
-            setReleased(null);
-            setLiveResponses({});
-          }
+          if (msg.activity_id === activityRef.current?.id) setActivity(null);
           break;
       }
     });
@@ -166,56 +160,61 @@ export function useLessonActivity({ sessionId, selfId, role, onSubmitted, onActi
       t.close();
       transportRef.current = null;
     };
-  }, [sessionId, selfId, role]);
+  }, [sessionId, selfId, role, arrive]);
 
-  const push = useCallback((input: Omit<PushedActivity, "id" | "pushed_at">) => {
-    const act: PushedActivity = { ...input, id: crypto.randomUUID(), pushed_at: new Date().toISOString() };
-    setActivity(act);
-    setSubmission(null);
-    setReleased(null);
-    setLiveResponses({});
-    transportRef.current?.send({ kind: "activity.push", activity: act });
-    return act;
-  }, []);
+  // The student's backstop: a quick check assigned before they joined, or whose nudge was missed.
+  useEffect(() => {
+    if (role !== "student") return;
+    let stop = false;
+    const look = async () => {
+      if (stop || activityRef.current) return;
+      try {
+        const row = await myOpenActivityAction(sessionId);
+        if (row && canOpen(row)) arrive({ id: row.assignment_id, set_id: row.set_id, title: row.set_title, mode: "practice", questions: [], time_limit_s: null, pushed_at: row.assigned_at });
+      } catch {
+        /* the nudge is the main path; the poll is a backstop */
+      }
+    };
+    void look();
+    const id = setInterval(look, LATE_JOINER_POLL_MS);
+    return () => {
+      stop = true;
+      clearInterval(id);
+    };
+  }, [role, sessionId, arrive]);
 
-  const respond = useCallback(
-    (question_id: string, response: Response) => {
-      if (!activityRef.current) return;
-      transportRef.current?.send({ kind: "activity.response", activity_id: activityRef.current.id, question_id, response, from: selfId });
+  /** Host: create the set and the assignment, then nudge the student. */
+  const push = useCallback(
+    async (input: PushInput): Promise<PushedActivity | null> => {
+      setPushError(null);
+      try {
+        const { setId, assignmentId } = await pushQuickCheckAction({ sessionId, title: input.title, questionIds: input.questions.map((q) => q.id) });
+        const act: PushedActivity = { id: assignmentId ?? setId, set_id: setId, title: input.title, mode: input.mode ?? "practice", questions: input.questions, time_limit_s: input.time_limit_s ?? null, pushed_at: new Date().toISOString() };
+        setActivity(act);
+        transportRef.current?.send({ kind: "activity.push", assignment_id: act.id, set_id: act.set_id, title: act.title, question_count: act.questions.length, pushed_at: act.pushed_at });
+        return act;
+      } catch (e) {
+        setPushError(e instanceof Error ? e.message : "The quick check could not be sent.");
+        return null;
+      }
     },
-    [selfId],
+    [sessionId],
   );
 
-  const submit = useCallback(
-    (responses: Record<string, Response | null>, marks: Record<string, MarkResult>) => {
-      const act = activityRef.current;
-      if (!act) return;
-      const set = markSet(act.questions.map((q) => ({ question: q, response: responses[q.id] ?? null })));
-      setSubmission({ from: selfId, responses, marks, score: set.score, max: set.max, pending: set.pending, submitted_at: new Date().toISOString() });
-      transportRef.current?.send({ kind: "activity.submit", activity_id: act.id, responses, from: selfId, submitted_at: new Date().toISOString() });
-    },
-    [selfId],
-  );
-
-  const release = useCallback(() => {
-    const act = activityRef.current;
-    if (!act || !submission) return;
-    setReleased({ marks: submission.marks, score: submission.score, max: submission.max });
-    transportRef.current?.send({ kind: "activity.release", activity_id: act.id, marks: submission.marks, score: submission.score, max: submission.max });
-  }, [submission]);
+  /** Kept for the prop contract: answers go to answer_question from the panel. */
+  const respond = useCallback((_questionId: string, _response: Response) => undefined, []);
+  const submit = useCallback((_responses: Record<string, Response | null>, _marks: Record<string, MarkResult>) => undefined, []);
+  const release = useCallback(() => undefined, []);
 
   const close = useCallback(() => {
     const act = activityRef.current;
     if (!act) return;
-    transportRef.current?.send({ kind: "activity.close", activity_id: act.id });
+    if (role === "teacher") transportRef.current?.send({ kind: "activity.close", activity_id: act.id });
     setActivity(null);
-    setSubmission(null);
-    setReleased(null);
-    setLiveResponses({});
-  }, []);
+  }, [role]);
 
   return useMemo(
-    () => ({ activity, liveResponses, submission, released, push, respond, submit, release, close }),
-    [activity, liveResponses, submission, released, push, respond, submit, release, close],
+    () => ({ activity, liveResponses: {} as Record<string, Response>, submission: null as StudentSubmission | null, released: null as { marks: Record<string, MarkResult>; score: number; max: number } | null, pushError, push, respond, submit, release, close }),
+    [activity, pushError, push, respond, submit, release, close],
   );
 }

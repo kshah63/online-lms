@@ -30,6 +30,9 @@ export interface UseTestIntegrityOptions {
   onEvent?: (event: IntegrityEvent, actions: IntegrityAction[], summary: IntegritySummary) => void;
   /** Called once when the attempt becomes flagged. */
   onFlag?: (summary: IntegritySummary) => void;
+  /** Called when the timer pauses (the student left) and when it resumes (they came back). */
+  onPause?: (event: IntegrityEvent) => void;
+  onResume?: (pausedMs: number) => void;
   /** The camera stream, when require_camera is on, so track loss is detected. */
   cameraStream?: MediaStream | null;
 }
@@ -48,6 +51,7 @@ export function useTestIntegrity(opts: UseTestIntegrityOptions) {
       const kept = stateRef.current.events.length > before;
       const summary = summarize(stateRef.current);
       if (kept) opts.onEvent?.(event, actions, summary);
+      if (actions.includes("pause")) opts.onPause?.(event);
       if (actions.includes("flag")) opts.onFlag?.(summary);
       rerender();
     },
@@ -55,9 +59,11 @@ export function useTestIntegrity(opts: UseTestIntegrityOptions) {
   );
 
   const back = useCallback(() => {
+    const since = stateRef.current.paused_since_ms;
     resume(stateRef.current, Date.now());
+    if (since !== null) opts.onResume?.(Date.now() - since);
     rerender();
-  }, [rerender]);
+  }, [opts, rerender]);
 
   const requestFullscreen = useCallback(async () => {
     try {
