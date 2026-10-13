@@ -71,7 +71,7 @@ write to a booking's report is `submit_report`.
 
 | Route | Who | Reads |
 | --- | --- | --- |
-| `/lesson/[sessionId]` | host, learner, observer | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event` |
+| `/lesson/[sessionId]` | host, learner, observer | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event`; the activity panel: `create_practice_set(quick_check)`, `assign_practice(in_session)`, `upsert_question` (one-off draft), `live_attempts` + postgres_changes on practice_attempts, `log_lesson_event` kind quick_check_result |
 | `/teacher` | teacher | `my_online_lessons(14)`: today, coming up, recent, each with Join in the window, the brief, and the report state |
 | `/teacher/brief/[sessionId]` | teacher | `lesson_room_state` + the last `session_reports` / `lesson_report_drafts` + `lesson_feedback` moments → `composeBrief` |
 | `/teacher/reports`, `/teacher/reports/[sessionId]` | teacher | lessons awaiting a report; the editor prefilled from `lesson_report_drafts`, submitted through `submit_report` |
@@ -81,6 +81,10 @@ write to a booking's report is `submit_report`.
 | `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |
 | `/bank` | admin, in-charge (`manages_course`) | `practice_questions`, `practice_sets`, `student_courses` under RLS; writes `upsert_question`, `approve_question`, `retire_question`, `store_extracted_questions`, `create_practice_set`, `assign_practice`; images to `practice-images` |
 | `/syllabus/[courseId]` | admin, in-charge | `syllabus_topics`; writes `seed_syllabus_from_course_topics`, `upsert_syllabus_topic` |
+| `/home/practice` | student, parent | `my_practice(30)`; the student opens an attempt (`start_attempt`), a parent sees marks only |
+| `/home/practice/[attemptId]` | student | `attempt_questions` → `answer_question` per answer → `submit_attempt`, then the rows with answers and solutions |
+| `/test/[attemptId]` | student | the timed test, full screen: `log_integrity_event` for every engine event, snapshots to `test-snapshots/<uid>/<attempt>/<ts>.jpg`, `submit_attempt` with the summary; given an assignment id it is the entry page and starts the attempt on Begin |
+| `/tests/[attemptId]` | teacher, in-charge, admin | `flagged_attempt_review` + `attempt_questions`, signed snapshots, `void_attempt` |
 
 Everything that needs a person to act — booking, staffing, approving a report or a
 follow-up, messaging a family — is in the MathVision app. The room holds no second queue.

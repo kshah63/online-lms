@@ -13,8 +13,8 @@ describe("navForRole — the sidebar per mv-app role", () => {
     expect(navForRole("teacher").map((n) => n.href)).toEqual(["/teacher", "/teacher/reports", "/teacher/coaching"]);
   });
 
-  it("gives a family the dashboard, progress and reports — and an ambassador only the dashboard", () => {
-    expect(navForRole("student").map((n) => n.href)).toEqual(["/home", "/home/progress", "/home/reports"]);
+  it("gives a family the dashboard, practice, progress and reports — and an ambassador only the dashboard", () => {
+    expect(navForRole("student").map((n) => n.href)).toEqual(["/home", "/home/practice", "/home/progress", "/home/reports"]);
     expect(navForRole("parent")).toEqual(navForRole("student"));
     expect(navForRole("ambassador").map((n) => n.href)).toEqual(["/home"]);
   });

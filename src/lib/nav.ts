@@ -29,6 +29,7 @@ const TEACHER_NAV: NavItem[] = [
 
 const FAMILY_NAV: NavItem[] = [
   { href: "/home", label: "Dashboard", icon: "dashboard" },
+  { href: "/home/practice", label: "Practice", icon: "list" },
   { href: "/home/progress", label: "Progress", icon: "progress" },
   { href: "/home/reports", label: "Reports", icon: "reports" },
 ];
