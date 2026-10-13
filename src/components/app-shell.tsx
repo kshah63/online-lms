@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { BarChart3, CalendarDays, ClipboardList, Clock, FileText, LayoutDashboard, ListChecks, LogOut, ShieldCheck, Sparkles } from "lucide-react";
+import { BarChart3, BookMarked, CalendarDays, ClipboardList, Clock, FileText, LayoutDashboard, ListChecks, LogOut, ShieldCheck, Sparkles } from "lucide-react";
 import { DateTime } from "luxon";
 import { Avatar } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -29,6 +29,7 @@ const ICONS: Record<NavIcon, React.ComponentType<{ className?: string }>> = {
   reports: ClipboardList,
   dashboard: LayoutDashboard,
   progress: BarChart3,
+  bank: BookMarked,
 };
 
 const ROLE_LABEL: Record<Role, string> = {

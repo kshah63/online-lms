@@ -32,8 +32,8 @@ Demo personas (ids are stable so scripts can set the `demo_persona` cookie direc
 
 | Role (mv-app)     | Name          | Id suffix | Sees                                                        |
 |-------------------|---------------|-----------|-------------------------------------------------------------|
-| admin             | Admin Office  | …01       | Board (every room), coaching QA, follow-ups                 |
-| staff (in-charge) | Grace Lim     | …d1       | Board (Online Mathematics), coaching QA, follow-ups         |
+| admin             | Admin Office  | …01       | Board (every room), coaching QA, follow-ups, question bank for every course |
+| staff (in-charge) | Grace Lim     | …d1       | Board (Online Mathematics), coaching QA, follow-ups, question bank and syllabus |
 | support           | Ravi Menon    | …d2       | Board, observer seat                                        |
 | teacher           | Maya Chen     | …a1       | Today, brief, host the room, report drafts, coaching        |
 | teacher           | Daniel Okafor | …a2       | Same, with a lesson later today                             |
@@ -79,6 +79,8 @@ write to a booking's report is `submit_report`.
 | `/home`, `/home/reports`, `/home/progress` | student, parent | `my_online_lessons`, published `session_reports`; progress is sample data until `child_progress` lands |
 | `/admin` | admin, in-charge, support | `my_online_lessons(1)` as an observer |
 | `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |
+| `/bank` | admin, in-charge (`manages_course`) | `practice_questions`, `practice_sets`, `student_courses` under RLS; writes `upsert_question`, `approve_question`, `retire_question`, `store_extracted_questions`, `create_practice_set`, `assign_practice`; images to `practice-images` |
+| `/syllabus/[courseId]` | admin, in-charge | `syllabus_topics`; writes `seed_syllabus_from_course_topics`, `upsert_syllabus_topic` |
 
 Everything that needs a person to act — booking, staffing, approving a report or a
 follow-up, messaging a family — is in the MathVision app. The room holds no second queue.

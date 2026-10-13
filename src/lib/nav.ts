@@ -6,7 +6,7 @@ import type { Role } from "@/lib/types";
 // child's. Ambassadors have nothing in the room.
 // ============================================================================
 
-export type NavIcon = "board" | "sparkles" | "list" | "today" | "reports" | "dashboard" | "progress";
+export type NavIcon = "board" | "sparkles" | "list" | "today" | "reports" | "dashboard" | "progress" | "bank";
 
 export interface NavItem {
   href: string;
@@ -18,6 +18,7 @@ const OFFICE_NAV: NavItem[] = [
   { href: "/admin", label: "Board", icon: "board" },
   { href: "/admin/coaching", label: "Coaching QA", icon: "sparkles" },
   { href: "/admin/followups", label: "Follow-ups", icon: "list" },
+  { href: "/bank", label: "Question bank", icon: "bank" },
 ];
 
 const TEACHER_NAV: NavItem[] = [
