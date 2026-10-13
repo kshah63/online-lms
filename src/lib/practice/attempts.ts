@@ -30,6 +30,8 @@ export const PRACTICE_KIND_LABEL: Record<PracticeKind, string> = {
 export interface PracticeRow {
   /** my_practice's own total, on every row: the list stops at 200. */
   total_count?: number;
+  /** The lesson a quick check was given in; null for a set to do at home. */
+  session_id?: string | null;
   assignment_id: string;
   set_id: string;
   set_title: string;

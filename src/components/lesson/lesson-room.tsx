@@ -30,7 +30,7 @@ import { ScoreBars } from "@/components/coaching/score-bars";
 import { useLiveCoach } from "@/lib/coaching/use-live-coach";
 import { DEMO_LESSON_TRANSCRIPT } from "@/lib/coaching/demo-transcript";
 import { finalizeLesson } from "@/lib/actions/coaching";
-import { endLesson, joinLesson } from "@/lib/actions/lesson";
+import { endLesson, hostArrived, joinLesson } from "@/lib/actions/lesson";
 import type { TeacherFeedback } from "@/lib/coaching/analyze";
 import type { RoomConsents, Seat, SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -159,16 +159,28 @@ export function LessonRoom({
 
   // The learner's first successful join is the attendance write: rpc lesson_join
   // sets arrived_at on the booking (the one place the room decides attendance).
+  // The host's first join is its own fact (rpc lesson_host_join), so a student
+  // waiting alone can be told apart from a lesson under way.
   const handleJoined = useCallback(() => {
-    if (!isLearner || joinedRef.current) return;
-    joinedRef.current = true;
-    joinLesson(sessionId)
-      .then((r) => setStartedAtMs(Date.parse(r.arrived_at)))
-      .catch((e) => {
+    if (joinedRef.current) return;
+    if (isLearner) {
+      joinedRef.current = true;
+      joinLesson(sessionId)
+        .then((r) => setStartedAtMs(Date.parse(r.arrived_at)))
+        .catch((e) => {
+          joinedRef.current = false;
+          setJoinError(e instanceof Error ? e.message : "Your arrival could not be recorded.");
+        });
+      return;
+    }
+    if (isHost) {
+      joinedRef.current = true;
+      hostArrived(sessionId).catch((e) => {
         joinedRef.current = false;
         setJoinError(e instanceof Error ? e.message : "Your arrival could not be recorded.");
       });
-  }, [isLearner, sessionId]);
+    }
+  }, [isLearner, isHost, sessionId]);
 
   // The host (and an observer) see the clock start when the learner is in the room.
   const handlePeerPresent = useCallback(() => {

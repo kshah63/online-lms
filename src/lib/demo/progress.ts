@@ -163,7 +163,7 @@ function testName(courseId: string, label: string): string {
 /**
  * The online courses a student has sessions on, as the course picker lists
  * them — the session_requests rows the viewer may read (the household's
- * own, an in-charge's room, the assigned teacher's, support's and admin's
+ * own, an in-charge's room, the assigned teacher's and admin's
  * all), mirroring session_requests_select.
  */
 export function demoProgressCourses(viewer: Profile, studentId: string): { id: string; name: string }[] {
@@ -174,7 +174,6 @@ export function demoProgressCourses(viewer: Profile, studentId: string): { id: s
       s.student_id === studentId &&
       ((student?.family_id != null && viewer.family_id === student.family_id) ||
         viewer.role === "admin" ||
-        viewer.role === "support" ||
         (viewer.role === "staff" && rooms.includes(s.department_id)) ||
         s.assigned_teacher_id === viewer.id),
   );
@@ -184,7 +183,7 @@ export function demoProgressCourses(viewer: Profile, studentId: string): { id: s
 
 /**
  * Mirrors child_progress's gate: the student, their household, an in-charge
- * whose room the student's sessions are in, support and admin, or a teacher
+ * whose room the student's sessions are in, an admin, or a teacher
  * with a session for the student on that course within a fortnight.
  */
 export function demoMayReadProgress(viewer: Profile, studentId: string, courseId: string, nowMs = Date.now()): boolean {
@@ -192,7 +191,9 @@ export function demoMayReadProgress(viewer: Profile, studentId: string, courseId
   const student = demoProfiles.find((p) => p.id === studentId);
   if (!student) return false;
   if (viewer.role === "parent" && viewer.family_id && viewer.family_id === student.family_id) return true;
-  if (viewer.role === "admin" || viewer.role === "support") return true;
+  // Support has no seat: child_progress reaches a child through room_reaches,
+  // which admits in-charges only (the desk reads nothing about a child here).
+  if (viewer.role === "admin") return true;
   const sessions = buildDemoSessionRequests().filter((s) => s.student_id === studentId);
   if (viewer.role === "staff") {
     const rooms = demoInchargeDepartments[viewer.id] ?? [];

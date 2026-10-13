@@ -7,6 +7,7 @@ import type { TranscriptSegment } from "@/lib/coaching/metrics";
 // ============================================================================
 // The room's writes to the booking, through mv-app's RPCs only:
 //   lesson_join(p_session_id)              — the learner, on first join; sets arrived_at
+//   lesson_host_join(p_session_id)         — the host, on first join; sets host_joined_at
 //   lesson_end(p_session_id, p_segments)   — the host (or in-charge / admin); sets
 //                                            departed_at, stores the transcript and
 //                                            invokes lesson-finalize
@@ -22,6 +23,19 @@ export async function joinLesson(sessionId: string): Promise<{ arrived_at: strin
   const { data, error } = await supabase.rpc("lesson_join", { p_session_id: sessionId });
   if (error) throw new Error(`lesson_join failed: ${error.message}`);
   return { arrived_at: typeof data === "string" && data ? data : new Date().toISOString() };
+}
+
+/**
+ * The host has joined: rpc lesson_host_join stamps lesson_rooms.host_joined_at
+ * once, so the no-join sweep can tell a student waiting alone from a lesson
+ * under way. room_access decides who the host is; a refusal is surfaced.
+ */
+export async function hostArrived(sessionId: string): Promise<void> {
+  if (isDemoMode) return;
+
+  const supabase = createSupabaseServerClient()!;
+  const { error } = await supabase.rpc("lesson_host_join", { p_session_id: sessionId });
+  if (error) throw new Error(`lesson_host_join failed: ${error.message}`);
 }
 
 /** The host ends the lesson with the transcript the room held. */

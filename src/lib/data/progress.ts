@@ -8,7 +8,7 @@ import type { Profile } from "@/lib/types";
 // ============================================================================
 // The progress dashboard's data. One RPC answers it: child_progress(
 // p_student_id, p_course_id) gathers the signals under its own gate (the
-// child, the household, the room's in-charge, support, the teacher with a
+// child, the household, the room's in-charge, the teacher with a
 // session on that course within a fortnight, an admin) and the room derives
 // the statuses with src/lib/syllabus/from-rpc.ts. A refusal comes back as the
 // database's sentence, never as an empty dashboard.
