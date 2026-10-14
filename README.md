@@ -71,7 +71,7 @@ write to a booking's report is `submit_report`.
 
 | Route | Who | Reads |
 | --- | --- | --- |
-| `/lesson/[sessionId]` | host, learner, observer | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event`; the activity panel: `create_practice_set(quick_check)`, `assign_practice(in_session)`, `upsert_question` (one-off draft), `live_attempts` + postgres_changes on practice_attempts, `log_lesson_event` kind quick_check_result |
+| `/lesson/[sessionId]` | host, learner, observer — on a laptop or tablet only (a viewport under 900px, or a touch screen under 1024px, gets a notice instead of the room) | `lesson_room_state`; writes `lesson_join`, `lesson_end`, `save_lesson_notebook`, `log_lesson_event`; the activity panel: `create_practice_set(quick_check)`, `assign_practice(in_session)`, `upsert_question` (one-off draft), `live_attempts` + postgres_changes on practice_attempts, `log_lesson_event` kind quick_check_result |
 | `/teacher` | teacher | `my_online_lessons(14)`: today, coming up, recent, each with Join in the window, the brief, and the report state |
 | `/teacher/brief/[sessionId]` | teacher (host), in-charge and admin (observers) | `lesson_brief_facts` + `my_online_lessons` + `lesson_room_state` → `composeBrief`; the host marks topics through `set_topic_status`; `lesson_recordings` for the Recording link |
 | `/teacher/reports`, `/teacher/reports/[sessionId]` | teacher | lessons awaiting a report; the editor prefilled from `lesson_report_drafts`, submitted through `submit_report` |
