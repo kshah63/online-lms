@@ -6,21 +6,35 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Avatar } from "@/components/ui/avatar";
 import { ChoiceChips } from "@/components/progress/choice-chips";
 import { ProgressScreen } from "@/components/progress/progress-screen";
+import { StudentSearch } from "@/components/progress/student-search";
 import { requireRole } from "@/lib/data/auth";
 import { getChildren } from "@/lib/data/family";
-import { getStudentsInMyRooms } from "@/lib/data/progress";
+import { getStudentsInMyRooms, searchStudents, STUDENT_SEARCH_LIMIT } from "@/lib/data/progress";
 import { isFamily } from "@/lib/permissions";
 import { displayName } from "@/lib/types";
 
 /**
  * The family's progress page: a student sees their own, a parent each child
  * (chosen by chip, never typed). The office lands here only by the sidebar:
- * it lists the students whose online lessons they observe this fortnight,
- * each a door to /home/progress/<studentId>, which the app also opens by
- * ticket.
+ * an in-charge or admin sees the students whose online lessons they observe
+ * this fortnight, each a door to /home/progress/<studentId>, which the app
+ * also opens by ticket. Support has no seat in any room, so for them the
+ * door is a search-then-pick over the students RLS lets them read — the
+ * desk answers a parent's call from the child's progress.
  */
-export default async function ProgressPage({ searchParams }: { searchParams: { student?: string; course?: string } }) {
+export default async function ProgressPage({ searchParams }: { searchParams: { student?: string; course?: string; q?: string } }) {
   const profile = await requireRole("student", "parent", "staff", "support", "admin");
+
+  if (profile.role === "support") {
+    const q = (searchParams.q ?? "").trim();
+    const { students, total } = await searchStudents(q);
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Progress" description="Find a child to see their topics covered, practice and where help is needed." />
+        <StudentSearch q={q} students={students} total={total} limit={STUDENT_SEARCH_LIMIT} />
+      </div>
+    );
+  }
 
   if (!isFamily(profile.role)) {
     const students = await getStudentsInMyRooms(profile);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEMO_IDS, demoCourses, demoProfiles } from "@/lib/demo/data";
-import { buildDemoChildProgress, demoMayReadProgress, demoProgressCourses } from "@/lib/demo/progress";
+import { buildDemoChildProgress, demoMayReadProgress, demoProgressCourses, demoSearchStudents } from "@/lib/demo/progress";
 import { progressFromRpc, type ChildProgressRpc } from "@/lib/syllabus/from-rpc";
 
 const NOW = "2026-10-13T00:00:00.000Z";
@@ -101,6 +101,7 @@ describe("the demo answers child_progress in the contract's shape", () => {
   const priya = demoProfiles.find((p) => p.id === DEMO_IDS.priya)!;
   const marco = demoProfiles.find((p) => p.id === DEMO_IDS.marco)!;
   const grace = demoProfiles.find((p) => p.id === DEMO_IDS.grace)!;
+  const ravi = demoProfiles.find((p) => p.id === DEMO_IDS.ravi)!;
   const maya = demoProfiles.find((p) => p.id === DEMO_IDS.maya)!;
   const daniel = demoProfiles.find((p) => p.id === DEMO_IDS.daniel)!;
 
@@ -121,6 +122,8 @@ describe("the demo answers child_progress in the contract's shape", () => {
     expect(demoProgressCourses(grace, DEMO_IDS.aarav).map((c) => c.name)).toEqual(["IGCSE Mathematics"]);
     expect(demoProgressCourses(grace, DEMO_IDS.lena)).toEqual([]);
     expect(demoProgressCourses(marco, DEMO_IDS.aarav)).toEqual([]);
+    // Support works the front desk and reads every booking, so every course.
+    expect(demoProgressCourses(ravi, DEMO_IDS.aarav).map((c) => c.name)).toEqual(["IGCSE Mathematics", "A-Level Physics"]);
   });
 
   it("mirrors child_progress's gate", () => {
@@ -131,5 +134,17 @@ describe("the demo answers child_progress in the contract's shape", () => {
     expect(demoMayReadProgress(grace, DEMO_IDS.lena, PHYS!.id)).toBe(false);
     expect(demoMayReadProgress(daniel, DEMO_IDS.lena, PHYS!.id)).toBe(true);
     expect(demoMayReadProgress(maya, DEMO_IDS.lena, PHYS!.id)).toBe(false);
+    // child_progress admits is_support(): the desk answers a parent's call from the child's progress.
+    expect(demoMayReadProgress(ravi, DEMO_IDS.aarav, IGCSE!.id)).toBe(true);
+    expect(demoMayReadProgress(ravi, DEMO_IDS.lena, PHYS!.id)).toBe(true);
+  });
+
+  it("answers the desk's student search by name, with a real id to pick, and nothing for nothing", () => {
+    expect(demoSearchStudents("aar").map((s) => s.name)).toEqual(["Aarav Sharma"]);
+    expect(demoSearchStudents("ROSSI")[0]).toMatchObject({ id: DEMO_IDS.sofia, name: "Sofia Rossi", grade_level: "Grade 11" });
+    expect(demoSearchStudents("a").map((s) => s.name)).toEqual(["Aarav Sharma", "Lena Park", "Sofia Rossi"]);
+    expect(demoSearchStudents("  ")).toEqual([]);
+    // A parent's name is not a student's.
+    expect(demoSearchStudents("Priya")).toEqual([]);
   });
 });

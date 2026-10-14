@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { requireRole, viewerTimeZone } from "@/lib/data/auth";
-import { CONSENT_LABEL, getLessonConsents } from "@/lib/data/consents";
+import { CONSENT_LABEL, getLessonConsents, RETENTION_LINE } from "@/lib/data/consents";
 import { getChildren } from "@/lib/data/family";
 import { displayName, firstName } from "@/lib/types";
 
@@ -49,6 +49,7 @@ export default async function ConsentsPage() {
         <EmptyState icon={<ShieldCheck className="h-5 w-5" />} title="No child on this account yet" description="Children are added to a family in the MathVision app." />
       ) : (
         <div className="space-y-6">
+          <p className="text-sm text-muted-foreground">{RETENTION_LINE}</p>
           {children.map((child) => (
             <Card key={child.id}>
               <CardHeader className="pb-3">

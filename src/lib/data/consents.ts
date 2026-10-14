@@ -12,8 +12,11 @@ import type { LessonConsentKind } from "@/lib/types";
 
 export const CONSENT_KINDS: readonly LessonConsentKind[] = ["recording", "transcript", "ai_analysis", "integrity_camera"];
 
+/** What happens to what a lesson leaves behind — the owner's decision, stated once where a family reads the consents. */
+export const RETENTION_LINE = "Recordings are kept for one month and then deleted. Transcripts are kept; there is no automatic deletion.";
+
 export const CONSENT_LABEL: Record<LessonConsentKind, { title: string; description: string }> = {
-  recording: { title: "Audio recording", description: "The lesson's audio is recorded and kept for the retention period, then deleted. The family can replay it while this is granted." },
+  recording: { title: "Audio recording", description: "The lesson's audio is recorded and kept for one month, then deleted. The family can replay it while this is granted." },
   transcript: { title: "Transcript", description: "The lesson is transcribed so the teacher's report can be drafted from what was actually said." },
   ai_analysis: { title: "AI analysis", description: "The transcript is analysed for the teacher's coaching and the report draft. Without it, only word counts are kept." },
   integrity_camera: { title: "Camera during tests", description: "During a timed test at home, occasional camera snapshots are taken so a flagged test can be reviewed." },

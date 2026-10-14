@@ -77,8 +77,8 @@ write to a booking's report is `submit_report`.
 | `/teacher/reports`, `/teacher/reports/[sessionId]` | teacher | lessons awaiting a report; the editor prefilled from `lesson_report_drafts`, submitted through `submit_report` |
 | `/teacher/coaching`, `/coaching/[sessionId]` | teacher, office | `lesson_feedback`, `lesson_metrics`, `lesson_transcripts`, `lesson_events` |
 | `/home`, `/home/reports` | student, parent | `my_online_lessons`, published `session_reports` (with the Recording link when `lesson_recordings` is readable) |
-| `/home/progress`, `/home/progress/[studentId]` | student, parent (own / each child); in-charge, support, admin by ticket or the students list | `child_progress(p_student_id, p_course_id)` mapped through `src/lib/syllabus/from-rpc.ts`; courses from `session_requests.course_id` under RLS; a course picker when there is more than one |
-| `/settings/consents` | student, parent | `lesson_consents` under RLS, read-only (managed in the MathVision app) |
+| `/home/progress`, `/home/progress/[studentId]` | student, parent (own / each child); in-charge and admin by ticket or the students list; support by ticket or a student search (`profiles` role student by name under RLS, the first 20 with the real total) | `child_progress(p_student_id, p_course_id)` — the child, the household, the room's in-charge, the teacher within a fortnight, support and admin — mapped through `src/lib/syllabus/from-rpc.ts`; courses from `session_requests.course_id` under RLS; a course picker when there is more than one |
+| `/settings/consents` | student, parent | `lesson_consents` under RLS, read-only (managed in the MathVision app); states that recordings are kept for one month and transcripts are kept |
 | `/api/lesson/[sessionId]/recording` | anyone `lesson_recordings` lets read | selects the row under RLS, asks Daily for a short-lived access link with `DAILY_API_KEY`, redirects; `/recordings/demo` in demo mode |
 | `/admin` | admin, in-charge, support | `my_online_lessons(1)` as an observer |
 | `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |

@@ -10,7 +10,7 @@ import {
 } from "@/lib/demo/data";
 import { practiceByWeek, type TopicSignals, type TopicStatus } from "@/lib/syllabus/progress";
 import type { ChildProgressRpc } from "@/lib/syllabus/from-rpc";
-import { firstName, type Course, type Profile } from "@/lib/types";
+import { displayName, firstName, type Course, type Profile } from "@/lib/types";
 
 // ============================================================================
 // Demo rows for the syllabus and progress: syllabus_topics per course, the
@@ -163,8 +163,9 @@ function testName(courseId: string, label: string): string {
 /**
  * The online courses a student has sessions on, as the course picker lists
  * them — the session_requests rows the viewer may read (the household's
- * own, an in-charge's room, the assigned teacher's and admin's
- * all), mirroring session_requests_select.
+ * own, an in-charge's room, the assigned teacher's, every row for an admin
+ * and for support, who works the front desk: a member of an administrative
+ * department), mirroring session_requests_select.
  */
 export function demoProgressCourses(viewer: Profile, studentId: string): { id: string; name: string }[] {
   const student = demoProfiles.find((p) => p.id === studentId);
@@ -174,6 +175,7 @@ export function demoProgressCourses(viewer: Profile, studentId: string): { id: s
       s.student_id === studentId &&
       ((student?.family_id != null && viewer.family_id === student.family_id) ||
         viewer.role === "admin" ||
+        viewer.role === "support" ||
         (viewer.role === "staff" && rooms.includes(s.department_id)) ||
         s.assigned_teacher_id === viewer.id),
   );
@@ -183,17 +185,16 @@ export function demoProgressCourses(viewer: Profile, studentId: string): { id: s
 
 /**
  * Mirrors child_progress's gate: the student, their household, an in-charge
- * whose room the student's sessions are in, an admin, or a teacher
- * with a session for the student on that course within a fortnight.
+ * whose room the student's sessions are in, a teacher with a session for
+ * the student on that course within a fortnight, support (is_support — the
+ * desk answers a parent's call from the child's progress) or an admin.
  */
 export function demoMayReadProgress(viewer: Profile, studentId: string, courseId: string, nowMs = Date.now()): boolean {
   if (viewer.id === studentId) return true;
   const student = demoProfiles.find((p) => p.id === studentId);
   if (!student) return false;
   if (viewer.role === "parent" && viewer.family_id && viewer.family_id === student.family_id) return true;
-  // Support has no seat: child_progress reaches a child through room_reaches,
-  // which admits in-charges only (the desk reads nothing about a child here).
-  if (viewer.role === "admin") return true;
+  if (viewer.role === "admin" || viewer.role === "support") return true;
   const sessions = buildDemoSessionRequests().filter((s) => s.student_id === studentId);
   if (viewer.role === "staff") {
     const rooms = demoInchargeDepartments[viewer.id] ?? [];
@@ -268,4 +269,18 @@ export function buildDemoChildProgress(studentId: string, courseId: string, nowI
     tests,
     reports,
   };
+}
+
+/**
+ * profiles, as a support person's student search reads them under RLS:
+ * active students whose full or preferred name holds the text, by name.
+ * The demo has three; the live query is capped and says when it stops.
+ */
+export function demoSearchStudents(q: string): { id: string; name: string; grade_level: string | null }[] {
+  const needle = q.trim().toLowerCase();
+  if (!needle) return [];
+  return demoProfiles
+    .filter((p) => p.role === "student" && p.deactivated_at == null && (p.full_name.toLowerCase().includes(needle) || (p.preferred_name ?? "").toLowerCase().includes(needle)))
+    .sort((a, b) => a.full_name.localeCompare(b.full_name))
+    .map((p) => ({ id: p.id, name: displayName(p), grade_level: p.grade_level }));
 }

@@ -1,15 +1,15 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 import { listMyOnlineLessons } from "@/lib/data/lessons";
-import { buildDemoChildProgress, demoMayReadProgress, demoProgressCourses } from "@/lib/demo/progress";
+import { buildDemoChildProgress, demoMayReadProgress, demoProgressCourses, demoSearchStudents } from "@/lib/demo/progress";
 import { progressFromRpc, type ProgressPageData } from "@/lib/syllabus/from-rpc";
-import type { Profile } from "@/lib/types";
+import { displayName, type Profile } from "@/lib/types";
 
 // ============================================================================
 // The progress dashboard's data. One RPC answers it: child_progress(
 // p_student_id, p_course_id) gathers the signals under its own gate (the
 // child, the household, the room's in-charge, the teacher with a
-// session on that course within a fortnight, an admin) and the room derives
+// session on that course within a fortnight, support, an admin) and the room derives
 // the statuses with src/lib/syllabus/from-rpc.ts. A refusal comes back as the
 // database's sentence, never as an empty dashboard.
 // ============================================================================
@@ -63,4 +63,48 @@ export async function getStudentsInMyRooms(viewer: Profile): Promise<{ id: strin
     byStudent.set(l.student_id!, entry);
   }
   return [...byStudent.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
+export interface StudentMatch {
+  id: string;
+  name: string;
+  grade_level: string | null;
+}
+
+/** How many matches a search lists before saying where it stopped. */
+export const STUDENT_SEARCH_LIMIT = 20;
+
+/**
+ * Search-then-pick for the desk: the students whose full or preferred name
+ * holds the text, among the profiles RLS lets the viewer read, by name. The
+ * result is a real profile with an id, never a name somebody spelled, and
+ * `total` is the real count so the screen can say when the list stops.
+ */
+export async function searchStudents(q: string): Promise<{ students: StudentMatch[]; total: number }> {
+  // Letters, digits, spaces, hyphens and apostrophes are all a name holds; anything else
+  // would be a PostgREST filter character (a comma or bracket ends the `or` clause).
+  const needle = q.replace(/[^\p{L}\p{N}\s'-]/gu, "").trim();
+  if (!needle) return { students: [], total: 0 };
+
+  if (isDemoMode) {
+    const all = demoSearchStudents(needle);
+    return { students: all.slice(0, STUDENT_SEARCH_LIMIT), total: all.length };
+  }
+
+  const supabase = createSupabaseServerClient()!;
+  const { data, error, count } = await supabase
+    .from("profiles")
+    .select("id, full_name, preferred_name, grade_level", { count: "exact" })
+    .eq("role", "student")
+    .is("deactivated_at", null)
+    .or(`full_name.ilike.%${needle}%,preferred_name.ilike.%${needle}%`)
+    .order("full_name")
+    .limit(STUDENT_SEARCH_LIMIT);
+  if (error) throw new Error(`profiles search failed: ${error.message}`);
+  const students = ((data ?? []) as { id: string; full_name: string; preferred_name: string | null; grade_level: string | null }[]).map((r) => ({
+    id: r.id,
+    name: displayName(r),
+    grade_level: r.grade_level,
+  }));
+  return { students, total: count ?? students.length };
 }
