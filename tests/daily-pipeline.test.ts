@@ -44,7 +44,7 @@ describe("room policy from consents", () => {
     expect(audio.properties.enable_transcription_storage).toBe(true);
   });
   it("sets a 90-day retention deadline and limits access", () => {
-    expect(retentionDeadline("2026-01-01T00:00:00.000Z")).toBe("2026-04-01T00:00:00.000Z");
+    expect(retentionDeadline("2026-01-01T00:00:00.000Z")).toBe("2026-01-31T00:00:00.000Z");
     const session = { teacherId: "t" };
     expect(mayAccessRecording({ role: "admin", id: "a", isInChargeOfSession: false, familyMatches: false }, session)).toBe(true);
     expect(mayAccessRecording({ role: "teacher", id: "t", isInChargeOfSession: false, familyMatches: false }, session)).toBe(true);

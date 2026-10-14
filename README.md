@@ -34,7 +34,7 @@ Demo personas (ids are stable so scripts can set the `demo_persona` cookie direc
 |-------------------|---------------|-----------|-------------------------------------------------------------|
 | admin             | Admin Office  | …01       | Board (every room), coaching QA, follow-ups, question bank for every course |
 | staff (in-charge) | Grace Lim     | …d1       | Board (Online Mathematics), coaching QA, follow-ups, question bank and syllabus |
-| support           | Ravi Menon    | …d2       | Board, observer seat                                        |
+| support           | Ravi Menon    | …d2       | A child's progress by student search; no lesson seat, no coaching |
 | teacher           | Maya Chen     | …a1       | Today, brief, host the room, report drafts, coaching        |
 | teacher           | Daniel Okafor | …a2       | Same, with a lesson later today                             |
 | student           | Sofia Rossi   | …b2       | Join the live lesson as the learner, reports, progress      |

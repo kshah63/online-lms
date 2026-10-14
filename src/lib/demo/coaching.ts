@@ -95,9 +95,9 @@ function demoMoments(student: string): FeedbackMoment[] {
   ];
 }
 
-/** Mirrors the observer seat in demo: admin and support see every room, an in-charge their own departments. */
+/** Mirrors the observer seat in demo (reads_lesson): an admin sees every room, an in-charge their own departments, support none. */
 export function demoObserves(viewer: Profile, courseName: string): boolean {
-  if (viewer.role === "admin" || viewer.role === "support") return true;
+  if (viewer.role === "admin") return true;
   if (viewer.role !== "staff") return false;
   const department = demoCourses.find((c) => c.name === courseName)?.department_id;
   return department != null && (demoInchargeDepartments[viewer.id] ?? []).includes(department);

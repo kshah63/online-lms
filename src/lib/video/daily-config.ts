@@ -84,8 +84,12 @@ export function consentsToRoomPolicy(
   };
 }
 
-/** Retention: recordings are deleted after this many days unless a review hold is placed. */
-export const RECORDING_RETENTION_DAYS = 90;
+/**
+ * Retention, for the room's own copy: a month, the database's default
+ * (retention_settings.recording_months = 1, which sweep_lesson_retention
+ * reads and an admin may change). Transcripts are kept for life.
+ */
+export const RECORDING_RETENTION_DAYS = 30;
 
 export function retentionDeadline(recordedAtISO: string, days = RECORDING_RETENTION_DAYS): string {
   const d = new Date(recordedAtISO);

@@ -41,7 +41,7 @@ interface DemoTermLesson {
   student_id: string;
   course: Course;
   mode: Mode;
-  status: "confirmed" | "completed" | "cancelled";
+  status: "confirmed" | "completed" | "cancelled" | "declined";
   /** session_requests.arrived_at is set. */
   taught: boolean;
   /** session_requests.no_show, the fact sweep_no_shows wrote. */
@@ -153,7 +153,7 @@ export function buildDemoTeacherScorecard(viewer: Profile, teacherId: string, da
 /** The window, decided once: live bookings whose start lies in [now - days, now]. */
 function windowOf(term: DemoTermLesson[], days: number, nowMs: number): DemoTermLesson[] {
   const from = nowMs - days * DAY_MS;
-  return term.filter((l) => l.status !== "cancelled" && Date.parse(l.effective_start) >= from && Date.parse(l.effective_start) <= nowMs);
+  return term.filter((l) => l.status !== "cancelled" && l.status !== "declined" && Date.parse(l.effective_start) >= from && Date.parse(l.effective_start) <= nowMs);
 }
 
 function termFor(teacherId: string, nowMs: number): DemoTermLesson[] {
@@ -185,7 +185,7 @@ function realLesson(s: DemoSessionRequest): DemoTermLesson {
     student_id: s.student_id,
     course,
     mode: s.mode,
-    status: s.status === "cancelled" ? "cancelled" : s.status === "completed" ? "completed" : "confirmed",
+    status: s.status === "cancelled" ? "cancelled" : s.status === "declined" ? "declined" : s.status === "completed" ? "completed" : "confirmed",
     taught: s.arrived_at != null,
     no_show: false,
     host_late_min: facts.host_late_min,
