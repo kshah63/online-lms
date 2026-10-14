@@ -37,7 +37,11 @@ export default async function AdminCoachingPage() {
                   <div className="flex items-center gap-3">
                     <Avatar name={f.teacher_name} size={38} />
                     <div className="min-w-0 flex-1">
-                      <CardTitle className="text-base">{f.teacher_name}</CardTitle>
+                      <CardTitle className="text-base">
+                        <Link href={`/admin/teachers/${f.teacher_id}`} className="hover:underline">
+                          {f.teacher_name}
+                        </Link>
+                      </CardTitle>
                       <p className="text-xs text-muted-foreground">
                         {f.course_name} · {DateTime.fromISO(f.created_at, { zone: "utc" }).setZone(tz).toFormat("d LLL")}
                       </p>
@@ -56,12 +60,20 @@ export default async function AdminCoachingPage() {
                   )}
                   <p className="text-sm text-muted-foreground">{f.summary}</p>
                   <ScoreBars scores={f.dimension_scores} />
-                  <Link
-                    href={`/coaching/${f.session_id}`}
-                    className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
-                  >
-                    Deep dive — key moments, transcript & nudges <ArrowUpRight className="h-3.5 w-3.5" />
-                  </Link>
+                  <div className="flex flex-col gap-1.5">
+                    <Link
+                      href={`/coaching/${f.session_id}`}
+                      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    >
+                      Deep dive — key moments, transcript & nudges <ArrowUpRight className="h-3.5 w-3.5" />
+                    </Link>
+                    <Link
+                      href={`/admin/teachers/${f.teacher_id}`}
+                      className="inline-flex items-center gap-1 text-sm font-medium text-primary hover:underline"
+                    >
+                      Scorecard — the last 90 days <ArrowUpRight className="h-3.5 w-3.5" />
+                    </Link>
+                  </div>
                 </CardContent>
               </Card>
             );

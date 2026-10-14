@@ -82,6 +82,7 @@ write to a booking's report is `submit_report`.
 | `/api/lesson/[sessionId]/recording` | anyone `lesson_recordings` lets read | selects the row under RLS, asks Daily for a short-lived access link with `DAILY_API_KEY`, redirects; `/recordings/demo` in demo mode |
 | `/admin` | admin, in-charge, support | `my_online_lessons(1)` as an observer |
 | `/admin/coaching`, `/admin/followups` | office | `lesson_feedback` per teacher; `lesson_followups`, read-only (decided in the app) |
+| `/admin/teachers/[teacherId]` | admin, in-charge (the teacher's room head); support and a wrong-room in-charge see the refusal | `teacher_scorecard(p_teacher_id, p_days)` over 30 / 90 / 180 days: lessons taught, punctuality, coaching averages, reports, follow-ups, ratings, the ten newest lessons; linked from each teacher on `/admin/coaching` |
 | `/bank` | admin, in-charge (`manages_course`) | `practice_questions`, `practice_sets`, `student_courses` under RLS; writes `upsert_question`, `approve_question`, `retire_question`, `store_extracted_questions`, `create_practice_set`, `assign_practice`; images to `practice-images` |
 | `/syllabus/[courseId]` | admin, in-charge | `syllabus_topics`; writes `seed_syllabus_from_course_topics`, `upsert_syllabus_topic` |
 | `/home/practice` | student, parent | `my_practice(30)`; the student opens an attempt (`start_attempt`), a parent sees marks only |
