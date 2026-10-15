@@ -27,6 +27,7 @@
 - Pencil outage fallback is Zoom (owner decision 5): one master Zoom meeting link for the whole school (env `LESSON_FALLBACK_URL`); nothing is stored per teacher; admins can override the link per lesson.
 - A student (or teacher) may use two devices in one lesson: laptop for the call, iPad for writing on the board (owner request; supported by Pencil, see decision o).
 - Homework tracking (owner decision 6): the work lives on a dedicated board in the student's Space; the student taps **Done** in our app (no photo required); Pencil's Space activity (student-only sessions after the assignment) is attached to the homework item automatically as a signal; the teacher verifies by viewing the board and recording the outcome in our app. Pencil has no assignment concept, board API or done flag, so status stays ours.
+- Parent progress dashboard (owner request, Phase 5): one page per child (web + mobile tab) with lesson attendance and time, homework completion, marks, Space activity, speaking minutes and published-report ratings over 4/12 weeks; aggregates only via a SECURITY DEFINER function; never teacher coaching data, AI drafts or transcripts; an interim v1 on today's data can ship after Phase 1. See "Parent progress dashboard (Phase 5)".
 - Lessons app is Next.js 14 App Router (not 16).
 
 ## Architecture
@@ -646,9 +647,251 @@ Join → `getSpaceUrl(sessionId)` (bearer) → `Linking.openURL` of the Pencil `
 
 **Phase 4 — recommended.** Events mirroring (h), recording playback route (`/api/recordings/[sessionId]/download`: `requireRole('teacher','admin')`, teacher must be `sessions.teacher_id`, rate-limited, awaited audit `pencil.recording.download`, returns the short-lived `downloadLink` without storing it), optional `hideTab` attention feed into `live_events`, tldraw export + migration 0020.
 
+**Phase 5 — parent progress dashboard.** Migration 0021 + RPC, web page and mobile tab; an interim v1 on today's data (no migration) may ship right after Phase 1. Details, metrics, tests and *Done when* in the section "Parent progress dashboard (Phase 5)" below.
+
 **Tests.** Remove `tests/coach.test.ts`. Keep `tests/metrics.test.ts`, `tests/heuristics.test.ts`. Add `tests/pencil-transcript.test.ts` (seconds→ms, lesson-relative, speaker mapping by `taught_by`, unknown userIds, empty/null transcript), `tests/pencil-analytics.test.ts` (talk split and camera as 0–1 fractions compatible with `computeMetrics`, zero durations, presence), `tests/pencil-correlate.test.ts` (window matcher, teacher-only → no_show, student-only → unmatched, already-bound lesson, two lessons same day), `tests/pencil-webhooks.test.ts` (digest-based bearer verify incl. length mismatch, payload discrimination, `deliveryKey`, `jobsFor`), `tests/post-session-reducer.test.ts` (transitions are monotonic and idempotent; completion requires both participants; report payload carries the attending teacher's id; opt-out re-check stops every step), `tests/profile-guard.sql` and `tests/homework-guard.sql` notes for manual psql checks. Manual: iframe in Safari (ITP) and Chrome with third-party cookies blocked; mobile Redirect; shared device back-to-back lessons; `endOngoingSession` → SESSION_ENDED arrival time; log the first transcript-ready payload to capture the `eventType`; opt-out toggle flips `settings.disableAlwaysOnRecording` and read-back confirms; join refused while unconfirmed; teacher reassignment adds the host; duplicate webhook delivery → one job; forged `sessionId` → failed.
 
 **Rollback.** Delete the old lesson path; do not keep Daily/tldraw behind a flag. Reasons: the two stacks are entangled (single Daily call object constraint, `attach_notebook` trigger, Realtime channel, RLS-blocked `finalizeLesson` writes that never worked in real mode), a dual path doubles the test surface, and the pre-Pencil path was never live for real users. Rollback = revert the squash-merged PR per phase; migrations 0017–0019 are additive (notebooks survive until 0020), so a code revert is sufficient. Operational degrade is the fallback link, not the mock: during a Pencil outage `LESSON_FALLBACK_MODE=on` (or a per-session `fallback_join_url`) lets lessons run on a plain meeting link with Materials and End still working, while the webhook pipeline keeps processing lessons that did run; unsetting the key is never the outage path.
+
+## Parent progress dashboard (Phase 5)
+
+**Owner request:** "a dashboard in app for parents to see these metrics such as time spent on hw etc". **Scope:** one page per child showing lesson attendance and time, homework completion, marks and Space activity, speaking minutes, and ratings from *published* reports, over the last 4 or 12 weeks, overall or per course. **Never shown to families:** `teacher_feedback` (dimension scores, moments, `pencil_coach`), `session_ai_outputs`, report drafts (`published_at is null`), `transcripts`/`pencil_summary`, `pencil_sessions.safeguarding`, other students' rows. "Time in their Space" is labelled as activity, never as time-on-task, and nothing here changes a status.
+
+### Metrics and availability
+
+Weekly buckets are Monday-start weeks in the **viewer's** timezone (`profile.timezone` on web, `deviceTimezone()` on mobile), computed by `date_trunc('week', ts at time zone p_tz)` in SQL and `DateTime.setZone(tz).startOf('week')` in TS so both agree. Windows: `weeks ∈ {4, 12}` (RPC clamps to 1–26); rows are grouped by `(week_start, course_id)` so "all courses" is a sum and "per course" a filter, done in TS.
+
+| Metric (tile / series) | Computation | Phase |
+|---|---|---|
+| Lessons attended, no-shows, cancelled; attendance rate | `count(*) filter (where status='completed' / 'no_show' / 'cancelled')` over `sessions` with `scheduled_start < now()`; rate = completed ÷ (completed + no_show), cancelled excluded; `lessons_unsettled` = past lessons still `scheduled/confirmed/in_progress` (teacher forgot End; `reconcile` leaves `status` to the admin) shown as "n awaiting the teacher's confirmation", never in the rate | today |
+| Lesson time (h m) | `sum(coalesce(actual_end − actual_start, scheduled_end − scheduled_start))` for completed lessons; `lesson_min_estimated` counts lessons using the booked slot ("n of m use the booked time") | today (0007); Phase 2 `ingest_session` backfills the clocks |
+| Homework set / submitted / on time / verified / self-marked | bucketed by `assigned_at`; submitted = `coalesce(submitted_at, completed_at) is not null` (mobile `markHomework` writes `status='completed'` + `completed_at` with no `submitted_at` until the 0019 guard lands); **verified = `status='completed' and verified_at is not null`** (set by web and mobile `gradeHomework`, never by `markHomework`); self-marked = `status='completed' and verified_at is null` → "n marked done by the family (not yet checked)"; on time = `coalesce(submitted_at, completed_at) <= due_at`, rate over `hw_due_submitted` (submitted items **with** a due date) only | today |
+| Marks accuracy | `sum(mark_correct) ÷ sum(correct + incorrect + not_done)` (0–1 fraction, rendered `pct()`-style) | today (0009) |
+| Open / overdue / awaiting review (snapshot, not windowed) | `status in ('assigned','incomplete')`, `… and due_at < now()`, `status='submitted'` | today |
+| Reports published, average rating | `reports` joined 1:1 to the student's sessions, **`published_at is not null` only**, `avg(rating)` | today |
+| Speaking minutes in lessons | `sum(session_metrics.student_speaking_s)` per week (Pencil `callActiveTalkingDuration`) | Phase 2 (0018) |
+| Camera on (optional, see open questions) | `avg(student_camera_pct)` (0–1) | Phase 2 |
+| Time in their Space | **Not** `sum(homework.space_activity_s)`: decision (i) attributes one student-only Pencil session to *every* open item whose window contains it, so an item sum double-counts, and it would land in the assignment week. Instead one row per `pencil_sessions` row with `state='homework_activity'` in the student's Spaces, `sum(ended_at − started_at)` bucketed by `started_at` week. The per-item figure stays on the homework item ("Worked in Space 25 min on Tue"), as the plan already shows it | Phase 3 (0019; see dependency note) |
+
+Every rate whose denominator is 0 is `null` in `rollUp` and renders `—`. Before a metric's phase (`available.*` false, computed **student-wide**, not per window) the tile renders `—` with "Available once lessons run in the new classroom" / "Available once homework moves to the Space"; once available, an empty window shows `0 min` with the normal hint.
+
+### Data access: `supabase/migrations/0021_student_progress.sql`
+
+A SECURITY DEFINER function, not a view: a view would still need parent-readable policies on `session_metrics`, `pencil_*` and homework activity columns, and RLS cannot express "aggregates only". The viewer rule is **self / `is_parent_of` / `is_admin`** — the `teaches_student` branch is deliberately absent: `teaches_student` (0002) is true for any teacher who ever had a session row with the student, and a function returning aggregates over *all* the student's lessons would hand that teacher other teachers' speaking seconds, camera fractions and ratings, which `metrics_read`, `sessions_select` and `reports_read` (0003) restrict to `teacher_id = auth.uid()`. A direct `rpc()` call bypasses any UI, so the branch returns only with its own `s.teacher_id = auth.uid()` / `r.teacher_id = auth.uid()` scoping when the staff view is built. `auth.uid()` is null for the service role, so the admin client is **denied** by design — callers run it as the viewer. Requires 0018 and 0019.
+
+```sql
+-- ============================================================================
+-- 0021_student_progress.sql — family progress aggregates (Phase 5)
+-- ----------------------------------------------------------------------------
+-- Per-week, per-course AGGREGATES for one student. Families never gain row
+-- access to session_metrics (0003 metrics_read is teacher/admin), pencil_* or
+-- transcripts: this function reads them as owner and returns sums/counts only.
+-- Reads: sessions, session_metrics (two student columns), reports (published
+-- fields only), homework, pencil_sessions (started_at/ended_at/state only),
+-- pencil_spaces (student_id/course_id), enrollments, courses. Nothing else.
+-- Needs 0018 + 0019 (0019 must add 'homework_activity' to the 0017 state check).
+-- ============================================================================
+create index if not exists homework_student_assigned_idx on public.homework (student_id, assigned_at);
+create index if not exists pencil_sessions_space_started_idx on public.pencil_sessions (space_id, started_at) where state = 'homework_activity';
+
+create or replace function public.get_student_progress(
+  p_student_id uuid, p_weeks int default 4, p_tz text default 'UTC'
+) returns jsonb
+language plpgsql stable security definer set search_path = public as $$
+declare
+  v_weeks int  := least(greatest(coalesce(p_weeks, 4), 1), 26);
+  v_tz    text := coalesce(p_tz, 'UTC');
+  v_from  timestamptz;
+  v_out   jsonb;
+begin
+  -- Viewer rule: self / parent / admin ONLY. No teaches_student branch (see plan text).
+  -- auth.uid() is null for the service role -> denied on purpose: web uses the cookie
+  -- client, mobile a bearer-scoped client (never the admin client).
+  -- ORDER MATTERS: 42501 before the existence check, so an outsider cannot probe
+  -- whether a uuid is a student. Do not "fix" this.
+  if auth.uid() is null or not (
+       p_student_id = auth.uid() or public.is_admin() or public.is_parent_of(p_student_id)) then
+    raise exception 'not allowed to view this student' using errcode = '42501';
+  end if;
+  if not exists (select 1 from public.profiles where id = p_student_id and role = 'student') then
+    raise exception 'not a student' using errcode = '22023';
+  end if;
+
+  -- Monday-start weeks in the VIEWER's zone (= Luxon startOf('week') in aggregate.ts). Bad zone -> UTC.
+  begin perform now() at time zone v_tz; exception when others then v_tz := 'UTC'; end;
+  v_from := (date_trunc('week', now() at time zone v_tz) - make_interval(weeks => v_weeks - 1)) at time zone v_tz;
+
+  with lessons as (
+    select date_trunc('week', s.scheduled_start at time zone v_tz)::date as week_start, s.course_id,
+           count(*) filter (where s.status = 'completed') as lessons_completed,
+           count(*) filter (where s.status = 'no_show')   as lessons_no_show,
+           count(*) filter (where s.status = 'cancelled') as lessons_cancelled,
+           -- past lessons nobody settled (forgotten End; reconcile leaves status to the admin)
+           count(*) filter (where s.status in ('scheduled','confirmed','in_progress') and s.scheduled_end < now()) as lessons_unsettled,
+           -- real clocks (0007: participant_join + End; Phase 2 backfill) else the booked slot
+           coalesce(round(sum(extract(epoch from coalesce(s.actual_end - s.actual_start,
+                     s.scheduled_end - s.scheduled_start))) filter (where s.status = 'completed') / 60), 0)::int as lesson_min,
+           count(*) filter (where s.status = 'completed' and (s.actual_start is null or s.actual_end is null)) as lesson_min_estimated,
+           coalesce(sum(m.student_speaking_s), 0)::int as speaking_s,          -- 0018, Pencil analytics
+           count(m.student_speaking_s)                 as analytics_n,
+           avg(m.student_camera_pct)                   as camera_pct,          -- 0..1
+           count(r.published_at)                       as reports_published,
+           coalesce(sum(r.rating) filter (where r.published_at is not null), 0) as rating_sum,
+           count(r.rating)        filter (where r.published_at is not null)     as rating_n
+    from public.sessions s
+    left join public.session_metrics m on m.session_id = s.id
+    left join public.reports r on r.session_id = s.id            -- published fields only leave here
+    where s.student_id = p_student_id and s.scheduled_start >= v_from and s.scheduled_start < now()
+    group by 1, 2
+  ), hw as (
+    select date_trunc('week', h.assigned_at at time zone v_tz)::date as week_start, h.course_id,
+           count(*) as hw_assigned,
+           count(*) filter (where coalesce(h.submitted_at, h.completed_at) is not null) as hw_submitted,
+           count(*) filter (where coalesce(h.submitted_at, h.completed_at) is not null and h.due_at is not null) as hw_due_submitted,
+           count(*) filter (where h.due_at is not null and coalesce(h.submitted_at, h.completed_at) <= h.due_at) as hw_on_time,
+           count(*) filter (where h.status = 'completed' and h.verified_at is not null) as hw_verified,
+           count(*) filter (where h.status = 'completed' and h.verified_at is null)     as hw_self_marked,  -- mobile markHomework, pre-0019
+           coalesce(sum(h.mark_correct), 0) as marks_correct,
+           coalesce(sum(coalesce(h.mark_correct,0) + coalesce(h.mark_incorrect,0) + coalesce(h.mark_not_done,0)), 0) as marks_total
+    from public.homework h
+    where h.student_id = p_student_id and h.assigned_at >= v_from
+    group by 1, 2
+  ), space as (
+    -- 0019 / decision i: ONE row per student-only Pencil session, bucketed by when it
+    -- happened. Never sum homework.space_activity_s here (double counts across open items).
+    select date_trunc('week', ps.started_at at time zone v_tz)::date as week_start, sp.course_id,
+           round(sum(extract(epoch from ps.ended_at - ps.started_at)) / 60)::int as space_min,
+           count(*) as space_n
+    from public.pencil_sessions ps join public.pencil_spaces sp on sp.id = ps.space_id
+    where sp.student_id = p_student_id and ps.state = 'homework_activity'
+      and ps.started_at >= v_from and ps.ended_at is not null
+    group by 1, 2
+  ), keys as (
+    select week_start, course_id from lessons
+    union select week_start, course_id from hw
+    union select week_start, course_id from space
+  )
+  select jsonb_build_object(
+    'student_id', p_student_id, 'tz', v_tz, 'weeks', v_weeks, 'from', (v_from at time zone v_tz)::date,
+    'weekly', coalesce((select jsonb_agg(to_jsonb(w) order by w.week_start) from (
+        select k.week_start, k.course_id,
+               l.lessons_completed, l.lessons_no_show, l.lessons_cancelled, l.lessons_unsettled, l.lesson_min, l.lesson_min_estimated,
+               l.speaking_s, l.analytics_n, l.camera_pct, l.reports_published, l.rating_sum, l.rating_n,
+               h.hw_assigned, h.hw_submitted, h.hw_due_submitted, h.hw_on_time, h.hw_verified, h.hw_self_marked,
+               h.marks_correct, h.marks_total, sp.space_min, sp.space_n
+        from keys k
+        left join lessons l on l.week_start = k.week_start and l.course_id  is not distinct from k.course_id
+        left join hw      h on h.week_start = k.week_start and h.course_id  is not distinct from k.course_id
+        left join space  sp on sp.week_start = k.week_start and sp.course_id is not distinct from k.course_id) w), '[]'::jsonb),
+    'open_homework', (select jsonb_build_object(
+        'to_do',     count(*) filter (where status in ('assigned','incomplete')),
+        'overdue',   count(*) filter (where status in ('assigned','incomplete') and due_at < now()),
+        'submitted', count(*) filter (where status = 'submitted'))
+      from public.homework where student_id = p_student_id),
+    'courses', coalesce((select jsonb_agg(jsonb_build_object('id', c.id, 'name', c.name) order by c.name)
+      from public.courses c where c.id in (
+        select course_id from public.enrollments where student_id = p_student_id
+        union select course_id from keys)), '[]'::jsonb),
+    -- STUDENT-WIDE, not window-bound: a quiet month must not revert a tile to "not yet available"
+    'available', jsonb_build_object(
+        'analytics', exists (select 1 from public.session_metrics m join public.sessions s on s.id = m.session_id
+                             where s.student_id = p_student_id and m.talk_source = 'pencil_analytics'),
+        'space_activity', exists (select 1 from public.pencil_sessions ps join public.pencil_spaces sp on sp.id = ps.space_id
+                                  where sp.student_id = p_student_id and ps.state = 'homework_activity'))
+  ) into v_out;
+  return v_out;
+end $$;
+
+-- auth.uid() IS NULL is the gate for the admin/service client; service_role keeps EXECUTE via
+-- Supabase default privileges on purpose (add `revoke … from service_role` only if the owner
+-- wants a grant-level block as well).
+revoke all on function public.get_student_progress(uuid, int, text) from public, anon;
+grant execute on function public.get_student_progress(uuid, int, text) to authenticated;
+notify pgrst, 'reload schema';
+```
+
+The TS side is split so demo mode, the Phase-1 interim and the RPC share one roll-up:
+
+```ts
+// src/lib/progress/aggregate.ts — pure, no server imports (vitest-able)
+export interface WeekRow { week_start: string; course_id: string | null; lessons_completed: number; lessons_no_show: number;
+  lessons_cancelled: number; lessons_unsettled: number; lesson_min: number; lesson_min_estimated: number; speaking_s: number | null;
+  analytics_n: number; camera_pct: number | null; reports_published: number; rating_sum: number; rating_n: number; hw_assigned: number;
+  hw_submitted: number; hw_due_submitted: number; hw_on_time: number; hw_verified: number; hw_self_marked: number;
+  marks_correct: number; marks_total: number; space_min: number | null; space_n: number }
+export interface StudentProgress { student_id: string; tz: string; weeks: number; from: string; weekly: WeekRow[];
+  open_homework: { to_do: number; overdue: number; submitted: number }; courses: { id: string; name: string }[];
+  available: { analytics: boolean; space_activity: boolean } }
+/** Demo + Phase-1 interim: same buckets as the RPC, from RLS-visible rows. Sensitive inputs are optional and default to null. */
+export function bucketWeekly(input: { sessions: Session[]; homework: Homework[]; reports: Report[] }, tz: string, weeks: number): WeekRow[];
+/** Totals; rates as fractions 0–1 or NULL when the denominator is 0 (attendance: completed+no_show; on time: hw_due_submitted;
+ *  avg_rating: rating_n; accuracy: marks_total); zero-filled series [{week_start, lesson_min, hw_submitted, space_min, speaking_min}]. */
+export function rollUp(p: StudentProgress, courseId?: string | null): ProgressSummary;
+export function weekLabel(weekStartISODate: string, tz: string): string;  // "13 Oct"
+```
+
+`src/lib/data/progress.ts` → `getStudentProgress(profile, studentId, { weeks, courseId })`: demo branch builds `bucketWeekly()` from `buildDemoSessions()`, `demoHomework()`, `demoReports` (plus a few `student_speaking_s`/`actual_*` values and demo `homework_activity` rows so tiles are visible); live branch calls `createSupabaseServerClient()!.rpc("get_student_progress", { p_student_id, p_weeks, p_tz: profile.timezone })`; both pass through `rollUp`. The page additionally checks `studentId ∈ getChildren(profile)` before calling (defence in depth; the RPC is the real gate).
+
+### Where it lives
+
+**Web:** `src/app/(app)/home/progress/page.tsx` (`requireRole("student","parent")`, search params `student`, `weeks=4|12`, `course`), child switcher for parents (same `getChildren` list the booking dialog uses), course segments as links (server component, no client state). `NAV.student`/`NAV.parent` in `src/components/app-shell.tsx` gain `{ href: "/home/progress", label: "Progress", icon: TrendingUp }`; `/home` gets a "This month" strip (lessons, homework verified, Space minutes) linking to it. Admins pass the RPC rule; teachers do not — a staff view (`/teacher/students/[id]/progress`) needs the scoped branch above and is deferred.
+
+**Visuals:** four `StatCard` tiles (Lessons attended with "n no-shows · n awaiting the teacher's confirmation" hint, Lesson time, Homework verified / on time with the self-marked hint, Time in their Space) plus Reports (`Stars` from `home/reports/page.tsx`, lifted to `src/components/ui/stars.tsx`). Weekly series as `src/components/progress/weekly-bars.tsx`, a labelled extension of `TrendBars` in `src/components/coaching/score-bars.tsx` (CSS flex bars, x-axis `weekLabel`, `tabular-nums`, `aria-label` per bar, no chart library). **The implementer must load the `dataviz` skill before writing any tile or bar code** (web and mobile), and keep bars single-hue with the current week emphasised, as `TrendBars` does.
+
+**Mobile:** new tab `mobile/app/(tabs)/progress.tsx` (`Tabs.Screen name="progress"` with `href: isStaff ? null : undefined` in `_layout.tsx`, icon `trending-up-outline`), child picker via `getActableChildren`, tiles as RN `Card`s and bars as flex `View`s; `mobile/lib/api.ts` `getProgress(studentId, weeks)` → bearer `GET /api/mobile/progress?student=&weeks=&tz=`; route `src/app/api/mobile/progress/route.ts`: `profileFromBearer` → `actableStudentIds` (lifted from `api/mobile/sessions/route.ts` into `src/lib/mobile/students.ts`) → `supabaseForBearer(token)` (new helper in `src/lib/mobile/auth.ts`: anon key + the caller's JWT so `auth.uid()` resolves inside the RPC) → `rpc("get_student_progress", { p_tz: IANAZone.isValidZone(tz) ? tz : profile.timezone })` → `rollUp` → JSON, so web and mobile render one shape. `rateLimit("progress:<profile id>", 120, 3600)` added to `LIMITS`.
+
+### Privacy wording (`src/lib/progress/copy.ts`, shared by web and mobile)
+
+```ts
+export const PROGRESS_COPY = {
+  intro: "Lesson attendance and time, homework status and marks, and ratings from published reports. Teacher coaching notes and AI analysis are never shown to families.",
+  spaceTime: (first: string) => `Minutes ${first} spent alone in their course Space while homework was open. Activity, not finished work — the teacher's check is.`,
+  selfMarked: (n: number) => `${n} marked done by the family (not yet checked)`,
+  unsettled:  (n: number) => `${n} awaiting the teacher's confirmation`,
+  speaking: "From the classroom's call analytics: minutes your child was speaking. Not a measure of understanding.",
+  lessonTime: "Measured from when both teacher and student were present; lessons without that clock use the booked time.",
+  recorded: "Lessons are recorded (audio + board) for the teacher's report and coaching.",   // decision d wording
+  notRecorded: "Lessons are not recorded for this student.",                                  // recording_opt_outs
+  notYet: { analytics: "Available once lessons run in the new classroom", space: "Available once homework moves to the Space" },
+};
+```
+
+The recording line is gated twice: `pipelineEnabled` (the Phase 2 always-on switch, the same flag that gates the End copy — institution recording stays Host/Disabled through Phase 1, so saying "recorded" earlier would be false) **and** `getRecordingOptOutSet([studentId])` from `src/lib/data/people.ts` (null → line omitted). Before the switch the line is omitted. `RecordingChip` in `session-card.tsx` needs the same `pipelineEnabled` gate (plan-wide fix, noted here).
+
+### File-by-file
+
+| Path | Action | What / why |
+|---|---|---|
+| `supabase/migrations/0021_student_progress.sql` | new | `get_student_progress` + two indexes (above). |
+| `supabase/migrations/0019_homework_space.sql` | modify (Phase 3) | Extend the 0017 `pencil_sessions.state` check with `'homework_activity'` — the attribution job and this RPC both need it. |
+| `src/lib/progress/aggregate.ts`, `copy.ts` | new | Pure buckets/roll-up/types; shared copy. |
+| `src/lib/data/progress.ts` | new | `getStudentProgress` (demo / interim / RPC). |
+| `src/app/(app)/home/progress/page.tsx` | new | Page, child + course + weeks switches, privacy block. |
+| `src/components/progress/progress-dashboard.tsx`, `weekly-bars.tsx` | new | Tiles + series; `—` states from `available` and null rates. |
+| `src/components/ui/stars.tsx` | new | `Stars` lifted from `home/reports/page.tsx` (which imports it). |
+| `src/components/app-shell.tsx`, `src/app/(app)/home/page.tsx`, `src/components/session-card.tsx` | modify | Nav item; "This month" strip; `RecordingChip` gate. |
+| `src/lib/mobile/auth.ts`, `src/lib/mobile/students.ts` | modify / new | `supabaseForBearer`; shared `actableStudentIds`. |
+| `src/app/api/mobile/progress/route.ts` | new | Bearer route (above). |
+| `src/lib/rate-limit.ts` | modify | `LIMITS.progress`. |
+| `mobile/app/(tabs)/_layout.tsx`, `progress.tsx`, `mobile/lib/api.ts`, `mobile/lib/types.ts` | modify / new | Tab, screen, `getProgress`, `ProgressSummary`. |
+| `src/lib/demo/data.ts`, `supabase/seed.sql` | modify | A few `student_speaking_s`, `actual_*` values and `homework_activity` rows so tiles have data. |
+| `tests/progress-aggregate.test.ts`, `tests/progress-route.test.ts`, `tests/student-progress.sql` | new | Below. |
+
+### Tests
+
+`tests/progress-aggregate.test.ts` (vitest): a Sunday 23:30 `Asia/Singapore` lesson lands in the earlier week than for `America/New_York`; series is zero-filled to exactly `weeks` entries ending this week; `lesson_min` prefers actual clocks and counts `lesson_min_estimated`; a mobile-style row `{status:'completed', verified_at:null, submitted_at:null, completed_at:X}` counts as submitted and self-marked, **not** verified; a web-graded row (`verified_at` set) counts as verified; a submitted item with no `due_at` is excluded from the on-time rate; zero denominators (`completed+no_show=0`, `hw_due_submitted=0`, `rating_n=0`, `marks_total=0`) yield `null`, never `0` or `NaN`; only `published_at` reports feed `avg_rating`; attendance rate excludes cancelled and unsettled; per-course filter sums match the all-courses total; `available.*` false when all `speaking_s`/`space_min` are null; `rollUp` output keys ⊆ an allowlist (no `feedback`, `coach`, `dimension`, `transcript`, `safeguarding`). `tests/progress-route.test.ts`: 401 without bearer, 403 for a non-actable student, invalid `tz` falls back to the profile's, `weeks=7` → 4. `tests/student-progress.sql` (manual psql notes, like `profile-guard.sql`): with `request.jwt.claims` set per persona — parent c1 → b1 ok, b2 → `42501`; student b1 self ok, b2 denied; teacher a1 (has a session with b1) → `42501`; admin ok; no claims (service role) denied; a JWT with `role='service_role'` and a foreign `sub` → `42501`; a random uuid from a non-parent → `42501` not `22023` (order); two overlapping homework items + one 25-min `homework_activity` session → `space_min = 25` once, in the `started_at` week; `p_weeks=99` clamps to 26; `p_tz='Mars/Olympus'` → `tz:'UTC'`; result keys match the allowlist.
+
+### Rollout
+
+**Phase 5 (after Phase 3):** 0021, RPC path, mobile route + tab. **Interim v1 after Phase 1 (no migration):** the same page fed by `bucketWeekly()` over `sessions`/`homework`/`reports` through the cookie client — all already family-readable under 0003/0004, so no new exposure — with the Phase 2/3 tiles in their `—` state, the self-marked hint active and no recording line; mobile waits for Phase 5. *Done when* a parent sees only their children (switcher and RPC both refuse a sibling's id), a teacher's JWT gets `42501` from the RPC, a 12-week view in `Asia/Singapore` and `America/New_York` buckets the same lesson into the expected weeks, the Space tile reads "spent alone in their course Space while homework was open", counts one Pencil session once and never changes a homework status, a family-marked item shows under "not yet checked" rather than "verified", a `curl` with the service-role key or with another family's JWT gets `42501`, the `tests/student-progress.sql` matrix passes, `rollUp` output contains no coaching/AI/transcript keys, the mobile tab renders the same numbers as the web page for the same `tz`, and the `dataviz` skill checklist was applied to tiles and bars.
+
+### Open questions
+
+- Should families see **speaking minutes** and **camera on %** at all (could read as surveillance), or speaking only? Default proposed: speaking on, camera off.
+- Show `avg_rating` only when `rating_n ≥ 3`? Week start Monday (ISO) for every locale?
+- Staff view (`/teacher/students/[id]/progress`, `/admin/people`): add the `teaches_student` branch scoped to `s.teacher_id = auth.uid()` / `r.teacher_id = auth.uid()`, with the test "a1 sees only own-lesson aggregates, not a2's ratings/speaking" — in scope later?
+- A weekly WhatsApp/push "progress summary" to parents via the existing reminders cron — desired?
+- Hard-block the service role at the grant level too (`revoke execute … from service_role`), or keep `auth.uid() is null` as the single documented gate?
 
 ## Open questions
 
