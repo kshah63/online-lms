@@ -2,7 +2,9 @@ import { DateTime } from "luxon";
 import type {
   Consent,
   Course,
+  PencilSpace,
   Profile,
+  RecordingOptOut,
   Report,
   SessionView,
   TeacherAvailability,
@@ -16,7 +18,10 @@ import type {
 
 export const demoProfiles: Profile[] = [
   p("00000000-0000-0000-0000-000000000001", "admin", "Admin Office", "admin@lessons.dev", "Asia/Singapore"),
-  p("00000000-0000-0000-0000-0000000000a1", "teacher", "Maya Chen", "maya@lessons.dev", "Asia/Singapore"),
+  // Maya has a backup Zoom link (Pencil outage fallback); Daniel doesn't, so
+  // the "add a backup link" warning is visible on his dashboard.
+  p("00000000-0000-0000-0000-0000000000a1", "teacher", "Maya Chen", "maya@lessons.dev", "Asia/Singapore", null,
+    "https://zoom.us/j/5550001111?pwd=lessonsdemo"),
   p("00000000-0000-0000-0000-0000000000a2", "teacher", "Daniel Okafor", "daniel@lessons.dev", "Europe/London"),
   p("00000000-0000-0000-0000-0000000000b1", "student", "Aarav Sharma", "aarav@lessons.dev", "Asia/Singapore"),
   p("00000000-0000-0000-0000-0000000000b2", "student", "Sofia Rossi", "sofia@lessons.dev", "America/New_York"),
@@ -72,6 +77,36 @@ export const demoConsents: Consent[] = [
   { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "ai_analysis", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
   { profile_id: "00000000-0000-0000-0000-0000000000b2", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c2", granted_at: nowISO() },
   { profile_id: "00000000-0000-0000-0000-0000000000a1", type: "teacher_eval", granted_by: "00000000-0000-0000-0000-0000000000a1", granted_at: nowISO() },
+];
+
+// ---------------------------------------------------------------------------
+// Pencil Spaces (0017) — mock rows. One Space per enrolled (student, course);
+// status 'mock' (no Pencil id) is what MockSpacePanel renders. Ids follow the
+// `space-<student>-<course>` convention shared with src/lib/pencil/mock.ts.
+// ---------------------------------------------------------------------------
+
+/** Deterministic mock Space id for a (student, course) pair. */
+export function demoSpaceId(studentId: string, courseId: string): string {
+  return `space-${studentId}-${courseId}`;
+}
+
+export const demoSpaces: PencilSpace[] = Object.entries(demoEnrollments).flatMap(([studentId, courseIds]) =>
+  courseIds.map((courseId) => space(studentId, courseId)),
+);
+
+/** The mock Space for a (student, course) pair, if the student is enrolled. */
+export function findDemoSpace(studentId: string, courseId: string): PencilSpace | undefined {
+  return demoSpaces.find((s) => s.student_id === studentId && s.course_id === courseId);
+}
+
+/** Recording is OPT-OUT: Lena (b3) is the demo student whose lessons are not recorded. */
+export const demoRecordingOptOuts: RecordingOptOut[] = [
+  {
+    student_id: "00000000-0000-0000-0000-0000000000b3",
+    set_by: "00000000-0000-0000-0000-000000000001",
+    set_at: nowISO(),
+    note: "Family asked not to record (demo example).",
+  },
 ];
 
 /** Sessions are rebuilt on each read so they stay anchored to the current day. */
@@ -138,8 +173,46 @@ function p(
   email: string,
   tz: string,
   phone: string | null = null,
+  fallback_meeting_url: string | null = null,
 ): Profile {
-  return { id, role, display_name: name, email, phone, avatar_url: null, timezone: tz, created_at: nowISO() };
+  return {
+    id,
+    role,
+    display_name: name,
+    email,
+    phone,
+    avatar_url: null,
+    timezone: tz,
+    whatsapp_opt_in: true,
+    fallback_meeting_url,
+    created_at: nowISO(),
+  };
+}
+
+function space(studentId: string, courseId: string): PencilSpace {
+  const course = demoCourses.find((c) => c.id === courseId);
+  const student = demoProfiles.find((x) => x.id === studentId);
+  const firstName = (student?.display_name ?? "Student").split(/\s+/)[0]!;
+  const hosts = Object.entries(demoTeacherCourse)
+    .filter(([, courses]) => courses.includes(courseId))
+    .map(([teacherId]) => teacherId);
+  return {
+    id: demoSpaceId(studentId, courseId),
+    student_id: studentId,
+    course_id: courseId,
+    external_id: `${courseId}:${studentId}`,
+    pencil_space_id: null,
+    link: null,
+    title: `${course?.name ?? "Course"} · ${firstName}`,
+    host_profile_ids: hosts,
+    participant_profile_ids: [studentId],
+    hosts_synced_at: null,
+    recording_disabled: false,
+    recording_verified_at: null,
+    status: "mock",
+    created_at: nowISO(),
+    updated_at: nowISO(),
+  };
 }
 
 function c(id: string, name: string, subject: string, materials: string): Course {
@@ -195,6 +268,10 @@ function sv(
     series_id,
     agenda,
     cancel_reason: null,
+    space_id: demoSpaceId(student.id, course.id),
+    pencil_session_id: null,
+    analysis_status: "none",
+    fallback_join_url: null,
     created_at: nowISO(),
     course: { id: course.id, name: course.name, subject: course.subject, materials_course_id: course.materials_course_id },
     student,

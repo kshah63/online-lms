@@ -200,3 +200,46 @@ insert into public.reports (session_id, teacher_id, topics_covered, how_student_
    'Exercise 4B questions 1–8.',
    4, now())
 on conflict (session_id) do nothing;
+
+-- ---------------------------------------------------------------------------
+-- Pencil Spaces (0017). One mock Space per enrolled (student, course) pair so
+-- the lesson room renders the mock Space panel on a fresh database with no
+-- PENCIL_SPACES_API_KEY. `ensureSpace()` upgrades a 'mock' row in place (same
+-- unique (student_id, course_id)) the first time a real key is configured.
+-- Hosts = the teachers mapped to that course in teacher_course.
+-- ---------------------------------------------------------------------------
+insert into public.pencil_spaces
+  (id, student_id, course_id, external_id, pencil_space_id, link, title, host_profile_ids, participant_profile_ids, status)
+values
+  ('50000000-0000-0000-0000-000000000001','00000000-0000-0000-0000-0000000000b1','10000000-0000-0000-0000-000000000001',
+   '10000000-0000-0000-0000-000000000001:00000000-0000-0000-0000-0000000000b1', null, null, 'IGCSE Mathematics · Aarav',
+   array['00000000-0000-0000-0000-0000000000a1','00000000-0000-0000-0000-0000000000a2']::uuid[], array['00000000-0000-0000-0000-0000000000b1']::uuid[], 'mock'),
+  ('50000000-0000-0000-0000-000000000002','00000000-0000-0000-0000-0000000000b2','10000000-0000-0000-0000-000000000002',
+   '10000000-0000-0000-0000-000000000002:00000000-0000-0000-0000-0000000000b2', null, null, 'SAT Math Prep · Sofia',
+   array['00000000-0000-0000-0000-0000000000a1']::uuid[], array['00000000-0000-0000-0000-0000000000b2']::uuid[], 'mock'),
+  ('50000000-0000-0000-0000-000000000003','00000000-0000-0000-0000-0000000000b3','10000000-0000-0000-0000-000000000003',
+   '10000000-0000-0000-0000-000000000003:00000000-0000-0000-0000-0000000000b3', null, null, 'A-Level Physics · Lena',
+   array['00000000-0000-0000-0000-0000000000a2']::uuid[], array['00000000-0000-0000-0000-0000000000b3']::uuid[], 'mock'),
+  ('50000000-0000-0000-0000-000000000004','00000000-0000-0000-0000-0000000000b1','10000000-0000-0000-0000-000000000003',
+   '10000000-0000-0000-0000-000000000003:00000000-0000-0000-0000-0000000000b1', null, null, 'A-Level Physics · Aarav',
+   array['00000000-0000-0000-0000-0000000000a2']::uuid[], array['00000000-0000-0000-0000-0000000000b1']::uuid[], 'mock')
+on conflict (student_id, course_id) do nothing;
+
+-- Point each seeded session at the mock Space for its (student, course).
+update public.sessions s
+   set space_id = ps.id
+  from public.pencil_spaces ps
+ where ps.student_id = s.student_id
+   and ps.course_id  = s.course_id
+   and s.space_id is null;
+
+-- Recording is OPT-OUT: Lena (student 3) is the seeded opted-out student, so
+-- the "Not recorded" / policy-not-applied paths are exercisable.
+insert into public.recording_opt_outs (student_id, set_by, note) values
+  ('00000000-0000-0000-0000-0000000000b3','00000000-0000-0000-0000-000000000001','Family asked not to record (seed example).')
+on conflict (student_id) do nothing;
+
+-- Teacher backup Zoom link for Pencil outages (Maya has one; Daniel does not,
+-- so the dashboard warning for a missing backup link is visible too).
+update public.profiles set fallback_meeting_url = 'https://zoom.us/j/5550001111?pwd=lessonsdemo'
+ where id = '00000000-0000-0000-0000-0000000000a1' and fallback_meeting_url is null;

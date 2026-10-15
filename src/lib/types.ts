@@ -22,6 +22,14 @@ export interface Profile {
   phone: string | null;
   avatar_url: string | null;
   timezone: string;
+  /** Families default opted-in to WhatsApp notifications (0012). */
+  whatsapp_opt_in: boolean;
+  /**
+   * Teacher's personal Zoom meeting link — the Pencil outage fallback (0017).
+   * `https://` + a `zoom.us` host, enforced by a DB check and `isZoomUrl()`.
+   * Null for everyone but teachers in practice.
+   */
+  fallback_meeting_url: string | null;
   created_at: string;
 }
 
@@ -33,6 +41,15 @@ export interface Course {
   created_at: string;
 }
 
+/** Post-session pipeline state for a lesson (0017; driven from Phase 2). */
+export type AnalysisStatus =
+  | "none"
+  | "pending"
+  | "done"
+  | "skipped_opt_out"
+  | "no_recording"
+  | "failed";
+
 export interface Session {
   id: string;
   course_id: string;
@@ -43,12 +60,21 @@ export interface Session {
   actual_start: string | null; // set when both join (UTC ISO)
   actual_end: string | null; // set when the lesson is ended
   status: SessionStatus;
+  /** @deprecated Daily room id — unused since the Pencil Spaces room (0017). */
   video_room_id: string | null;
   recording_url: string | null;
+  /** @deprecated tldraw notebook — lesson side retired in 0017; homework keeps it until 0019/0020. */
   notebook_id: string | null;
   series_id: string | null;
   agenda: string | null;
   cancel_reason: string | null;
+  /** The Pencil Space (pencil_spaces.id) this lesson ran in; set lazily on first join. */
+  space_id: string | null;
+  /** Pencil's analytics session id, bound by the End button / pipeline. NOT unique. */
+  pencil_session_id: string | null;
+  analysis_status: AnalysisStatus;
+  /** Admin per-session override of the outage fallback link (any https URL). */
+  fallback_join_url: string | null;
   created_at: string;
 }
 
@@ -186,6 +212,55 @@ export interface Notification {
   session_id: string | null;
   read_at: string | null;
   created_at: string;
+}
+
+// ---------------------------------------------------------------------------
+// Pencil Spaces (0017) — service-only tables, read with the admin client after
+// an explicit authorization check (see src/lib/pencil/authz.ts).
+// ---------------------------------------------------------------------------
+
+/** Our profile ↔ Pencil API user mapping (pencil_users). */
+export interface PencilUser {
+  profile_id: string;
+  /** Pencil's 24-hex user id (`mock-user-<profile id>` in mock mode). */
+  pencil_user_id: string;
+  pencil_email: string | null;
+  /** What we sent to Pencil: first name (students) / display_name (staff). */
+  pencil_name: string | null;
+  created_at: string;
+}
+
+export type PencilSpaceStatus = "active" | "archived" | "mock";
+
+/** One persistent Pencil Space per (student, course) (pencil_spaces). */
+export interface PencilSpace {
+  id: string;
+  student_id: string;
+  course_id: string;
+  /** `'<course_id>:<student_id>'` — also sent to Pencil as the Space externalId. */
+  external_id: string;
+  /** Pencil's 24-hex Space id; null only when status === 'mock'. */
+  pencil_space_id: string | null;
+  /** The Space URL from spaces/create (`https://my.pencilapp.com/spaces/<id>`). */
+  link: string | null;
+  title: string | null;
+  host_profile_ids: string[];
+  participant_profile_ids: string[];
+  hosts_synced_at: string | null;
+  /** True only after PATCH settings + a confirming GET read-back. */
+  recording_disabled: boolean;
+  recording_verified_at: string | null;
+  status: PencilSpaceStatus;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Recording is OPT-OUT: a row's presence means "do not record" (recording_opt_outs). */
+export interface RecordingOptOut {
+  student_id: string;
+  set_by: string | null;
+  set_at: string;
+  note: string | null;
 }
 
 export const SESSION_STATUS_LABEL: Record<SessionStatus, string> = {

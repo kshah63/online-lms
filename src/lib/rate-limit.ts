@@ -49,9 +49,11 @@ export function getClientIp(): string {
 /** Common limits in one place so they're easy to see and tune. */
 export const LIMITS = {
   // AI — per signed-in user. Caps Anthropic spend if something loops.
-  coachLive: { limit: 80, windowSeconds: 3600 }, // ~1 every 45s; interval is 150s
-  finalizeLesson: { limit: 30, windowSeconds: 3600 }, // 1 Opus call each
   reportDraft: { limit: 40, windowSeconds: 3600 },
+  // Pencil Spaces — per signed-in profile, bucket `pencil:join:<profile id>`.
+  // Every minted authorize URL (lesson, second-device board, homework, mobile)
+  // counts; a looping client can't hammer Pencil's <5 QPS budget.
+  pencilJoin: { limit: 30, windowSeconds: 3600 },
   // Public, unauthenticated — per IP.
   accountRequest: { limit: 5, windowSeconds: 3600 },
   passwordReset: { limit: 5, windowSeconds: 3600 },
