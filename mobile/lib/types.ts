@@ -21,6 +21,11 @@ export interface SessionRow {
   student?: { display_name: string } | null;
   teacher?: { display_name: string } | null;
   course?: { name: string; subject?: string | null } | null;
+  // Pencil Spaces (0017) — present when a screen selects them.
+  space_id?: string | null;
+  pencil_session_id?: string | null;
+  analysis_status?: "none" | "pending" | "done" | "skipped_opt_out" | "no_recording" | "failed";
+  fallback_join_url?: string | null;
 }
 
 export interface ReportRow {

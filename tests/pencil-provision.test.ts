@@ -17,83 +17,8 @@ vi.mock("@/lib/env", () => ({
 vi.mock("@/lib/audit", () => ({ logAudit: vi.fn(async () => {}) }));
 vi.mock("@/lib/observability", () => ({ captureError: vi.fn() }));
 
-type Row = Record<string, unknown>;
-
-/** Tiny in-memory PostgREST look-alike: select/insert/upsert/update + eq/neq/in filters. */
-class FakeDb {
-  tables: Record<string, Row[]> = {};
-  from(table: string) {
-    this.tables[table] ??= [];
-    return new FakeQuery(this.tables[table]);
-  }
-}
-
-class FakeQuery {
-  private filters: ((r: Row) => boolean)[] = [];
-  private op: "select" | "insert" | "upsert" | "update" = "select";
-  private payload: Row | Row[] | null = null;
-  private onConflict: string[] = [];
-  private count = false;
-  private head = false;
-
-  constructor(private rows: Row[]) {}
-
-  select(_cols?: string, opts?: { count?: string; head?: boolean }) {
-    if (this.op === "select") {
-      this.count = Boolean(opts?.count);
-      this.head = Boolean(opts?.head);
-    }
-    return this;
-  }
-  insert(rows: Row | Row[]) { this.op = "insert"; this.payload = rows; return this; }
-  upsert(rows: Row | Row[], opts?: { onConflict?: string }) {
-    this.op = "upsert"; this.payload = rows; this.onConflict = (opts?.onConflict ?? "").split(",").map((s) => s.trim()).filter(Boolean);
-    return this;
-  }
-  update(patch: Row) { this.op = "update"; this.payload = patch; return this; }
-  eq(k: string, v: unknown) { this.filters.push((r) => r[k] === v); return this; }
-  neq(k: string, v: unknown) { this.filters.push((r) => r[k] !== v); return this; }
-  in(k: string, vs: unknown[]) { this.filters.push((r) => vs.includes(r[k])); return this; }
-  is(k: string, v: unknown) { this.filters.push((r) => r[k] === v); return this; }
-
-  private exec(): Row[] {
-    const match = (r: Row) => this.filters.every((f) => f(r));
-    switch (this.op) {
-      case "select":
-        return this.rows.filter(match);
-      case "insert": {
-        const list = Array.isArray(this.payload) ? this.payload : [this.payload!];
-        const inserted = list.map((r) => ({ id: `${Math.random()}`, ...r }));
-        this.rows.push(...inserted);
-        return inserted;
-      }
-      case "upsert": {
-        const list = Array.isArray(this.payload) ? this.payload : [this.payload!];
-        return list.map((incoming) => {
-          const existing = this.rows.find((r) => this.onConflict.length > 0 && this.onConflict.every((k) => r[k] === incoming[k]));
-          if (existing) { Object.assign(existing, incoming); return existing; }
-          const row = { id: `row-${this.rows.length + 1}`, ...incoming };
-          this.rows.push(row);
-          return row;
-        });
-      }
-      case "update": {
-        const hit = this.rows.filter(match);
-        for (const r of hit) Object.assign(r, this.payload as Row);
-        return hit;
-      }
-    }
-  }
-  maybeSingle() { const rows = this.exec(); return Promise.resolve({ data: rows[0] ?? null, error: null }); }
-  single() {
-    const rows = this.exec();
-    return Promise.resolve(rows.length === 1 ? { data: rows[0], error: null } : { data: null, error: { message: `expected 1 row, got ${rows.length}` } });
-  }
-  then<T>(resolve: (v: { data: Row[] | null; error: null; count: number | null }) => T) {
-    const rows = this.exec();
-    return Promise.resolve(resolve({ data: this.head ? null : rows, error: null, count: this.count ? rows.length : null }));
-  }
-}
+import { FakeDb, type Row } from "./helpers/fake-db";
+import { json, pencilServer, type Call } from "./helpers/pencil-server";
 
 // --- fixtures ---------------------------------------------------------------
 
@@ -106,42 +31,13 @@ const SPACE_LINK = "https://my.pencilapp.com/spaces/aaaaaaaaaaaaaaaaaaaaaaaa";
 function profile(id: string, role: Profile["role"], display_name: string): Profile {
   return {
     id, role, display_name, email: `${display_name.split(" ")[0]!.toLowerCase()}@lessons.dev`, phone: null, avatar_url: null,
-    timezone: "Asia/Singapore", whatsapp_opt_in: true, fallback_meeting_url: null, created_at: "2026-01-01T00:00:00.000Z",
+    timezone: "Asia/Singapore", whatsapp_opt_in: true, created_at: "2026-01-01T00:00:00.000Z",
   };
 }
 const teacherProfile = profile(TEACHER, "teacher", "Maya Chen");
 const studentProfile = profile(STUDENT, "student", "Aarav Sharma");
 const adminProfile = profile(ADMIN, "admin", "Admin Office");
 const parentProfile = profile("00000000-0000-0000-0000-0000000000c1", "parent", "Priya Sharma");
-
-function json(body: unknown, status = 200, headers: Record<string, string> = {}) {
-  return new Response(JSON.stringify(body), { status, headers: { "content-type": "application/json", ...headers } });
-}
-
-interface Call { method: string; path: string; body: Row | null }
-
-/** Routes requests to canned handlers and records every call. */
-function pencilServer(handlers: Record<string, (call: Call, n: number) => Response>) {
-  const calls: Call[] = [];
-  const seen: Record<string, number> = {};
-  const fetchMock = vi.fn(async (input: string | URL | Request, init?: RequestInit) => {
-    const url = new URL(typeof input === "string" ? input : input instanceof URL ? input.toString() : input.url);
-    const method = (init?.method ?? "GET").toUpperCase();
-    const path = url.pathname.replace(/^\/public\/api\//, "") + url.search;
-    const body = init?.body ? (JSON.parse(String(init.body)) as Row) : null;
-    const call = { method, path, body };
-    calls.push(call);
-    const key = Object.keys(handlers).find((k) => {
-      const [m, p] = k.split(" ") as [string, string];
-      return m === method && (path === p || path.startsWith(p));
-    });
-    if (!key) return json({ err: `unhandled ${method} ${path}`, error_code: "TEST_UNHANDLED" }, 599);
-    seen[key] = (seen[key] ?? 0) + 1;
-    return handlers[key]!(call, seen[key]!);
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  return { calls, fetchMock };
-}
 
 const pencilUser = (userId: string, name: string, externalId: string) => ({ userId, email: `${userId}@api.pencil`, name, isApiManaged: true, userRole: "Student", externalId });
 const pencilSpace = (over: Row = {}) => ({

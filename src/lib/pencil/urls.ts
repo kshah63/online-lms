@@ -1,5 +1,5 @@
 import "server-only";
-import type { PencilSpace, Profile, Session } from "@/lib/types";
+import type { PencilSpace, Session } from "@/lib/types";
 import { authorizeUrl, JOIN_FETCH, PencilError, pencilLive } from "@/lib/pencil/client";
 import { mockSpaceLink } from "@/lib/pencil/mock";
 import type { JoinPurpose } from "@/lib/pencil/types";
@@ -124,9 +124,9 @@ export function isHttpsUrl(value: string | null | undefined): boolean {
 }
 
 /**
- * A teacher's backup link must be https with a zoom.us host (`zoom.us` or any
- * `*.zoom.us`, e.g. `us02web.zoom.us`). Same rule as the DB check on
- * profiles.fallback_meeting_url — use this in setFallbackMeetingUrl.
+ * The master Zoom link must be https with a zoom.us host (`zoom.us` or any
+ * `*.zoom.us`, e.g. `us02web.zoom.us`) — the validation rule for
+ * LESSON_FALLBACK_URL.
  */
 export function isZoomUrl(value: string | null | undefined): boolean {
   if (!isHttpsUrl(value)) return false;
@@ -135,20 +135,33 @@ export function isZoomUrl(value: string | null | undefined): boolean {
 }
 
 /**
- * Where to send people when Pencil can't be used:
- *   sessions.fallback_join_url (admin per-session override, any https URL)
- *   → teacher's profiles.fallback_meeting_url (Zoom)
- *   → null ("No backup link — contact admin").
+ * ONE master Zoom meeting link for the whole school (owner decision 5), from
+ * the server env `LESSON_FALLBACK_URL`. Read at call time; null when unset or
+ * not an https zoom.us link (a bad value is logged once at startup below).
  */
-export function resolveFallbackUrl(
-  session: Pick<Session, "fallback_join_url"> | null | undefined,
-  teacher: Pick<Profile, "fallback_meeting_url"> | null | undefined,
-): string | null {
+export function masterFallbackUrl(): string | null {
+  const value = (process.env.LESSON_FALLBACK_URL ?? "").trim();
+  return isZoomUrl(value) ? value : null;
+}
+
+{
+  const raw = (process.env.LESSON_FALLBACK_URL ?? "").trim();
+  if (raw && !isZoomUrl(raw)) {
+    console.warn("LESSON_FALLBACK_URL is set but is not an https zoom.us link — it will be ignored.");
+  }
+}
+
+/**
+ * Where to send people when Pencil can't be used:
+ *   sessions.fallback_join_url (admin per-lesson override, any https URL)
+ *   → LESSON_FALLBACK_URL (the school's master Zoom link)
+ *   → null ("No backup link — contact admin").
+ * Nothing is stored per teacher. A plain https link, not a credential.
+ */
+export function resolveFallbackUrl(session: Pick<Session, "fallback_join_url"> | null | undefined): string | null {
   const override = session?.fallback_join_url ?? null;
   if (isHttpsUrl(override)) return override;
-  const zoom = teacher?.fallback_meeting_url ?? null;
-  if (isZoomUrl(zoom)) return zoom;
-  return null;
+  return masterFallbackUrl();
 }
 
 /**

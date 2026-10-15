@@ -4,6 +4,7 @@ import {
   isZoomUrl,
   JOIN_PARAMS,
   lessonFallbackForced,
+  masterFallbackUrl,
   mintJoinUrl,
   PENCIL_ALLOWED_ORIGINS,
   resolveFallbackUrl,
@@ -126,23 +127,35 @@ describe("isZoomUrl", () => {
   });
 });
 
-describe("resolveFallbackUrl", () => {
-  const teacher = { fallback_meeting_url: "https://zoom.us/j/111" };
+describe("resolveFallbackUrl (session override → master Zoom link → null)", () => {
+  const MASTER = "https://us02web.zoom.us/j/5550001111?pwd=school";
 
-  it("session override wins over the teacher's Zoom link", () => {
-    expect(resolveFallbackUrl({ fallback_join_url: "https://meet.example.com/x" }, teacher)).toBe("https://meet.example.com/x");
+  it("the admin's per-lesson override wins over the master link", () => {
+    vi.stubEnv("LESSON_FALLBACK_URL", MASTER);
+    expect(resolveFallbackUrl({ fallback_join_url: "https://meet.example.com/x" })).toBe("https://meet.example.com/x");
   });
 
-  it("falls back to the teacher's Zoom link, then null", () => {
-    expect(resolveFallbackUrl({ fallback_join_url: null }, teacher)).toBe("https://zoom.us/j/111");
-    expect(resolveFallbackUrl(null, teacher)).toBe("https://zoom.us/j/111");
-    expect(resolveFallbackUrl({ fallback_join_url: null }, { fallback_meeting_url: null })).toBeNull();
-    expect(resolveFallbackUrl(null, null)).toBeNull();
+  it("falls back to LESSON_FALLBACK_URL, then null", () => {
+    vi.stubEnv("LESSON_FALLBACK_URL", MASTER);
+    expect(resolveFallbackUrl({ fallback_join_url: null })).toBe(MASTER);
+    expect(resolveFallbackUrl(null)).toBe(MASTER);
+    expect(masterFallbackUrl()).toBe(MASTER);
+    vi.stubEnv("LESSON_FALLBACK_URL", "");
+    expect(resolveFallbackUrl({ fallback_join_url: null })).toBeNull();
+    expect(resolveFallbackUrl(null)).toBeNull();
+    expect(masterFallbackUrl()).toBeNull();
   });
 
-  it("ignores invalid links (non-https override, non-zoom teacher link)", () => {
-    expect(resolveFallbackUrl({ fallback_join_url: "http://insecure.example/x" }, teacher)).toBe("https://zoom.us/j/111");
-    expect(resolveFallbackUrl({ fallback_join_url: "javascript:alert(1)" }, { fallback_meeting_url: "https://teams.example/x" })).toBeNull();
+  it("ignores invalid links (non-https override, non-zoom or http master link)", () => {
+    vi.stubEnv("LESSON_FALLBACK_URL", MASTER);
+    expect(resolveFallbackUrl({ fallback_join_url: "http://insecure.example/x" })).toBe(MASTER);
+    expect(resolveFallbackUrl({ fallback_join_url: "javascript:alert(1)" })).toBe(MASTER);
+    vi.stubEnv("LESSON_FALLBACK_URL", "https://teams.example/x");
+    expect(resolveFallbackUrl({ fallback_join_url: null })).toBeNull();
+    vi.stubEnv("LESSON_FALLBACK_URL", "http://zoom.us/j/1");
+    expect(resolveFallbackUrl(null)).toBeNull();
+    vi.stubEnv("LESSON_FALLBACK_URL", "https://zoom.us.evil.example/j/1");
+    expect(resolveFallbackUrl(null)).toBeNull();
   });
 });
 

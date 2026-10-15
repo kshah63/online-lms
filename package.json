@@ -13,8 +13,6 @@
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.104.1",
-    "@daily-co/daily-js": "^0.91.0",
-    "@daily-co/daily-react": "^0.25.2",
     "@radix-ui/react-avatar": "^1.1.1",
     "@radix-ui/react-dialog": "^1.1.2",
     "@radix-ui/react-dropdown-menu": "^2.1.2",
@@ -29,7 +27,6 @@
     "@supabase/supabase-js": "^2.46.1",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
-    "jotai": "^2.20.0",
     "lucide-react": "^0.468.0",
     "luxon": "^3.5.0",
     "next": "14.2.18",

@@ -24,12 +24,6 @@ export interface Profile {
   timezone: string;
   /** Families default opted-in to WhatsApp notifications (0012). */
   whatsapp_opt_in: boolean;
-  /**
-   * Teacher's personal Zoom meeting link — the Pencil outage fallback (0017).
-   * `https://` + a `zoom.us` host, enforced by a DB check and `isZoomUrl()`.
-   * Null for everyone but teachers in practice.
-   */
-  fallback_meeting_url: string | null;
   created_at: string;
 }
 

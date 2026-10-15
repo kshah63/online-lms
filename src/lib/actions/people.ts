@@ -212,6 +212,7 @@ async function raiseFollowup(
       student_id: input.studentId,
       session_id: input.sessionId ?? null,
       type: "report_flag",
+      status: "open",
       priority: "high",
       reason: input.reason,
     });

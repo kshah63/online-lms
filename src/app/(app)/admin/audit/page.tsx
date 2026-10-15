@@ -47,6 +47,7 @@ const ACTION_TONE: Record<string, "default" | "secondary" | "success" | "warning
   "pencil.space.create": "default",
   "pencil.space.hosts_changed": "warning",
   "pencil.join": "secondary",
+  "pencil.join.blocked": "destructive",
   "lesson.end": "success",
   "lesson.no_show": "warning",
   "student.recording_opt_out": "warning",

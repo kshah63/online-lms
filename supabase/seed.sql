@@ -238,8 +238,3 @@ update public.sessions s
 insert into public.recording_opt_outs (student_id, set_by, note) values
   ('00000000-0000-0000-0000-0000000000b3','00000000-0000-0000-0000-000000000001','Family asked not to record (seed example).')
 on conflict (student_id) do nothing;
-
--- Teacher backup Zoom link for Pencil outages (Maya has one; Daniel does not,
--- so the dashboard warning for a missing backup link is visible too).
-update public.profiles set fallback_meeting_url = 'https://zoom.us/j/5550001111?pwd=lessonsdemo'
- where id = '00000000-0000-0000-0000-0000000000a1' and fallback_meeting_url is null;

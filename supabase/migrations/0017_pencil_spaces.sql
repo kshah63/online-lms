@@ -38,11 +38,10 @@ drop trigger if exists on_profile_guard on public.profiles;
 create trigger on_profile_guard before update on public.profiles
   for each row execute function public.guard_profile_update();
 
--- 1b. Teacher's personal Zoom link for Pencil outages (owner decision 5).
---     Self-editable (the guard only protects role/email); validated in the
---     action and again here: https + a zoom.us host.
-alter table public.profiles add column if not exists fallback_meeting_url text
-  check (fallback_meeting_url is null or fallback_meeting_url ~* '^https://([a-z0-9-]+\.)*zoom\.us/');
+-- 1b. The Pencil outage fallback (owner decision 5) is ONE master Zoom link in
+--     the server env (LESSON_FALLBACK_URL) plus sessions.fallback_join_url (§5)
+--     as the admin's per-lesson override. Nothing is stored per teacher, so
+--     profiles gains no column here.
 
 -- ---------------------------------------------------------------------------
 -- 2. Pencil identity: service-role writes, admin-only reads (staff Pencil ids

@@ -213,6 +213,12 @@ function FollowupRow({ f, adminTz }: { f: FollowupView; adminTz: string }) {
 function defaultBody(f: FollowupView): string {
   const first = f.student.display_name.split(" ")[0];
   const parent = f.parent?.display_name?.split(" ")[0] ?? "there";
+  // Recording-policy items (Space route / opt-out toggle) reuse `report_flag`
+  // until 0018 adds a dedicated type; their parent message is about the
+  // recording preference, not progress.
+  if (f.reason?.startsWith("[Recording policy]")) {
+    return `Hi ${parent}, a quick note about ${first}'s lessons: you asked us not to record them, and we're making sure that setting is in place in the classroom before the next lesson. Nothing is needed from you — we'll confirm once it's done.`;
+  }
   switch (f.type) {
     case "no_show":
       return `Hi ${parent}, ${first} missed their recent lesson. Would you like us to reschedule? Happy to find a time that works.`;

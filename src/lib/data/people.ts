@@ -3,7 +3,6 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import {
   buildDemoSessions,
-  demoConsents,
   demoCourses,
   demoEnrollments,
   demoParentStudent,
@@ -12,7 +11,7 @@ import {
   demoReports,
   demoTeacherCourse,
 } from "@/lib/demo/data";
-import type { Consent, Course, Profile, RecordingOptOut, Report } from "@/lib/types";
+import type { Course, Profile, RecordingOptOut, Report } from "@/lib/types";
 
 export async function listTeachers(): Promise<Profile[]> {
   if (isDemoMode) return demoProfiles.filter((p) => p.role === "teacher");
@@ -194,24 +193,10 @@ export async function getReportForSession(sessionId: string): Promise<Report | n
   return (data as Report) ?? null;
 }
 
-/**
- * Historical consent rows. Since the Pencil Spaces room (0017) NOTHING is gated
- * on these: recording is opt-out (`recording_opt_outs`, see below) and teacher
- * AI evaluation is mandatory. Kept for history/reporting only.
- */
-export async function getConsents(studentId: string): Promise<Consent[]> {
-  if (isDemoMode) return demoConsents.filter((c) => c.profile_id === studentId);
-  const supabase = createSupabaseServerClient()!;
-  const { data, error } = await supabase.from("consents").select("*").eq("profile_id", studentId);
-  if (error) {
-    console.error("getConsents failed:", error.message);
-    return [];
-  }
-  return (data ?? []) as Consent[];
-}
-
 // ---------------------------------------------------------------------------
-// Pencil Spaces (0017) — recording policy + Pencil identity.
+// Pencil Spaces (0017) — recording policy + Pencil identity. The old `consents`
+// rows gate nothing any more (recording is opt-out, teacher AI evaluation is
+// mandatory); the table is kept for history only and has no reader here.
 //
 // `recording_opt_outs` and `pencil_users` are SERVICE-ONLY tables (admin-read
 // RLS), so these helpers go through the service-role client. They are read

@@ -19,11 +19,11 @@ import {
   recordingPolicyBlocksJoin,
   syncHosts,
 } from "@/lib/pencil/provision";
-import { isHttpsUrl, isZoomUrl, lessonFallbackForced, mintJoinUrl } from "@/lib/pencil/urls";
+import { lessonFallbackForced, mintJoinUrl, resolveFallbackUrl } from "@/lib/pencil/urls";
 import { mockSpaceJoin } from "@/lib/pencil/mock";
 import type { JoinMode, JoinPurpose } from "@/lib/pencil/types";
 import type { SpaceJoinResponse } from "@/components/lesson/space-stage";
-import type { Session, SessionView } from "@/lib/types";
+import type { SessionView } from "@/lib/types";
 
 /**
  * POST /api/lesson/[sessionId]/space — mint a Pencil join URL for the viewer.
@@ -54,7 +54,7 @@ export async function POST(req: Request, { params }: { params: { sessionId: stri
     return json({ error: "Parents follow the lesson from the status card and have no seat in the room." }, 403);
   }
 
-  const fallbackUrl = fallbackUrlFor(session);
+  const fallbackUrl = resolveFallbackUrl(session);
   if (session.status === "completed" || session.status === "cancelled" || session.status === "no_show") {
     return json({ configured: false, reason: "ended", fallbackUrl, error: "This lesson is over." }, 409);
   }
@@ -190,25 +190,14 @@ async function parseBody(req: Request): Promise<{ purpose?: unknown; mode?: unkn
 }
 
 /**
- * Where to send people when Pencil can't be used (owner decision): the admin's
- * per-lesson override, else ONE master Zoom link for the whole school
- * (`LESSON_FALLBACK_URL`, https + a zoom.us host), else null — the UI then
- * shows "No backup link — contact admin". There is no per-teacher link.
- */
-function fallbackUrlFor(session: Pick<Session, "fallback_join_url">): string | null {
-  if (isHttpsUrl(session.fallback_join_url)) return session.fallback_join_url;
-  const master = (process.env.LESSON_FALLBACK_URL ?? "").trim();
-  return isZoomUrl(master) ? master : null;
-}
-
-/**
  * Admin follow-up for the recording-policy hard stop. Uses the existing
- * `report_flag` type with a prefixed reason (dedicated types arrive with 0018)
- * and never duplicates an open/snoozed item. Best-effort: the join is already
- * refused; a follow-up failure must not turn into a 500.
+ * `report_flag` type with the same "[Recording policy]" prefix as
+ * setRecordingOptOut (dedicated types arrive with 0018) and never duplicates
+ * an open/snoozed item. Best-effort: the join is already refused; a follow-up
+ * failure must not turn into a 500.
  */
 async function raiseRecordingPolicyFollowup(admin: SupabaseClient, session: SessionView): Promise<void> {
-  const reason = "Recording policy not applied: opted-out student could not join — re-apply the opt-out on their Space";
+  const reason = "[Recording policy] Not applied: an opted-out student could not join — re-apply the opt-out on their Space";
   try {
     const { data: existing } = await admin
       .from("followups")
@@ -224,6 +213,7 @@ async function raiseRecordingPolicyFollowup(admin: SupabaseClient, session: Sess
       student_id: session.student_id,
       session_id: session.id,
       type: "report_flag",
+      status: "open",
       priority: "high",
       reason,
     });

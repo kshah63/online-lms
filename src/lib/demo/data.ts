@@ -1,6 +1,5 @@
 import { DateTime } from "luxon";
 import type {
-  Consent,
   Course,
   PencilSpace,
   Profile,
@@ -18,10 +17,7 @@ import type {
 
 export const demoProfiles: Profile[] = [
   p("00000000-0000-0000-0000-000000000001", "admin", "Admin Office", "admin@lessons.dev", "Asia/Singapore"),
-  // Maya has a backup Zoom link (Pencil outage fallback); Daniel doesn't, so
-  // the "add a backup link" warning is visible on his dashboard.
-  p("00000000-0000-0000-0000-0000000000a1", "teacher", "Maya Chen", "maya@lessons.dev", "Asia/Singapore", null,
-    "https://zoom.us/j/5550001111?pwd=lessonsdemo"),
+  p("00000000-0000-0000-0000-0000000000a1", "teacher", "Maya Chen", "maya@lessons.dev", "Asia/Singapore"),
   p("00000000-0000-0000-0000-0000000000a2", "teacher", "Daniel Okafor", "daniel@lessons.dev", "Europe/London"),
   p("00000000-0000-0000-0000-0000000000b1", "student", "Aarav Sharma", "aarav@lessons.dev", "Asia/Singapore"),
   p("00000000-0000-0000-0000-0000000000b2", "student", "Sofia Rossi", "sofia@lessons.dev", "America/New_York"),
@@ -72,13 +68,6 @@ export const demoAvailability: TeacherAvailability[] = [
   av("00000000-0000-0000-0000-0000000000a2", 5, "08:00", "16:00", "Europe/London"),
 ];
 
-export const demoConsents: Consent[] = [
-  { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000b1", type: "ai_analysis", granted_by: "00000000-0000-0000-0000-0000000000c1", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000b2", type: "recording", granted_by: "00000000-0000-0000-0000-0000000000c2", granted_at: nowISO() },
-  { profile_id: "00000000-0000-0000-0000-0000000000a1", type: "teacher_eval", granted_by: "00000000-0000-0000-0000-0000000000a1", granted_at: nowISO() },
-];
-
 // ---------------------------------------------------------------------------
 // Pencil Spaces (0017) — mock rows. One Space per enrolled (student, course);
 // status 'mock' (no Pencil id) is what MockSpacePanel renders. Ids follow the
@@ -118,7 +107,7 @@ export function buildDemoSessions(): SessionView[] {
   return [
     sv("20000000-0000-0000-0000-000000000001", 0, 1, "b1", "a1",
        nineAmTodaySGT.toUTC().toISO()!, nineAmTodaySGT.plus({ hours: 1 }).toUTC().toISO()!,
-       "completed", "room-aarav-001", "Quadratic equations — completing the square"),
+       "completed", "room-aarav-001", "Quadratic equations — completing the square", null, "done"),
     sv("20000000-0000-0000-0000-000000000002", 1, 1, "b2", "a1",
        now.minus({ minutes: 10 }).toISO()!, now.plus({ minutes: 50 }).toISO()!,
        "in_progress", "room-sofia-002", "SAT Math — function transformations"),
@@ -135,10 +124,11 @@ export function buildDemoSessions(): SessionView[] {
        now.plus({ days: 7 }).toISO()!, now.plus({ days: 7, hours: 1 }).toISO()!,
        "scheduled", null, "SAT Math — weekly slot", "30000000-0000-0000-0000-000000000001"),
     // A completed lesson yesterday with no report yet — so the teacher's report
-    // queue has something to write.
+    // queue has something to write — whose post-session analysis is still
+    // pending, so the coaching "analysis pending" strip is visible in demo.
     sv("20000000-0000-0000-0000-000000000006", 0, 0, "b1", "a1",
        now.minus({ days: 1, hours: 2 }).toISO()!, now.minus({ days: 1, hours: 1 }).toISO()!,
-       "completed", "room-aarav-006", "Quadratics — the quadratic formula"),
+       "completed", "room-aarav-006", "Quadratics — the quadratic formula", null, "pending"),
   ];
 }
 
@@ -173,7 +163,6 @@ function p(
   email: string,
   tz: string,
   phone: string | null = null,
-  fallback_meeting_url: string | null = null,
 ): Profile {
   return {
     id,
@@ -184,7 +173,6 @@ function p(
     avatar_url: null,
     timezone: tz,
     whatsapp_opt_in: true,
-    fallback_meeting_url,
     created_at: nowISO(),
   };
 }
@@ -248,6 +236,7 @@ function sv(
   room: string | null,
   agenda: string,
   series_id: string | null = null,
+  analysis_status: SessionView["analysis_status"] = "none",
 ): SessionView {
   const course = demoCourses[courseIdx];
   const student = profileLite(studentShort);
@@ -270,7 +259,7 @@ function sv(
     cancel_reason: null,
     space_id: demoSpaceId(student.id, course.id),
     pencil_session_id: null,
-    analysis_status: "none",
+    analysis_status,
     fallback_join_url: null,
     created_at: nowISO(),
     course: { id: course.id, name: course.name, subject: course.subject, materials_course_id: course.materials_course_id },

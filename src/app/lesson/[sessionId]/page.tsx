@@ -14,8 +14,8 @@ import { pencilLive } from "@/lib/pencil/client";
 import { canEndLesson, canJoinLesson } from "@/lib/pencil/authz";
 import { mockPencilUserId } from "@/lib/pencil/mock";
 import { getPencilUser, getSpaceForPair, isRecordingOptedOut, recordingPolicyBlocksJoin } from "@/lib/pencil/provision";
-import { isHttpsUrl, isZoomUrl, lessonFallbackForced } from "@/lib/pencil/urls";
-import type { Session, SessionView } from "@/lib/types";
+import { lessonFallbackForced, resolveFallbackUrl } from "@/lib/pencil/urls";
+import type { SessionView } from "@/lib/types";
 
 /**
  * The lesson room. SERVER COMPONENT = DB-ONLY reads: the Space row, the
@@ -77,7 +77,7 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
       optOutUnconfirmed={state.policyUnconfirmed}
       roomUnavailable={state.unavailable}
       mock={!pencilLive}
-      fallbackUrl={fallbackUrlFor(session)}
+      fallbackUrl={resolveFallbackUrl(session)}
       fallbackForced={lessonFallbackForced()}
       actualStartISO={session.actual_start}
       actualEndISO={session.actual_end}
@@ -138,17 +138,6 @@ async function loadRoomState(session: SessionView): Promise<RoomState> {
     captureError(err, { where: "lesson page: room state", session_id: session.id });
     return { studentPencilUserId: null, optedOut: false, policyUnconfirmed: false, unavailable: true };
   }
-}
-
-/**
- * Outage fallback (owner decision): the admin's per-lesson override, else ONE
- * master Zoom link for the school (`LESSON_FALLBACK_URL`, https + zoom.us),
- * else null. A plain https link, not a credential — safe in RSC props.
- */
-function fallbackUrlFor(session: Pick<Session, "fallback_join_url">): string | null {
-  if (isHttpsUrl(session.fallback_join_url)) return session.fallback_join_url;
-  const master = (process.env.LESSON_FALLBACK_URL ?? "").trim();
-  return isZoomUrl(master) ? master : null;
 }
 
 function AccessDenied({ isTeacher, backHref }: { isTeacher: boolean; backHref: string }) {
