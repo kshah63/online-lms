@@ -271,8 +271,16 @@ export function SpaceStage({
     [sessionId, fallbackUrl],
   );
 
-  /** Initial mount: embed (desktop) or the sample room (mock). */
+  /**
+   * Initial mount (and every Retry): embed on desktop, the sample room when
+   * mocked. On a non-embed device nothing is minted here — the Redirect card's
+   * buttons mint per tap, so Retry just brings that card back.
+   */
   const mountRoom = useCallback(async () => {
+    if (!mock && embedCapable === false) {
+      setPhase({ kind: "redirect", opened: null, busy: null, error: null });
+      return;
+    }
     setPhase({ kind: "loading" });
     const result = await mint("lesson", "iframe");
     if (unmountedRef.current) return;
@@ -283,7 +291,7 @@ export function SpaceStage({
     }
     if (result.info) onJoinInfo(result.info);
     setPhase(result.phase);
-  }, [mint, onJoinInfo]);
+  }, [mint, onJoinInfo, mock, embedCapable]);
 
   /**
    * Redirect mode and the "Open in a new tab" rescue: open the tab inside the
@@ -427,7 +435,10 @@ export function SpaceStage({
                     size="sm"
                     onClick={async () => {
                       const r = await openInNewTab("lesson");
-                      if (!r.ok && r.message) {
+                      if (r.ok) {
+                        // The new tab's login signs the iframe out — drop it rather than show a dead frame.
+                        setPhase({ kind: "redirect", opened: "lesson", busy: null, error: null });
+                      } else if (r.message) {
                         setPhase((p) => (p.kind === "embedded" ? { ...p, stalledError: r.message } : p));
                       }
                     }}
