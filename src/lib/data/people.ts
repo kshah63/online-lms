@@ -1,15 +1,18 @@
 import { createSupabaseServerClient } from "@/lib/supabase/server";
+import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import {
+  buildDemoSessions,
   demoConsents,
   demoCourses,
   demoEnrollments,
   demoParentStudent,
   demoProfiles,
+  demoRecordingOptOuts,
   demoReports,
   demoTeacherCourse,
 } from "@/lib/demo/data";
-import type { Consent, Course, Profile, Report } from "@/lib/types";
+import type { Consent, Course, Profile, RecordingOptOut, Report } from "@/lib/types";
 
 export async function listTeachers(): Promise<Profile[]> {
   if (isDemoMode) return demoProfiles.filter((p) => p.role === "teacher");
@@ -191,16 +194,91 @@ export async function getReportForSession(sessionId: string): Promise<Report | n
   return (data as Report) ?? null;
 }
 
+/**
+ * Historical consent rows. Since the Pencil Spaces room (0017) NOTHING is gated
+ * on these: recording is opt-out (`recording_opt_outs`, see below) and teacher
+ * AI evaluation is mandatory. Kept for history/reporting only.
+ */
 export async function getConsents(studentId: string): Promise<Consent[]> {
   if (isDemoMode) return demoConsents.filter((c) => c.profile_id === studentId);
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase.from("consents").select("*").eq("profile_id", studentId);
   if (error) {
-    // Fail closed (no consents → recording stays disabled) rather than
-    // crashing the lesson page.
     console.error("getConsents failed:", error.message);
     return [];
   }
   return (data ?? []) as Consent[];
+}
+
+// ---------------------------------------------------------------------------
+// Pencil Spaces (0017) — recording policy + Pencil identity.
+//
+// `recording_opt_outs` and `pencil_users` are SERVICE-ONLY tables (admin-read
+// RLS), so these helpers go through the service-role client. They are read
+// helpers only; the single writer is `setRecordingOptOut` in
+// src/lib/actions/people.ts. For a single student on the lesson path use
+// `isRecordingOptedOut` / `getPencilUser` from src/lib/pencil/provision.ts.
+// ---------------------------------------------------------------------------
+
+/** Every recording opt-out (admin people page). Empty when the service role isn't configured. */
+export async function listRecordingOptOuts(): Promise<RecordingOptOut[]> {
+  if (isDemoMode) return demoRecordingOptOuts;
+  const admin = createSupabaseAdminClient();
+  if (!admin) return [];
+  const { data, error } = await admin.from("recording_opt_outs").select("*").order("set_at", { ascending: false });
+  if (error) {
+    console.error("listRecordingOptOuts failed:", error.message);
+    return [];
+  }
+  return (data ?? []) as RecordingOptOut[];
+}
+
+/**
+ * Which of `studentIds` are opted out of recording — for the "Recorded /
+ * Not recorded" indicator on session cards. Callers pass only students the
+ * viewer may see (their own id / their children). Returns NULL when the flag
+ * can't be read (no service-role key, query error) so the UI shows nothing
+ * rather than a wrong "Recorded".
+ */
+export async function getRecordingOptOutSet(studentIds: readonly string[]): Promise<Set<string> | null> {
+  const ids = Array.from(new Set(studentIds));
+  if (ids.length === 0) return new Set();
+  if (isDemoMode) {
+    return new Set(demoRecordingOptOuts.filter((o) => ids.includes(o.student_id)).map((o) => o.student_id));
+  }
+  const admin = createSupabaseAdminClient();
+  if (!admin) return null;
+  const { data, error } = await admin.from("recording_opt_outs").select("student_id").in("student_id", ids);
+  if (error) {
+    console.error("getRecordingOptOutSet failed:", error.message);
+    return null;
+  }
+  return new Set(((data ?? []) as { student_id: string }[]).map((r) => r.student_id));
+}
+
+/**
+ * Profiles that already have a Pencil API user (a `pencil_users` row) — the
+ * "Pencil linked" badge. Users are provisioned lazily on first join, so a
+ * missing badge is normal for someone who hasn't had a lesson yet. Demo mode:
+ * everyone who has been in a live or completed demo lesson.
+ */
+export async function listPencilLinkedProfileIds(): Promise<Set<string>> {
+  if (isDemoMode) {
+    const linked = new Set<string>();
+    for (const s of buildDemoSessions()) {
+      if (s.status !== "in_progress" && s.status !== "completed") continue;
+      linked.add(s.student_id);
+      if (s.teacher_id) linked.add(s.teacher_id);
+    }
+    return linked;
+  }
+  const admin = createSupabaseAdminClient();
+  if (!admin) return new Set();
+  const { data, error } = await admin.from("pencil_users").select("profile_id");
+  if (error) {
+    console.error("listPencilLinkedProfileIds failed:", error.message);
+    return new Set();
+  }
+  return new Set(((data ?? []) as { profile_id: string }[]).map((r) => r.profile_id));
 }
 
