@@ -1,26 +1,47 @@
 import Link from "next/link";
-import { ArrowUpRight, Lightbulb, MessageCircleQuestion, Sparkles, TrendingUp, Users } from "lucide-react";
+import {
+  AlertTriangle,
+  ArrowUpRight,
+  Lightbulb,
+  Loader2,
+  MessageCircleQuestion,
+  MicOff,
+  Sparkles,
+  TrendingUp,
+  Users,
+} from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { EmptyState } from "@/components/empty-state";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { ScoreBars, TrendBars } from "@/components/coaching/score-bars";
+import { cn } from "@/lib/utils";
 import { requireRole } from "@/lib/data/auth";
-import { avgScore, getFeedbackHistory } from "@/lib/data/coaching";
+import {
+  analysisStatusLabel,
+  avgScore,
+  getAnalysisQueue,
+  getFeedbackHistory,
+  type AnalysisQueueItem,
+} from "@/lib/data/coaching";
 
 export default async function TeacherCoachingPage() {
   const teacher = await requireRole("teacher");
-  const history = await getFeedbackHistory(teacher.id);
+  const [history, queue] = await Promise.all([
+    getFeedbackHistory(teacher.id),
+    getAnalysisQueue({ teacherId: teacher.id }).catch(() => []),
+  ]);
   const latest = history[0];
 
   if (!latest) {
     return (
       <div>
         <PageHeader title="Coaching" description="Your AI coaching from recent lessons." />
+        <AnalysisStrip items={queue} tz={teacher.timezone} />
         <EmptyState
           icon={<Sparkles className="h-5 w-5" />}
           title="No coaching yet"
-          description="After your recorded lessons are analyzed, strengths-first coaching appears here."
+          description="Every lesson is recorded and analyzed; strengths-first coaching appears here about 30–60 minutes after a lesson ends."
         />
       </div>
     );
@@ -38,6 +59,8 @@ export default async function TeacherCoachingPage() {
         title="Coaching"
         description="Strengths first — what you're doing well, then a few things to try."
       />
+
+      <AnalysisStrip items={queue} tz={teacher.timezone} />
 
       <div className="mb-6 grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatCard label="Lessons coached" value={history.length} icon={<Sparkles className="h-4 w-4" />} />
@@ -156,6 +179,47 @@ export default async function TeacherCoachingPage() {
           </Card>
         </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * Lessons whose analysis is still running (or will never exist — Zoom
+ * fallback, opted-out student). Driven by sessions.analysis_status; renders
+ * nothing when there is nothing to say.
+ */
+function AnalysisStrip({ items, tz }: { items: AnalysisQueueItem[]; tz: string }) {
+  if (items.length === 0) return null;
+  return (
+    <div className="mb-6 space-y-2">
+      {items.map((it) => {
+        const n = analysisStatusLabel(it.analysis_status);
+        return (
+          <div
+            key={it.session_id}
+            className={cn(
+              "flex flex-wrap items-center gap-x-3 gap-y-1 rounded-xl border px-4 py-2.5 text-sm",
+              n.tone === "pending" && "border-primary/30 bg-primary/5",
+              n.tone === "warning" && "border-warning/40 bg-warning/10",
+              n.tone === "muted" && "bg-secondary/40",
+            )}
+          >
+            {n.tone === "pending" ? (
+              <Loader2 className="h-4 w-4 shrink-0 animate-spin text-primary" />
+            ) : n.tone === "warning" ? (
+              <AlertTriangle className="h-4 w-4 shrink-0 text-warning-foreground" />
+            ) : (
+              <MicOff className="h-4 w-4 shrink-0 text-muted-foreground" />
+            )}
+            <span className="font-medium">{n.title}</span>
+            <span className="text-muted-foreground">
+              {it.course_name} · {it.student_name} ·{" "}
+              {DateTime.fromISO(it.scheduled_start, { zone: "utc" }).setZone(tz).toFormat("d LLL, h:mm a")}
+            </span>
+            <span className="basis-full text-xs text-muted-foreground sm:basis-auto sm:ml-auto">{n.detail}</span>
+          </div>
+        );
+      })}
     </div>
   );
 }

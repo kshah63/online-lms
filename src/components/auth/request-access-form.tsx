@@ -14,8 +14,22 @@ import { COMMON_TIMEZONES, guessBrowserTz } from "@/lib/time";
 
 const initial = { ok: false, message: "" };
 
+type RequestRole = "student" | "parent" | "teacher";
+
+/**
+ * Recording / AI policy copy per applicant (owner decisions 1 and 4):
+ * recording is opt-out for families; AI evaluation is mandatory for teachers.
+ */
+const POLICY_NOTE: Record<RequestRole, string> = {
+  teacher:
+    "Lessons are recorded and AI-evaluated for coaching; this is a condition of teaching on MathVision.",
+  student: "Lessons are recorded (audio + board) unless you ask us not to.",
+  parent: "Lessons are recorded (audio + board) unless you ask us not to.",
+};
+
 export function RequestAccessForm() {
   const [tz, setTz] = useState("UTC");
+  const [role, setRole] = useState<RequestRole>("student");
   useEffect(() => setTz(guessBrowserTz()), []);
 
   const [state, formAction] = useFormState(
@@ -45,7 +59,7 @@ export function RequestAccessForm() {
       <form action={formAction} className="space-y-4">
         <div className="space-y-1.5">
           <Label>This account is for a…</Label>
-          <Select name="role" defaultValue="student">
+          <Select name="role" value={role} onValueChange={(v) => setRole(v as RequestRole)}>
             <SelectTrigger>
               <SelectValue />
             </SelectTrigger>
@@ -55,6 +69,7 @@ export function RequestAccessForm() {
               <SelectItem value="teacher">Teacher</SelectItem>
             </SelectContent>
           </Select>
+          <p className="text-xs text-muted-foreground">{POLICY_NOTE[role]}</p>
         </div>
         <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">

@@ -1,8 +1,8 @@
 import Link from "next/link";
-import { CalendarDays, ClipboardCheck, FileText, Video } from "lucide-react";
+import { CalendarDays, ClipboardCheck, Disc3, FileText, MicOff, Radio, Video } from "lucide-react";
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
-import { SessionCard } from "@/components/session-card";
+import { ParentStatus, SessionCard, type RecordingIndicator } from "@/components/session-card";
 import { EmptyState } from "@/components/empty-state";
 import { HomeworkList } from "@/components/homework/homework-list";
 import { Avatar } from "@/components/ui/avatar";
@@ -13,6 +13,7 @@ import { getPastForProfile, getUpcomingForProfile } from "@/lib/data/sessions";
 import {
   getChildren,
   getEnrolledCourses,
+  getRecordingOptOutSet,
   getReportForSession,
   listCourses,
 } from "@/lib/data/people";
@@ -25,6 +26,7 @@ import { formatRange, dayLabel, withinJoinWindow } from "@/lib/time";
 export default async function HomePage() {
   const profile = await requireRole("student", "parent");
   const tz = profile.timezone;
+  const isParent = profile.role === "parent";
 
   const [upcoming, past, children, homework] = await Promise.all([
     getUpcomingForProfile(profile, 6),
@@ -34,6 +36,12 @@ export default async function HomePage() {
     getHomeworkForProfile(profile).catch(() => []),
   ]);
   const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
+
+  // Recording policy (opt-out) for the viewer's own student(s) → "Recorded /
+  // Not recorded" indicator. Null = unknown (no service role): show nothing.
+  const optOuts = await getRecordingOptOutSet(children.map((c) => c.id)).catch(() => null);
+  const recordingFor = (studentId: string): RecordingIndicator | undefined =>
+    optOuts === null ? undefined : optOuts.has(studentId) ? "off" : "on";
 
   // Bookable combos: each student (self or child) + the courses they're enrolled in.
   const bookOptions = await Promise.all(
@@ -72,9 +80,9 @@ export default async function HomePage() {
       <PageHeader
         title={`Welcome, ${firstName}`}
         description={
-          profile.role === "parent"
-            ? "Your children's upcoming lessons and latest reports."
-            : "Your upcoming lessons, reports and lesson recordings."
+          isParent
+            ? "Your children's upcoming lessons, homework and latest reports."
+            : "Your upcoming lessons, homework and reports."
         }
         actions={
           <div className="flex items-center gap-2">
@@ -114,14 +122,33 @@ export default async function HomePage() {
                     <Avatar name={next.teacher.display_name} size={20} /> {next.teacher.display_name}
                   </span>
                 )}
+                {isParent && <span>{next.student.display_name}</span>}
+                {recordingFor(next.student_id) === "off" ? (
+                  <span className="flex items-center gap-1">
+                    <MicOff className="h-3.5 w-3.5" /> Not recorded
+                  </span>
+                ) : recordingFor(next.student_id) === "on" ? (
+                  <span className="flex items-center gap-1">
+                    <Disc3 className="h-3.5 w-3.5" /> Recorded (audio + board)
+                  </span>
+                ) : null}
               </div>
             </div>
             {next.status === "in_progress" ? (
-              <Button asChild variant="success" size="lg">
-                <Link href={`/lesson/${next.id}`}>
-                  <Video className="h-4 w-4" /> Join now
-                </Link>
-              </Button>
+              isParent ? (
+                // Parents have no seat in the room — a status card only.
+                <Button asChild variant="outline" size="lg">
+                  <Link href={`/lesson/${next.id}`}>
+                    <Radio className="h-4 w-4 text-success" /> Lesson in progress
+                  </Link>
+                </Button>
+              ) : (
+                <Button asChild variant="success" size="lg">
+                  <Link href={`/lesson/${next.id}`}>
+                    <Video className="h-4 w-4" /> Join now
+                  </Link>
+                </Button>
+              )
             ) : (
               <div className="text-right text-sm text-muted-foreground">
                 Starts {DateTime.fromISO(next.scheduled_start, { zone: "utc" }).setZone(tz).toRelative()}
@@ -149,14 +176,19 @@ export default async function HomePage() {
                     viewerTz={tz}
                     perspective={profile.role as "student" | "parent"}
                     showDay
+                    recording={recordingFor(s.student_id)}
                     action={
                       <div className="flex items-center gap-2">
-                        {joinNow && (
-                          <Button asChild size="sm" variant={live ? "success" : "default"}>
-                            <Link href={`/lesson/${s.id}`}>
-                              <Video className="h-4 w-4" /> {live ? "Join" : "Join early"}
-                            </Link>
-                          </Button>
+                        {isParent ? (
+                          <ParentStatus session={s} canJoin={joinNow} />
+                        ) : (
+                          joinNow && (
+                            <Button asChild size="sm" variant={live ? "success" : "default"}>
+                              <Link href={`/lesson/${s.id}`}>
+                                <Video className="h-4 w-4" /> {live ? "Join" : "Join early"}
+                              </Link>
+                            </Button>
+                          )
                         )}
                         {editable && (
                           <BookingActions

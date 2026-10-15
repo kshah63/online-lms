@@ -42,6 +42,14 @@ const ACTION_TONE: Record<string, "default" | "secondary" | "success" | "warning
   "account.reject": "destructive",
   "enrollment.approved": "success",
   "enrollment.denied": "destructive",
+  // Pencil Spaces (0017). `pencil.join` details carry {spaceId, purpose, mode} — never the join URL.
+  "pencil.user.create": "default",
+  "pencil.space.create": "default",
+  "pencil.space.hosts_changed": "warning",
+  "pencil.join": "secondary",
+  "lesson.end": "success",
+  "lesson.no_show": "warning",
+  "student.recording_opt_out": "warning",
 };
 
 /** Compact human summary of the details payload. */
@@ -60,8 +68,9 @@ export default async function AuditPage() {
     <div>
       <h1 className="text-xl font-semibold">Audit log</h1>
       <p className="mb-6 text-sm text-muted-foreground">
-        Significant actions across the platform — bookings, accounts, reports, grading, enrollment.
-        Append-only; written server-side so entries can&rsquo;t be forged.
+        Significant actions across the platform — bookings, accounts, reports, grading, enrollment, Pencil
+        Spaces (users, Spaces, joins, lesson end) and recording policy. Append-only; written server-side so
+        entries can&rsquo;t be forged.
       </p>
 
       {rows.length === 0 ? (

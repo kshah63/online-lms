@@ -1,23 +1,21 @@
-# Lessons — 1-1 Online Tutoring Platform
+# MathVision Lessons — 1-1 Online Tutoring Platform
 
-A web platform for live one-to-one online tutoring: scheduling, embedded video, a real-time
-collaborative notebook, AI coaching for teachers, post-lesson reports for parents, and an admin
-schedule/assignment console.
+A web platform for live one-to-one online tutoring: scheduling, a **Pencil Spaces** classroom
+(video + collaborative whiteboard) embedded next to our Materials panel, recorded lessons that feed
+AI coaching for teachers and post-lesson reports for parents, homework, follow-ups, WhatsApp outreach,
+and an admin schedule/assignment console.
 
-Built per [`lessonsplatformbuildspec.md`](#). This repository implements **the foundation —
-build-order steps 1–2** (a usable product: running online lessons with a shared notebook and
-materials), with the data model, auth, RLS, and integration boundaries in place for the later AI
-layers to slot onto.
-
-**Stack:** Next.js 14 (App Router) · TypeScript · Tailwind CSS (clean, modern design system) ·
-Supabase (Postgres + Auth + Realtime) · tldraw (notebook) · Luxon (timezones) · Materials Portal API.
+**Stack:** Next.js 14 (App Router) · TypeScript · Tailwind CSS · Supabase (Postgres + Auth + Realtime) ·
+**Pencil Spaces** (classroom, recordings, transcripts) · Luxon (timezones) · Materials Portal API ·
+tldraw (homework canvas only, until Phase 3).
 
 ---
 
 ## Quick start (demo mode — no setup)
 
 With **no Supabase keys configured**, the app runs in **demo mode**: a built-in dataset and a persona
-switcher stand in for real auth + Postgres, so every screen is explorable offline.
+switcher stand in for real auth + Postgres, so every screen is explorable offline. The lesson room
+renders a **mock Space panel** (no Pencil key needed) with a "Simulate student joins" button.
 
 ```bash
 pnpm install
@@ -27,14 +25,15 @@ pnpm dev
 
 Demo personas:
 
-| Role    | Name          | Timezone         | Sees                                                |
-|---------|---------------|------------------|-----------------------------------------------------|
-| Admin   | Admin Office  | Asia/Singapore   | Daily schedule board, scheduling & assignment, people |
-| Teacher | Maya Chen     | Asia/Singapore   | Today's lessons, join the live room, availability   |
-| Student | Aarav Sharma  | Asia/Singapore   | Upcoming lessons, reports, join live                |
-| Parent  | Priya Sharma  | Asia/Singapore   | Their child's lessons and reports                   |
+| Role    | Name          | Timezone         | Sees                                                        |
+|---------|---------------|------------------|-------------------------------------------------------------|
+| Admin   | Admin Office  | Asia/Singapore   | Daily schedule board, scheduling & assignment, people, audit |
+| Teacher | Maya Chen     | Asia/Singapore   | Today's lessons, the classroom, coaching, reports           |
+| Student | Aarav Sharma  | Asia/Singapore   | Upcoming lessons, join the classroom, homework, reports     |
+| Parent  | Priya Sharma  | Asia/Singapore   | Their child's lessons (status only), homework and reports   |
 
 > In demo mode, **mutations aren't persisted** (a banner makes this clear). Connect Supabase to go live.
+> Demo student Lena Park is the seeded **recording opt-out** example.
 
 ---
 
@@ -44,7 +43,8 @@ Demo personas:
 
    ```bash
    cp .env.example .env.local
-   # set NEXT_PUBLIC_SUPABASE_URL and NEXT_PUBLIC_SUPABASE_ANON_KEY
+   # set NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY
+   # and SUPABASE_SERVICE_ROLE_KEY (required for Pencil Spaces — see below)
    ```
 
 2. Apply the schema, policies, and seed. Using the Supabase CLI:
@@ -54,6 +54,8 @@ Demo personas:
    ```
 
    Or paste the files in `supabase/migrations/` (in order) and `supabase/seed.sql` into the SQL editor.
+   Migration `0017_pencil_spaces.sql` adds the Pencil tables; the seed creates one `status='mock'`
+   Space per enrolment, which is upgraded in place the first time a real Pencil key is configured.
 
 3. Run it:
 
@@ -65,103 +67,208 @@ Demo personas:
    use the dev password **`password123`** (e.g. `admin@lessons.dev`, `maya@lessons.dev`,
    `aarav@lessons.dev`). The presence of `NEXT_PUBLIC_SUPABASE_URL` is what flips the app out of demo mode.
 
+4. Add the Pencil Spaces key (`PENCIL_SPACES_API_KEY`) once the Pencil-side prerequisites below are
+   done. Without it the classroom stays on the mock panel; nothing else changes.
+
 ---
 
-## What's built (foundation — steps 1–2)
+## The classroom — Pencil Spaces
 
-**Step 1 — Identity, roles, timezones, scheduling, assignment, the daily board**
+The live lesson room (`/lesson/[sessionId]`) is a **Pencil Space** embedded next to our Materials panel.
+Our Supabase DB stays the schedule of record (sessions, assignment, credits, reports, homework,
+follow-ups); Pencil only learns about **users** and **Spaces**. All Pencil code is server-only
+(`src/lib/pencil/*`) and every call made with the institution API key sits behind an explicit
+authorization check (`canJoinLesson` / `canEnterSpace` / `canHostSpace` / `requireRole('admin')`),
+because Row Level Security does not protect the service-role client.
+
+**Users.** Every profile that must enter a Space (student, teacher, admin) gets a Pencil API user
+lazily, on first need (`POST /users/createAPIUser`, `externalId = profiles.id`). Students are sent
+their **first name only**; staff their display name. The mapping lives in the service-only table
+`pencil_users`. **Parents get no Pencil user and no seat in the room** — they see a status card
+(teacher, elapsed time, recording status) on the lesson page and "Lesson in progress" / "Recorded"
+on their dashboard instead of a Join button.
+
+**Spaces.** One persistent Space per **(student, course)**, created lazily by `ensureSpace()` with
+`externalId = '<course_id>:<student_id>'`, title `'<course> · <first name>'`, private, hosts = the
+assigned teacher (plus an admin actor), participant = the student. Recovery after a failed insert
+looks the Space up by `externalId` before creating, so no duplicate is ever made. Host changes are
+additive (`PATCH /spaces/{id}/updateUsers`) and only for profiles passing `canHostSpace`. Cached state
+lives in `pencil_spaces` (hosts, recording flag, verification timestamps), so a normal join makes
+exactly one Pencil call.
+
+**Join flow.** The page renders from the DB only (no Pencil calls in the server component, and no join
+URL ever appears in HTML or the RSC payload). The client calls `POST /api/lesson/[id]/space`, which
+re-applies the access rule, rate-limits (`pencil:join:<profile>` 30/h), provisions only when rows are
+missing or stale, mints `GET /users/{id}/authorize?redirectUrl=<Space link + params>` (5 s timeout, no
+retry) and returns `{url}`. The client sets `iframe.src` on desktop or opens a new tab (Redirect mode) on
+mobile/unsupported browsers. **Authorize URLs are credentials**: valid 3600 s, minted per click, never
+persisted, logged or audited (the audit row `pencil.join` carries `{spaceId, purpose, mode}` only). The
+lesson clock (`actual_start`) starts only when the **student** is present (`participant_join` with the
+student's Pencil id), never on the teacher alone. "End lesson" marks the session `completed`
+(one credit) or **"Mark as no-show"** (never billed), then best-effort ends the Pencil session so one
+Pencil session equals one lesson.
+
+**Second device for writing (iPad + laptop).** On a coarse-pointer device the lesson page offers
+**"Join the call here"** and **"Use this device for writing"** (opens the Space with `standalone=true`
+only, in a new tab). Each tap re-mints its own URL. Three rules: tap **"Not Now"** on the call prompt
+on the writing device, keep its **speaker off** (echo), and never open the Space twice on one device.
+Pencil bills one account on two devices once and keys analytics by user, so nothing in our data model
+changes.
+
+### Recording policy (opt-out) and teacher AI evaluation
+
+- **Lessons are recorded (audio + whiteboard; "Record participant video" OFF) unless the family asks us
+  not to.** Students and parents see "Recorded (audio + board)" / "Not recorded" on their session cards
+  and in the lesson view. Institution-level **always-on** recording is switched on at the start of
+  Phase 2; in Phase 1 the opt-out machinery is already live so the setting is in place before any
+  recording starts.
+- **Opt-out** is an admin action (`/admin/people` → "Opt out" / "Resume recording", `setRecordingOptOut`).
+  It writes the service-only `recording_opt_outs` row, pushes `disableAlwaysOnRecording` to **every
+  Space** of that student (`PATCH /spaces/{id}/settings/`) and **confirms by read-back**
+  (`GET /spaces/{id}`); only a confirmed read-back sets `pencil_spaces.recording_disabled`. An opted-out
+  student whose Space is not yet confirmed gets a **hard stop** on joining ("Recording policy not
+  applied — contact admin") and the policy is re-applied on the next join. Pencil can take up to 3 h to
+  propagate settings to a Space with recent calls, so opting out with a lesson inside that window shows
+  the admin a warning and raises an admin follow-up. Every change is audited (`student.recording_opt_out`).
+- **Teacher AI evaluation is mandatory.** Every teacher's recorded lessons are analyzed (Pencil's
+  transcript + our Claude coaching, arriving with Phase 2); nothing is gated on a consent row. The
+  policy is stated on the request-access form and in the teacher onboarding copy: *"Lessons are recorded
+  and AI-evaluated for coaching; this is a condition of teaching on MathVision."* The historical
+  `consents` table is kept for records only and gates nothing.
+
+### Outage fallback — Zoom (runbook)
+
+Pencil outage, rate-limiting or a configuration error must never cancel a lesson. The fallback is **one
+master Zoom meeting link for the whole school**:
+
+| Setting | Where | Meaning |
+|---|---|---|
+| `LESSON_FALLBACK_URL` | server env | The school's master Zoom link (`https://` + a `zoom.us` host). Nothing is stored per teacher. |
+| `sessions.fallback_join_url` | DB, admin per-lesson override | Any https link for one lesson — also the escape hatch when two lessons fall back at the same time and would otherwise share one Zoom meeting. |
+| `LESSON_FALLBACK_MODE` | server env, `on` / `off` | `on` forces **every** lesson onto its fallback link (planned outage). |
+
+Resolution order: `sessions.fallback_join_url` → `LESSON_FALLBACK_URL` → "No backup link — contact admin".
+
+1. **Automatic.** When the join route fails with a transient Pencil error (429 / 5xx / timeout) the
+   room shows **"Classroom unavailable — Retry / Join on Zoom"**; Materials stays usable; **End lesson**
+   still works and marks the lesson `analysis_status='no_recording'` so the report editor says "write
+   from your notes". No transcript or coaching exists for a Zoom lesson.
+2. **Planned / prolonged outage.** Set `LESSON_FALLBACK_MODE=on` in the hosting env and redeploy or
+   restart; every room now renders the Zoom card directly. Set it back to `off` afterwards.
+3. **Two lessons at once on Zoom.** Set `sessions.fallback_join_url` for one of them to a second meeting
+   link (admin SQL/console) so the two lessons don't share a room.
+4. **Never unset `PENCIL_SPACES_API_KEY` as the outage path** — the post-session pipeline (Phase 2) must
+   keep processing lessons that did run in Pencil.
+5. Non-transient errors (401 `NOT_AUTHORIZED`, 400) are configuration bugs: check the key, base URL and
+   that the Space still exists; they are reported to Sentry without the URL or key.
+
+### Pencil-side prerequisites (owner, before go-live)
+
+From the integration plan (decision k):
+
+- Plan tier: API access (Usage-based / Enterprise); AI Coach needs Advanced+, AI Summaries Expert+.
+- Settings → Permissions → Recording = **Always-on** — **switched on at the start of Phase 2, not
+  before**; "Record participant video" **OFF**; local recording prevented; recordings admin/host-only.
+- Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails OFF for API users.
+- Standalone branding for the embedded Space.
+- Webhook URL + secret per environment (staging → preview URL, prod → `https://<app>/api/webhooks/pencil`)
+  — consumed from Phase 2.
+- A generic admin account that owns the API key (view-once; revoking logs that admin out); subscribe to
+  Pencil's status page.
+- Signed DPA / processor agreement covering recordings and transcripts of minors, confirmation of data
+  region, and Pencil's own retention of derived artefacts after a recording is deleted.
+- `SUPABASE_SERVICE_ROLE_KEY` set in **every** environment that runs Pencil: provisioning, join URLs,
+  webhooks and jobs all run through the service role and are no-ops without it.
+- The parent page must be served over **HTTPS** for the iframe (local dev: a trusted cert, e.g. `mkcert`
+  + `next dev --experimental-https`); Safari and Chrome with third-party cookies blocked fall back to
+  Redirect mode.
+
+### Environment variables (Pencil)
+
+| Variable | Required | Purpose |
+|---|---|---|
+| `PENCIL_SPACES_API_KEY` | for a real classroom | Institution API key. Unset → mock Space panel, no Pencil calls. |
+| `PENCIL_API_BASE_URL` | no | Default `https://apis.pencilapp.com/public/api/`; staging `https://staging-apis.pencilapp.com/public/api/`. |
+| `PENCIL_WEBHOOK_SECRET` | Phase 2 | Bearer secret Pencil sends with webhook deliveries; the webhook route fails closed while empty. |
+| `NEXT_PUBLIC_PENCIL_APP_ORIGIN` | no | Origin of the Space UI for the postMessage allowlist (production + staging are always accepted). |
+| `LESSON_FALLBACK_URL` | recommended | Master Zoom link (see runbook). |
+| `LESSON_FALLBACK_MODE` | no | `on` forces every lesson onto the fallback link. |
+| `SUPABASE_SERVICE_ROLE_KEY` | **yes** for Pencil | Service role used for all Pencil-related reads/writes after authorization. |
+
+See `.env.example` for the full list (Materials Portal, Anthropic, WhatsApp, cron, Sentry).
+
+---
+
+## What's built
+
+**Identity, roles, timezones, scheduling, assignment, the daily board**
 
 - Supabase Auth + a `profiles` table with a first-class **IANA timezone** on every account.
   All times are stored in UTC and **rendered in each viewer's own timezone** everywhere (`src/lib/time.ts`).
 - Four roles (admin / teacher / student / parent) with **Row Level Security** enforcing visibility
-  (`supabase/migrations/0003_rls.sql`).
-- **Admin daily schedule board** (`/admin`) — every session today in the admin's tz, with live-now,
-  unassigned, and no-show counts; day navigation.
-- **Scheduling console** (`/admin/sessions`) — one-off or recurring weekly lessons (shared `series_id`)
-  and **per-session teacher assignment**.
-- **People directory** (`/admin/people`) — teachers, students, parents with **consent** and **credit** status.
+  (`supabase/migrations/0003_rls.sql`); `0017` closes the profiles self-update hole (role/email are
+  admin-only) and adds the service-only Pencil tables.
+- **Admin daily schedule board** (`/admin`), **scheduling console** (`/admin/sessions`) with one-off or
+  recurring lessons and per-session teacher assignment, **people directory** (`/admin/people`) with the
+  recording-policy toggle and "Pencil linked" status, **audit log** (`/admin/audit`).
 - **Teacher today** (`/teacher`) + **availability** (`/teacher/availability`).
 - **Student/parent dashboard** (`/home`) + **reports** (`/home/reports`, published-only).
 
-**Step 2 — The live lesson** (`/lesson/[sessionId]`)
+**The live lesson** (`/lesson/[sessionId]`) — see *The classroom* above.
 
-- Three-panel room: **Video** + **real-time collaborative notebook (tldraw)** + **Materials**.
-- **Assigned-teacher-only join is enforced server-side** (the spec's hard requirement): a teacher can
-  only enter a session where `teacher_id = caller`; others get an explicit access-denied screen. The
-  rule is re-checked when minting the video token, so the join-token endpoint is gated too.
-- **Materials Portal integration** over the API boundary (§6): a server-side proxy holds the service
+- **Assigned-teacher-only join is enforced server-side**: a teacher can only enter a session where
+  `teacher_id = caller`; others get an explicit access-denied screen. The same rule (`canJoinLesson`)
+  is re-applied when minting the Pencil join URL, so the join endpoint is gated too.
+- **Materials Portal integration** over the API boundary: a server-side proxy holds the service
   credential and passes the caller's effective course role so the portal gates teacher-only files.
-- **Consent-gated recording** (§9): the record control is disabled unless the student's `recording`
-  consent is on file.
 
-**Video SDK — Daily** (`src/lib/video/daily.ts`, `src/components/lesson/daily-room.tsx`)
-
-- Rooms are created per session; meeting tokens are minted server-side, the assigned teacher joining
-  as **owner** (record/transcribe rights). Set `DAILY_API_KEY` to go live; without it the room falls
-  back to the built-in mock panel. *(LiveKit is the alternative if you want a server-side agent tapping
-  live audio; Daily is chosen for the fastest clean embed + built-in transcription that feeds §7.)*
-
-**Real-time notebook sync** (`src/lib/notebook/use-notebook-sync.ts`)
-
-- tldraw's store is wired to a **Supabase Realtime** channel: document edits broadcast both ways and
-  merge as remote changes, live **cursors/presence** render for each participant, and the running
-  document is persisted to `notebooks.tldraw_snapshot` (debounced). Falls back to local IndexedDB when
-  Supabase isn't configured.
-
-**AI teacher coaching — live + post-session (§7)**
-
-- **Metrics** (`src/lib/coaching/metrics.ts`): talk-time ratio, question frequency + open/closed mix,
-  wait-time, student turns, praise — computed from a diarized transcript.
-- **Live coaching** (`src/lib/coaching/coach.ts`): a rolling per-session state emits subtle,
-  teacher-only, **rate-limited** nudges (mutable, dismissible). Fed by Daily transcription live, or by
-  a scripted transcript in demo mode so the nudges are visible without audio.
-- **Post-session analysis** (`src/lib/coaching/analyze.ts`): the transcript + final metrics go to
-  **Claude (`claude-opus-4-8`, structured output)** for strengths-first coaching; saved to
-  `teacher_feedback`. Without `ANTHROPIC_API_KEY` it falls back to a metrics-derived heuristic.
-- **Dashboards** (§7.4): teacher coaching view (latest feedback, trends, dimension scores) and an
-  admin QA view flagging low-engagement lessons.
-
-**Reports — AI + teacher (§8)** (`/teacher/reports`)
+**Reports — AI + teacher** (`/teacher/reports`)
 
 - The teacher jots **quick notes**; AI drafts a parent-facing report from the notes + the lesson
-  transcript + metrics (`src/lib/reports/draft.ts`, `claude-opus-4-8`, heuristic fallback). The
-  teacher edits every field and **publishes** to the parent/student. On publish it can also assign
-  homework and raise a follow-up.
+  transcript + metrics (`src/lib/reports/draft.ts`, Claude, heuristic fallback). The teacher edits every
+  field and **publishes** to the parent/student. On publish it can also assign homework and raise a
+  follow-up. For lessons without a recording (Zoom fallback, opted-out student) the editor says
+  "Not recorded — write from your notes".
+
+**Coaching dashboards** (`/teacher/coaching`, `/admin/coaching`, `/coaching/[sessionId]`)
+
+- Strengths-first post-session feedback, dimension scores, trends, key moments and the transcript
+  (`src/lib/coaching/metrics.ts`, `analyze.ts`). An **"analysis pending / not recorded"** strip is
+  driven by `sessions.analysis_status`. Live in-lesson nudges were retired with the Pencil move.
 
 **Homework — done & verified on the notebook** (`/hw/[id]`)
 
-- Publishing a report with homework creates a `homework` item with a due date, linked to the student's
-  **running notebook**. The student opens it (`/hw/[id]`) on a dedicated **page inside that same tldraw
-  notebook** — drawing their working, typing, or **dragging a photo of their paper onto the canvas** —
-  then **submits**. The teacher opens the submitted page from their review queue (`/teacher/homework`)
-  and **verifies completion** or sends it back to redo. Completion is evidenced by real work, not an
-  honour-system checkbox. Overdue (not-yet-submitted) items feed the admin follow-up dashboard.
+- Publishing a report with homework creates a `homework` item with a due date. The student works on a
+  tldraw page, submits; the teacher verifies or sends it back (`/teacher/homework`). Overdue items feed
+  the admin follow-up dashboard. *(Moves into the student's Pencil Space in Phase 3.)*
 
-**Follow-up dashboard** (`/admin/followups`)
+**Follow-up dashboard** (`/admin/followups`) and **WhatsApp** (`src/lib/messaging/whatsapp.ts`)
 
-- Surfaces action items: **attendance gaps** (no completed lesson in 3 weeks, nothing booked),
-  **no-shows**, **overdue homework**, and **teacher-flagged / low-rating reports**. A "Scan now"
-  action regenerates the live ones. Each item can be resolved, snoozed, or actioned by **messaging the
-  parent over WhatsApp**.
-
-**WhatsApp (§11)** (`src/lib/messaging/whatsapp.ts`)
-
-- Parent outreach via the **Meta WhatsApp Cloud API**, with a templated message per follow-up type.
-  Set `WHATSAPP_TOKEN` + `WHATSAPP_PHONE_ID` to deliver; otherwise sends are **simulated** and logged
-  to `outbound_messages`.
+- Attendance gaps, no-shows, overdue homework, flagged reports and recording-policy warnings; resolve,
+  snooze, or message the parent over the Meta WhatsApp Cloud API (simulated without credentials).
 
 ---
 
-## What's stubbed for later build steps
+## Upcoming phases
 
-These are deliberately scaffolded, not faked — the schema and seams exist so the later steps drop in:
+The integration plan lives in [`docs/pencil-spaces/integration-plan.md`](docs/pencil-spaces/integration-plan.md)
+(verified API facts in [`api-notes.md`](docs/pencil-spaces/api-notes.md)). Phase 1 — a real lesson in a
+Pencil Space, parent status view, recording opt-out toggle, Zoom fallback, second-device mode — is what
+this tree implements. Still to come:
 
-- **Streaming STT** — Daily's built-in transcription feeds the coach when configured; a dedicated
-  Deepgram/AssemblyAI path is the alternative if you move off Daily.
-- **Billing/Stripe (§10)** — credit balances model exists and decrements on completion; checkout/top-up
-  is the remaining piece.
-- **Scheduled notifications (§11)** — WhatsApp parent outreach is built for follow-ups; timed reminders
-  (1h-before, reschedules) still need a scheduler/cron.
+- **Phase 2 — recording + post-session pipeline.** Institution always-on recording switched on;
+  Pencil webhooks (`/api/webhooks/pencil`) as hints, a job queue drained by cron, transcript + Pencil
+  AI Coach report + our Claude coaching stored per lesson, AI-pre-filled report drafts, AI follow-ups,
+  teacher notifications. Tables `pencil_sessions`, `pencil_webhook_events`, `pencil_jobs` already exist
+  from `0017` so this phase is additive.
+- **Phase 3 — homework in the Space + mobile.** The tldraw homework canvas is replaced by a board in the
+  student's Space (deep link, `standalone=true`), mobile join via a bearer "space link" route, and the
+  `tldraw` dependency is removed.
+- **Phase 4 — recommended.** Pencil Events mirroring (session timer, attendance), recording playback for
+  staff, retention jobs.
+
+Also still stubbed: **Billing/Stripe** (credit balances exist and decrement on completion; checkout is
+the remaining piece) and timed WhatsApp reminders beyond the existing cron.
 
 ---
 
@@ -170,25 +277,32 @@ These are deliberately scaffolded, not faked — the schema and seams exist so t
 ```
 supabase/
   migrations/0001_schema.sql        full schema (all sections)
-  migrations/0002_functions_triggers.sql  RLS helpers, auto-notebook, credit consumption
+  migrations/0002_functions_triggers.sql  RLS helpers, credit consumption
   migrations/0003_rls.sql           row-level security by role
-  seed.sql                          demo users + a full day of sessions
+  migrations/0017_pencil_spaces.sql Pencil users/Spaces/opt-outs, session columns, ledger + job tables
+  seed.sql                          demo users, a full day of sessions, mock Spaces, one opt-out
+docs/pencil-spaces/                 integration plan, verified API notes, vendor OpenAPI spec
 src/
   app/
     (app)/                          authenticated shell (sidebar by role)
       admin/  teacher/  home/        role dashboards
-    lesson/[sessionId]/             the live three-panel room (full screen)
-    login/                          persona picker (demo) / sign-in (live)
+      coaching/[sessionId]/         coaching deep dive
+    lesson/[sessionId]/             the classroom (Pencil Space + Materials), full screen
+    api/lesson/[sessionId]/space/   POST: mints the per-click Pencil join URL (after canJoinLesson)
     api/materials/                  server proxy to the Materials Portal
+    login/  request-access/         persona picker (demo) / sign-in (live); account requests
   components/ui/                     design system (button, card, dialog, select, …)
-  components/lesson/                 video, notebook (tldraw), materials, room
+  components/lesson/                 space stage, mock Space panel, materials, room
+  components/admin/                  admin controls (recording toggle, assignment, dialogs)
   lib/
+    pencil/                         server-only Pencil client, authz, provisioning, URLs, mock
     time.ts                         UTC ⇄ timezone helpers (the bug-prone bit, centralised)
-    supabase/                       browser + server + middleware clients
+    supabase/                       browser + server + admin (service role) + middleware clients
     data/                           data-access layer (Supabase, with demo fallback)
-    actions/                        server actions (schedule, assign, availability, auth)
-    materials/portal.ts             §6 API client (real portal or mock tree)
-    demo/data.ts                    demo dataset mirroring seed.sql
+    actions/                        server actions (schedule, assign, availability, people, auth)
+    audit.ts  rate-limit.ts         append-only audit log, Postgres-backed rate limits
+    materials/portal.ts             Materials Portal client (real portal or mock tree)
+    demo/data.ts                    demo dataset mirroring seed.sql (incl. mock Spaces)
 ```
 
 ## Design notes
@@ -196,8 +310,9 @@ src/
 - **Timezones are first-class.** Everything is UTC in the DB; `src/lib/time.ts` renders per-viewer and
   computes day-windows so "today's sessions" is correct for any timezone.
 - **Demo fallback.** Every data-access function tries Supabase and falls back to the demo dataset when
-  no project is configured, so the UI is always runnable. This is a thin fallback, not a parallel mock
-  architecture — the Supabase path is the real one.
+  no project is configured, and every Pencil function short-circuits to a deterministic mock when there
+  is no key or in demo mode. This is a thin fallback, not a parallel mock architecture.
+- **Credentials never render.** Pencil join URLs are minted inside POST/bearer routes and returned as
+  JSON; they never appear in server-rendered HTML, logs, audit rows or Sentry.
 - **The Materials boundary stays clean.** The lessons platform never sees a file the user shouldn't:
   the portal does authorization; this app just passes the effective role and consumes the feed.
-```

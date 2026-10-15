@@ -1,11 +1,12 @@
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import {
+  AlertTriangle,
   ArrowLeft,
-  ArrowUpRight,
   Lightbulb,
+  Loader2,
   MessageSquareQuote,
-  Radio,
+  MicOff,
   Sparkles,
 } from "lucide-react";
 import { DateTime } from "luxon";
@@ -16,7 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ScoreBars } from "@/components/coaching/score-bars";
 import { cn } from "@/lib/utils";
 import { requireRole } from "@/lib/data/auth";
-import { getFeedbackDetail } from "@/lib/data/coaching";
+import { ANALYSIS_NOTICE_STATUSES, analysisStatusLabel, getFeedbackDetail } from "@/lib/data/coaching";
 import type { TranscriptSegment } from "@/lib/coaching/metrics";
 
 function fmt(ms: number): string {
@@ -41,6 +42,9 @@ export default async function CoachingDetailPage({ params }: { params: { session
     .toFormat("cccc d LLL yyyy, h:mm a");
   const backHref = profile.role === "admin" ? "/admin/coaching" : "/teacher/coaching";
   const m = detail.metrics;
+  const notice = ANALYSIS_NOTICE_STATUSES.includes(detail.analysis_status)
+    ? analysisStatusLabel(detail.analysis_status)
+    : null;
 
   return (
     <div>
@@ -55,6 +59,30 @@ export default async function CoachingDetailPage({ params }: { params: { session
           </Button>
         }
       />
+
+      {/* Post-session analysis state (sessions.analysis_status) */}
+      {notice && (
+        <div
+          className={cn(
+            "mb-6 flex items-start gap-3 rounded-xl border px-4 py-3 text-sm",
+            notice.tone === "pending" && "border-primary/30 bg-primary/5",
+            notice.tone === "warning" && "border-warning/40 bg-warning/10",
+            notice.tone === "muted" && "bg-secondary/40",
+          )}
+        >
+          {notice.tone === "pending" ? (
+            <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-primary" />
+          ) : notice.tone === "warning" ? (
+            <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-warning-foreground" />
+          ) : (
+            <MicOff className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          )}
+          <div>
+            <div className="font-medium">{notice.title}</div>
+            <p className="text-muted-foreground">{notice.detail}</p>
+          </div>
+        </div>
+      )}
 
       <div className="grid gap-6 lg:grid-cols-3">
         <div className="space-y-6 lg:col-span-2">
@@ -174,7 +202,7 @@ export default async function CoachingDetailPage({ params }: { params: { session
           </Card>
         </div>
 
-        {/* Right rail: scores, metrics, live nudges */}
+        {/* Right rail: scores, metrics */}
         <div className="space-y-6">
           <Card>
             <CardHeader className="pb-3">
@@ -204,36 +232,6 @@ export default async function CoachingDetailPage({ params }: { params: { session
               </CardContent>
             </Card>
           )}
-
-          <Card>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-base">
-                <Radio className="h-4 w-4" /> Live nudges shown
-              </CardTitle>
-              <CardDescription>
-                {detail.nudges.length
-                  ? "What the live coach surfaced during the lesson."
-                  : "No live nudges fired during this lesson."}
-              </CardDescription>
-            </CardHeader>
-            {detail.nudges.length > 0 && (
-              <CardContent>
-                <ul className="space-y-2.5 text-sm">
-                  {detail.nudges.map((n, i) => (
-                    <li key={i} className="flex gap-2">
-                      <ArrowUpRight className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
-                      <span>
-                        {n.message || n.type.replace(/_/g, " ")}
-                        <span className="ml-1 text-xs text-muted-foreground">
-                          ({DateTime.fromISO(n.created_at, { zone: "utc" }).setZone(profile.timezone).toFormat("h:mm a")})
-                        </span>
-                      </span>
-                    </li>
-                  ))}
-                </ul>
-              </CardContent>
-            )}
-          </Card>
         </div>
       </div>
     </div>

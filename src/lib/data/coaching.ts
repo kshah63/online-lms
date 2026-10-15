@@ -1,10 +1,11 @@
 import { DateTime } from "luxon";
 import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
-import { demoProfiles } from "@/lib/demo/data";
+import { buildDemoSessions } from "@/lib/demo/data";
 import { heuristicFeedback } from "@/lib/coaching/analyze";
 import type { SessionMetrics, TranscriptSegment } from "@/lib/coaching/metrics";
 import type { FeedbackMoment, TeacherFeedback } from "@/lib/coaching/analyze";
+import type { AnalysisStatus } from "@/lib/types";
 
 export interface FeedbackView {
   session_id: string;
@@ -19,13 +20,31 @@ export interface FeedbackView {
   moments: FeedbackMoment[];
   dimension_scores: TeacherFeedback["dimension_scores"];
   metrics: SessionMetrics | null;
+  /** sessions.analysis_status of the lesson (0017) — drives the "analysis pending / not recorded" strip. */
+  analysis_status: AnalysisStatus;
 }
 
-/** Everything the coaching detail page needs for one lesson. */
+/**
+ * Everything the coaching detail page needs for one lesson. (The live-nudge
+ * timeline is gone with the live coach — `live_events` is no longer read.)
+ */
 export interface FeedbackDetail extends FeedbackView {
   segments: TranscriptSegment[];
-  nudges: { type: string; message: string; created_at: string }[];
 }
+
+/** A lesson whose post-session analysis is still running or will never exist. */
+export interface AnalysisQueueItem {
+  session_id: string;
+  teacher_id: string | null;
+  teacher_name: string;
+  course_name: string;
+  student_name: string;
+  scheduled_start: string;
+  analysis_status: AnalysisStatus;
+}
+
+/** Statuses worth telling the teacher about (everything but 'none' / 'done'). */
+export const ANALYSIS_NOTICE_STATUSES: readonly AnalysisStatus[] = ["pending", "no_recording", "skipped_opt_out", "failed"];
 
 // ---------------------------------------------------------------------------
 // Demo synthesis — a believable coaching history with improving talk-ratio and
@@ -89,6 +108,7 @@ function synth(
     moments: demoMoments(p.student),
     dimension_scores: fb.dimension_scores,
     metrics,
+    analysis_status: "done",
   };
 }
 
@@ -124,6 +144,10 @@ function round2(n: number) {
 // Public accessors
 // ---------------------------------------------------------------------------
 
+const FEEDBACK_SELECT = `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
+  session:sessions!teacher_feedback_session_id_fkey(analysis_status, course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
+  teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`;
+
 /** Full feedback history for a teacher, newest first. */
 export async function getFeedbackHistory(teacherId: string): Promise<FeedbackView[]> {
   if (isDemoMode) {
@@ -135,11 +159,7 @@ export async function getFeedbackHistory(teacherId: string): Promise<FeedbackVie
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
+    .select(FEEDBACK_SELECT)
     .eq("teacher_id", teacherId)
     .order("created_at", { ascending: false });
   if (error) throw error;
@@ -161,16 +181,10 @@ export async function getAllTeachersLatest(): Promise<FeedbackView[]> {
     return [...byTeacher.values()];
   }
 
-  const teachers = demoProfiles.filter((p) => p.role === "teacher"); // shape only; real path below
-  void teachers;
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
+    .select(FEEDBACK_SELECT)
     .order("created_at", { ascending: false });
   if (error) throw error;
 
@@ -208,52 +222,131 @@ function mapRow(row: any): FeedbackView {
     moments: row.moments ?? [],
     dimension_scores: row.dimension_scores ?? { engagement: 0, questioning: 0, clarity: 0, rapport: 0 },
     metrics: session.metrics ?? null,
+    analysis_status: (session.analysis_status as AnalysisStatus | undefined) ?? "none",
   };
 }
 
 /**
- * Coaching detail for one lesson: feedback + moments + transcript + the live
- * nudges shown during the lesson. RLS limits transcripts/feedback/events to
- * the session's teacher and admins; the page re-checks the caller anyway.
+ * Coaching detail for one lesson: feedback + moments + transcript. RLS limits
+ * transcripts/feedback to the session's teacher and admins; the page re-checks
+ * the caller anyway.
  */
 export async function getFeedbackDetail(sessionId: string): Promise<FeedbackDetail | null> {
   if (isDemoMode) {
     const view = demoHistory().find((f) => f.session_id === sessionId);
     if (!view) return null;
-    return { ...view, segments: demoSegments(), nudges: demoNudges(view.created_at) };
+    return { ...view, segments: demoSegments() };
   }
 
   const supabase = createSupabaseServerClient()!;
   const { data, error } = await supabase
     .from("teacher_feedback")
-    .select(
-      `session_id, teacher_id, summary, strengths, suggestions, moments, dimension_scores, created_at,
-       session:sessions!teacher_feedback_session_id_fkey(course:courses(name), student:profiles!sessions_student_id_fkey(display_name), metrics:session_metrics(*)),
-       teacher:profiles!teacher_feedback_teacher_id_fkey(display_name)`,
-    )
+    .select(FEEDBACK_SELECT)
     .eq("session_id", sessionId)
     .maybeSingle();
   if (error || !data) return null;
 
-  const [transcript, events] = await Promise.all([
-    supabase.from("transcripts").select("segments").eq("session_id", sessionId).maybeSingle(),
-    supabase
-      .from("live_events")
-      .select("type, payload, created_at")
-      .eq("session_id", sessionId)
-      .order("created_at"),
-  ]);
+  const transcript = await supabase.from("transcripts").select("segments").eq("session_id", sessionId).maybeSingle();
 
   return {
     ...mapRow(data),
     segments: ((transcript.data?.segments ?? []) as TranscriptSegment[]) ?? [],
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    nudges: (events.data ?? []).map((e: any) => ({
-      type: e.type,
-      message: String(e.payload?.message ?? ""),
-      created_at: e.created_at,
-    })),
   };
+}
+
+/**
+ * Completed lessons whose post-session analysis is pending, failed or will
+ * never exist (Zoom fallback → 'no_recording', opted-out student →
+ * 'skipped_opt_out'), newest first. `teacherId` scopes to one teacher (the
+ * teacher coaching page); omit for the admin QA view. RLS already limits a
+ * teacher's cookie client to their own sessions. Phase 1 writes only
+ * 'no_recording' (End during fallback); the pipeline (Phase 2) drives the rest.
+ */
+export async function getAnalysisQueue(opts: { teacherId?: string; limit?: number } = {}): Promise<AnalysisQueueItem[]> {
+  const limit = opts.limit ?? 8;
+  if (isDemoMode) {
+    return buildDemoSessions()
+      .filter(
+        (s) =>
+          s.status === "completed" &&
+          ANALYSIS_NOTICE_STATUSES.includes(s.analysis_status) &&
+          (!opts.teacherId || s.teacher_id === opts.teacherId),
+      )
+      .sort((a, b) => (a.scheduled_start < b.scheduled_start ? 1 : -1))
+      .slice(0, limit)
+      .map((s) => ({
+        session_id: s.id,
+        teacher_id: s.teacher_id,
+        teacher_name: s.teacher?.display_name ?? "Unassigned",
+        course_name: s.course.name,
+        student_name: s.student.display_name,
+        scheduled_start: s.scheduled_start,
+        analysis_status: s.analysis_status,
+      }));
+  }
+
+  const supabase = createSupabaseServerClient()!;
+  let q = supabase
+    .from("sessions")
+    .select(
+      `id, teacher_id, scheduled_start, analysis_status,
+       course:courses(name),
+       student:profiles!sessions_student_id_fkey(display_name),
+       teacher:profiles!sessions_teacher_id_fkey(display_name)`,
+    )
+    .eq("status", "completed")
+    .in("analysis_status", [...ANALYSIS_NOTICE_STATUSES])
+    .order("scheduled_start", { ascending: false })
+    .limit(limit);
+  if (opts.teacherId) q = q.eq("teacher_id", opts.teacherId);
+  const { data, error } = await q;
+  if (error) {
+    // A pre-0017 database has no analysis_status column — the strip is optional.
+    console.error("getAnalysisQueue failed:", error.message);
+    return [];
+  }
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return (data ?? []).map((r: any) => ({
+    session_id: r.id,
+    teacher_id: r.teacher_id ?? null,
+    teacher_name: r.teacher?.display_name ?? "Unassigned",
+    course_name: r.course?.name ?? "Lesson",
+    student_name: r.student?.display_name ?? "Student",
+    scheduled_start: r.scheduled_start,
+    analysis_status: (r.analysis_status as AnalysisStatus) ?? "none",
+  }));
+}
+
+/** Teacher-facing copy for a non-'done' analysis status. */
+export function analysisStatusLabel(status: AnalysisStatus): { title: string; detail: string; tone: "pending" | "muted" | "warning" } {
+  switch (status) {
+    case "pending":
+      return {
+        title: "Analysis pending",
+        detail: "Coaching and the report draft arrive about 30–60 minutes after a recorded lesson ends.",
+        tone: "pending",
+      };
+    case "no_recording":
+      return {
+        title: "Not recorded",
+        detail: "This lesson ran on the backup meeting link, so there is no transcript or coaching. Write the report from your notes.",
+        tone: "muted",
+      };
+    case "skipped_opt_out":
+      return {
+        title: "Not recorded (opted out)",
+        detail: "The family opted out of recording — no transcript, summary or coaching exists for this lesson.",
+        tone: "muted",
+      };
+    case "failed":
+      return {
+        title: "Analysis failed",
+        detail: "The post-session pipeline could not process this lesson. An admin follow-up has been raised.",
+        tone: "warning",
+      };
+    default:
+      return { title: "", detail: "", tone: "muted" };
+  }
 }
 
 function demoSegments(): TranscriptSegment[] {
@@ -264,13 +357,5 @@ function demoSegments(): TranscriptSegment[] {
     { speaker: "teacher", text: "It's minus two, see, because the bracket flips the sign.", start_ms: 1_083_000, end_ms: 1_089_000 },
     { speaker: "student", text: "Oh right, I keep forgetting that flip.", start_ms: 1_090_000, end_ms: 1_094_000 },
     { speaker: "teacher", text: "Exactly — and you spotted the restriction on the domain without a hint.", start_ms: 1_875_000, end_ms: 1_881_000 },
-  ];
-}
-
-function demoNudges(lessonISO: string): FeedbackDetail["nudges"] {
-  const base = DateTime.fromISO(lessonISO, { zone: "utc" });
-  return [
-    { type: "wait_time", message: "Give them a few seconds to think before jumping in.", created_at: base.plus({ minutes: 18 }).toISO()! },
-    { type: "praise_drought", message: "Acknowledge their effort — a little encouragement goes a long way.", created_at: base.plus({ minutes: 33 }).toISO()! },
   ];
 }

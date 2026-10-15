@@ -1,163 +1,231 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import {
-  BellOff,
+  AlertTriangle,
+  Ban,
+  CheckCircle2,
   ChevronLeft,
   Clock,
+  CircleOff,
+  Disc,
+  FolderOpen,
   Loader2,
-  NotebookPen,
-  Sparkles,
+  MonitorPlay,
+  RefreshCw,
   SquareCheckBig,
-  Video,
+  UserX,
   X,
 } from "lucide-react";
-import { VideoStage } from "@/components/lesson/video-stage";
 import { MaterialsPanel } from "@/components/lesson/materials-panel";
+import { SpaceStage, type EmbedEvent, type JoinInfo, type SpaceProvider } from "@/components/lesson/space-stage";
 import { ProviderBadge } from "@/components/lesson/video-panel";
 import { StatusBadge } from "@/components/status-badge";
 import { Avatar } from "@/components/ui/avatar";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { ScoreBars } from "@/components/coaching/score-bars";
-import { useLiveCoach } from "@/lib/coaching/use-live-coach";
-import { DEMO_LESSON_TRANSCRIPT } from "@/lib/coaching/demo-transcript";
-import { finalizeLesson } from "@/lib/actions/coaching";
-import { startSessionClock } from "@/lib/actions/sessions";
-import type { TeacherFeedback } from "@/lib/coaching/analyze";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { endLesson, startSessionClock, type LessonOutcome } from "@/lib/actions/sessions";
 import type { SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-// tldraw is browser-only.
-const NotebookPanel = dynamic(
-  () => import("@/components/lesson/notebook-panel").then((m) => m.NotebookPanel),
-  {
-    ssr: false,
-    loading: () => (
-      <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-        <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading notebook…
-      </div>
-    ),
-  },
-);
+// ============================================================================
+// The lesson room: header (Leave · course · status · peer · clock · recording ·
+// provider · End), the Pencil Space in the centre, Materials on the right
+// (tabs on small screens). Everything that writes to our DB happens through
+// server actions; the Space itself is driven by <SpaceStage>.
+// ============================================================================
 
-type Tab = "notebook" | "video" | "materials";
+type Tab = "space" | "materials";
+
+export type LessonViewerKind = "teacher" | "admin" | "student";
+
+export interface LessonRoomProps {
+  sessionId: string;
+  courseName: string;
+  materialsCourseId: string | null;
+  status: SessionStatus;
+  backHref: string;
+  viewerKind: LessonViewerKind;
+  /** canEndLesson(profile, session): assigned teacher or admin. */
+  canEnd: boolean;
+  selfName: string;
+  peerName: string;
+  peerAvatarUrl: string | null;
+  /** Pencil id of the student (mock-user-… in demo); gates the lesson clock. */
+  studentPencilUserId: string | null;
+  /** Recording policy for this student (opt-out → false). */
+  recordingOn: boolean;
+  /** Opted out but the Space hasn't confirmed recording_disabled → hard stop. */
+  optOutUnconfirmed: boolean;
+  /** The page could not read the room rows (service role / query error). */
+  roomUnavailable: boolean;
+  /** Pencil is mocked (demo or no key). */
+  mock: boolean;
+  fallbackUrl: string | null;
+  fallbackForced: boolean;
+  actualStartISO: string | null;
+  actualEndISO: string | null;
+}
 
 export function LessonRoom({
   sessionId,
-  notebookId,
-  materialsCourseId,
   courseName,
+  materialsCourseId,
   status,
   backHref,
-  selfId,
+  viewerKind,
+  canEnd,
   selfName,
   peerName,
-  isTeacher,
-  initialSnapshot,
+  peerAvatarUrl,
+  studentPencilUserId,
+  recordingOn,
+  optOutUnconfirmed,
+  roomUnavailable,
+  mock,
+  fallbackUrl,
+  fallbackForced,
   actualStartISO,
-  demoCoaching,
-}: {
-  sessionId: string;
-  notebookId: string;
-  materialsCourseId: string | null;
-  courseName: string;
-  status: SessionStatus;
-  backHref: string;
-  selfId: string;
-  selfName: string;
-  peerName: string;
-  isTeacher: boolean;
-  initialSnapshot: unknown | null;
-  actualStartISO: string | null;
-  demoCoaching: boolean;
-}) {
-  const [tab, setTab] = useState<Tab>("notebook");
-  const coach = useLiveCoach(sessionId, isTeacher);
+  actualEndISO,
+}: LessonRoomProps) {
+  const hostView = viewerKind !== "student";
+  const [tab, setTab] = useState<Tab>("space");
 
-  // The lesson clock runs from when BOTH join (actual_start), not booking time.
-  const [startedAtMs, setStartedAtMs] = useState<number | null>(
-    actualStartISO ? Date.parse(actualStartISO) : null,
-  );
-  const [endedAtMs, setEndedAtMs] = useState<number | null>(null);
+  // Over = ended before we got here, or ended from this header.
+  const initialOutcome: EndedOutcome | null =
+    status === "completed" || status === "no_show" || status === "cancelled" ? status : null;
+  const [endedOutcome, setEndedOutcome] = useState<EndedOutcome | null>(initialOutcome);
+
+  // The lesson clock runs from actual_start (both present), not booking time.
+  const [startedAtMs, setStartedAtMs] = useState<number | null>(actualStartISO ? Date.parse(actualStartISO) : null);
+  const [endedAtMs, setEndedAtMs] = useState<number | null>(actualEndISO ? Date.parse(actualEndISO) : null);
   const startedRef = useRef<boolean>(Boolean(actualStartISO));
 
-  const handlePeerPresent = useCallback(() => {
+  const [studentPresent, setStudentPresent] = useState(false);
+  const [inCall, setInCall] = useState(false);
+  const [callEnded, setCallEnded] = useState(false);
+  /** Live recording state from `recording_status_change`; null until Pencil tells us. */
+  const [recordingLive, setRecordingLive] = useState<boolean | null>(null);
+  const [provider, setProvider] = useState<SpaceProvider>(fallbackForced ? "fallback" : mock ? "mock" : "pencil");
+  const [usedFallback, setUsedFallback] = useState(fallbackForced);
+  const studentIdRef = useRef<string | null>(studentPencilUserId);
+  const [secondTab, setSecondTab] = useState(false);
+
+  const markStudentPresent = useCallback(() => {
+    setStudentPresent(true);
     if (startedRef.current) return;
     startedRef.current = true;
+    if (!hostView) {
+      // Students never write the clock; show it locally from the moment both are in.
+      setStartedAtMs((v) => v ?? Date.now());
+      return;
+    }
     startSessionClock(sessionId)
       .then((r) => setStartedAtMs(Date.parse(r.actual_start)))
       .catch(() => setStartedAtMs(Date.now()));
-  }, [sessionId]);
+  }, [hostView, sessionId]);
 
-  // §7.2 periodic AI live-coaching pass: every ~2.5 min, send the recent
-  // transcript to Claude for a subtler nudge than the threshold rules.
-  useEffect(() => {
-    if (!isTeacher) return;
-    const id = setInterval(async () => {
-      const segs = coach.getSegments();
-      if (segs.length < 4) return;
-      try {
-        const res = await fetch("/api/coach/live", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ segments: segs.slice(-24) }),
-        });
-        const data = await res.json();
-        if (data?.nudge) coach.pushExternalNudge(data.nudge);
-      } catch {
-        /* ignore — rule-based nudges still run */
+  /**
+   * Embed events (already source- and origin-checked by <SpaceStage>). The clock
+   * starts on the first event proving the STUDENT is present: `participant_join`
+   * with the student's Pencil id, or `participantupdate.count >= 2`. The
+   * teacher's own `user_joined_call` only drives the "waiting for student" badge.
+   */
+  const handleEmbedEvent = useCallback(
+    (evt: EmbedEvent) => {
+      const detail = evt.detail;
+      switch (evt.type) {
+        case "participant_join": {
+          const id = typeof detail?.id === "string" ? detail.id : null;
+          if (hostView) {
+            if (id !== null && studentIdRef.current !== null && id === studentIdRef.current) markStudentPresent();
+          } else {
+            markStudentPresent(); // someone else joined the student's room → both present
+          }
+          break;
+        }
+        case "participantupdate": {
+          const raw = detail?.count;
+          const count = typeof raw === "number" ? raw : Number(raw);
+          if (Number.isFinite(count) && count >= 2) markStudentPresent();
+          break;
+        }
+        case "user_started_call":
+        case "user_joined_call":
+          setInCall(true);
+          setCallEnded(false);
+          break;
+        case "user_left_call":
+        case "user_ended_call":
+        case "call_ended":
+          setInCall(false);
+          setCallEnded(true);
+          break;
+        case "recording_status_change": {
+          const on = recordingStatusOn(detail);
+          if (on !== null) setRecordingLive(on);
+          break;
+        }
+        default:
+          break;
       }
-    }, 150_000);
-    return () => clearInterval(id);
-  }, [isTeacher, coach]);
-
-  // Time-based cues (silence, praise drought) need a tick, not just segments.
-  // Real-time only — demo uses the scripted transcript on its own clock.
-  useEffect(() => {
-    if (!isTeacher || demoCoaching) return;
-    const id = setInterval(() => coach.tick(), 15_000);
-    return () => clearInterval(id);
-  }, [isTeacher, demoCoaching, coach]);
-
-  // Demo: drive the live coach from a scripted transcript (no live audio).
-  useEffect(() => {
-    if (!demoCoaching || !isTeacher) return;
-    let i = 0;
-    const id = setInterval(() => {
-      if (i >= DEMO_LESSON_TRANSCRIPT.length) {
-        clearInterval(id);
-        return;
-      }
-      coach.ingest(DEMO_LESSON_TRANSCRIPT[i]);
-      i++;
-    }, 3_500);
-    return () => clearInterval(id);
-  }, [demoCoaching, isTeacher, coach]);
-
-  // The video stage must mount EXACTLY ONCE — the Daily SDK allows a single
-  // call object per page, so rendering it in both the desktop rail and the
-  // (CSS-hidden) mobile panel crashes the room. Pick the slot via media query.
-  const isDesktop = useIsDesktop();
-
-  const videoStage = (
-    <VideoStage
-      sessionId={sessionId}
-      selfName={selfName}
-      peerName={peerName}
-      isTeacher={isTeacher}
-      onTranscript={coach.ingest}
-      onPeerPresent={handlePeerPresent}
-    />
+    },
+    [hostView, markStudentPresent],
   );
 
-  const liveStatus: SessionStatus = endedAtMs ? "completed" : startedAtMs ? "in_progress" : status;
+  const handleJoinInfo = useCallback((info: JoinInfo) => {
+    if (info.studentPencilUserId) studentIdRef.current = info.studentPencilUserId;
+    setProvider(info.provider);
+    if (info.provider === "fallback") setUsedFallback(true);
+  }, []);
+
+  // A second lesson tab in the same browser: an authorize login logs out whoever
+  // is in Pencil in that browser (back-to-back lessons, siblings on one device).
+  useEffect(() => {
+    if (typeof BroadcastChannel === "undefined") return;
+    const tabId = Math.random().toString(36).slice(2);
+    const channel = new BroadcastChannel("lesson-room");
+    const onMessage = (e: MessageEvent) => {
+      const m = e.data as { type?: string; tabId?: string } | null;
+      if (!m || typeof m !== "object" || m.tabId === tabId) return;
+      if (m.type === "hello") {
+        channel.postMessage({ type: "present", tabId });
+        setSecondTab(true);
+      } else if (m.type === "present") {
+        setSecondTab(true);
+      }
+    };
+    channel.addEventListener("message", onMessage);
+    channel.postMessage({ type: "hello", tabId });
+    return () => {
+      channel.removeEventListener("message", onMessage);
+      channel.close();
+    };
+  }, []);
+
+  const handleEnded = useCallback((outcome: LessonOutcome, actualEnd: string | null) => {
+    setEndedOutcome(outcome);
+    setEndedAtMs(actualEnd ? Date.parse(actualEnd) : Date.now());
+  }, []);
+
+  const over = endedOutcome !== null;
+  const liveStatus: SessionStatus = endedOutcome ?? (startedAtMs ? "in_progress" : status);
+  const recordingShown = recordingLive ?? recordingOn;
 
   return (
     <div className="flex h-screen flex-col overflow-hidden bg-background">
-      {/* Header — Leave, lesson info, live clock, and (teacher) End button. */}
+      {/* Header */}
       <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 md:px-4">
         <Button asChild variant="ghost" size="sm">
           <Link href={backHref}>
@@ -169,81 +237,225 @@ export function LessonRoom({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{courseName}</span>
             <StatusBadge status={liveStatus} />
+            {!over && hostView && inCall && !studentPresent && !startedAtMs && (
+              <Badge variant="warning" className="hidden text-[10px] md:inline-flex">
+                Waiting for student
+              </Badge>
+            )}
+            {!over && callEnded && (
+              <Badge variant="secondary" className="hidden text-[10px] md:inline-flex">
+                Call ended
+              </Badge>
+            )}
           </div>
           <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
-            <Avatar name={peerName} size={16} />
+            <Avatar name={peerName} src={peerAvatarUrl} size={16} />
             <span className="truncate">with {peerName}</span>
           </div>
         </div>
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
-          <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} />
-          <ProviderBadge />
-          {isTeacher && (
+          <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} className="hidden sm:inline-flex" />
+          <RecordingChip on={recordingShown} policyOn={recordingOn} />
+          <span className="hidden md:inline-flex">
+            <ProviderBadge provider={provider} />
+          </span>
+          {canEnd && !over && (
             <EndLessonButton
               sessionId={sessionId}
-              courseName={courseName}
-              selfName={selfName}
-              peerName={peerName}
-              getSegments={coach.getSegments}
-              ended={Boolean(endedAtMs)}
-              onEnded={() => setEndedAtMs(Date.now())}
+              studentSeen={studentPresent || startedAtMs !== null}
+              usedFallback={usedFallback}
+              onEnded={handleEnded}
             />
           )}
         </div>
       </header>
 
+      {/* Notices */}
+      {!hostView && recordingOn && !over && (
+        <div className="flex shrink-0 items-center gap-2 border-b bg-primary/5 px-4 py-1.5 text-xs text-muted-foreground">
+          <Disc className="h-3.5 w-3.5 text-destructive" />
+          This lesson is recorded (audio + board).
+        </div>
+      )}
+      {hostView && !recordingOn && recordingLive === true && !over && (
+        <div className="flex shrink-0 items-center gap-2 bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground">
+          <AlertTriangle className="h-4 w-4 shrink-0" />
+          Recording is ON but this student is opted out — stop the recording in the Space now.
+        </div>
+      )}
+      {secondTab && (
+        <div className="flex shrink-0 items-start gap-2 border-b bg-warning/15 px-4 py-2 text-xs text-warning-foreground">
+          <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+          <span className="flex-1">
+            Another lesson tab is open in this browser. Opening a Space in two tabs signs the other one out — close
+            the one you&rsquo;re not using before joining.
+          </span>
+          <button type="button" onClick={() => setSecondTab(false)} aria-label="Dismiss" className="hover:opacity-70">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
-        {/* Mobile tab switcher */}
-        <div className="flex border-b lg:hidden">
-          <TabButton active={tab === "notebook"} onClick={() => setTab("notebook")} icon={<NotebookPen className="h-4 w-4" />} label="Notebook" />
-          <TabButton active={tab === "video"} onClick={() => setTab("video")} icon={<Video className="h-4 w-4" />} label="Video" />
-          <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<NotebookPen className="h-4 w-4" />} label="Materials" />
+        {/* Small screens: tabs */}
+        <div className="flex shrink-0 border-b lg:hidden">
+          <TabButton active={tab === "space"} onClick={() => setTab("space")} icon={<MonitorPlay className="h-4 w-4" />} label="Space" />
+          <TabButton active={tab === "materials"} onClick={() => setTab("materials")} icon={<FolderOpen className="h-4 w-4" />} label="Materials" />
         </div>
 
-        {/* Left rail: video + materials (desktop only — conditionally MOUNTED) */}
-        {isDesktop === true && (
-          <aside className="flex w-80 shrink-0 flex-col border-r xl:w-96">
-            <div className="h-[46%] min-h-[240px] border-b">{videoStage}</div>
-            <div className="min-h-0 flex-1">
-              <MaterialsPanel materialsCourseId={materialsCourseId} />
-            </div>
-          </aside>
-        )}
-
-        {/* Notebook (centerpiece) */}
-        <main className={cn("relative min-h-[60vh] flex-1 bg-muted/30 lg:block", tab === "notebook" ? "block" : "hidden")}>
-          <NotebookPanel notebookId={notebookId} userId={selfId} userName={selfName} initialSnapshot={initialSnapshot} />
-          {isTeacher && <CoachChip coach={coach} />}
+        {/* Centre: the Space (or the ended card) */}
+        <main className={cn("relative min-h-0 flex-1 bg-muted/30", tab === "space" ? "flex" : "hidden lg:flex")}>
+          <div className="h-full w-full">
+            {over ? (
+              <LessonEndedCard outcome={endedOutcome} hostView={hostView} backHref={backHref} />
+            ) : (
+              <SpaceStage
+                sessionId={sessionId}
+                hostView={hostView}
+                selfName={selfName}
+                peerName={peerName}
+                mock={mock}
+                fallbackForced={fallbackForced}
+                fallbackUrl={fallbackUrl}
+                optOutUnconfirmed={optOutUnconfirmed}
+                roomUnavailable={roomUnavailable}
+                onEmbedEvent={handleEmbedEvent}
+                onJoinInfo={handleJoinInfo}
+              />
+            )}
+          </div>
         </main>
 
-        {/* Mobile panels — video stays mounted across tab switches, just hidden */}
-        {isDesktop === false && (
-          <>
-            <div className={cn("min-h-[60vh]", tab === "video" ? "block" : "hidden")}>{videoStage}</div>
-            <div className={cn("min-h-[60vh]", tab === "materials" ? "block" : "hidden")}>
-              <MaterialsPanel materialsCourseId={materialsCourseId} />
-            </div>
-          </>
-        )}
+        {/* Right rail: Materials */}
+        <aside
+          className={cn(
+            "min-h-0 flex-col border-t bg-card lg:w-80 lg:flex-none lg:border-l lg:border-t-0 xl:w-96",
+            tab === "materials" ? "flex flex-1" : "hidden lg:flex",
+          )}
+        >
+          <MaterialsPanel materialsCourseId={materialsCourseId} />
+        </aside>
       </div>
     </div>
   );
 }
 
+// ---------------------------------------------------------------------------
+// Parent view — a status card, no Space (parents have no Pencil user).
+// ---------------------------------------------------------------------------
+
+export function ParentStatusCard({
+  courseName,
+  studentName,
+  teacherName,
+  status,
+  actualStartISO,
+  actualEndISO,
+  recordingOn,
+  backHref,
+}: {
+  courseName: string;
+  studentName: string;
+  teacherName: string;
+  status: SessionStatus;
+  actualStartISO: string | null;
+  actualEndISO: string | null;
+  recordingOn: boolean;
+  backHref: string;
+}) {
+  const router = useRouter();
+  const startedAtMs = actualStartISO ? Date.parse(actualStartISO) : null;
+  const endedAtMs = actualEndISO ? Date.parse(actualEndISO) : null;
+
+  return (
+    <div className="flex min-h-screen flex-col bg-background">
+      <header className="flex h-14 shrink-0 items-center gap-3 border-b bg-card px-3 md:px-4">
+        <Button asChild variant="ghost" size="sm">
+          <Link href={backHref}>
+            <ChevronLeft className="h-4 w-4" /> Leave
+          </Link>
+        </Button>
+        <div className="hidden h-6 w-px bg-border sm:block" />
+        <div className="flex min-w-0 items-center gap-2">
+          <span className="truncate text-sm font-semibold">{courseName}</span>
+          <StatusBadge status={status} />
+        </div>
+      </header>
+
+      <main className="flex flex-1 items-center justify-center p-6">
+        <Card className="w-full max-w-md">
+          <CardContent className="space-y-5 p-6">
+            <div>
+              <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Lesson status</div>
+              <h1 className="mt-1 text-lg font-semibold">{courseName}</h1>
+              <p className="text-sm text-muted-foreground">
+                {studentName} with {teacherName}
+              </p>
+            </div>
+
+            <dl className="grid grid-cols-[auto_1fr] gap-x-4 gap-y-3 text-sm">
+              <dt className="text-muted-foreground">Teacher</dt>
+              <dd className="flex items-center gap-2">
+                <Avatar name={teacherName} size={20} /> {teacherName}
+              </dd>
+              <dt className="text-muted-foreground">Status</dt>
+              <dd>
+                <StatusBadge status={status} />
+              </dd>
+              <dt className="text-muted-foreground">Time in lesson</dt>
+              <dd>
+                <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} className="text-foreground" />
+              </dd>
+              <dt className="text-muted-foreground">Recording</dt>
+              <dd>
+                <RecordingChip on={recordingOn} policyOn={recordingOn} />
+              </dd>
+            </dl>
+
+            <p className="text-xs text-muted-foreground">
+              Parents follow the lesson from here — the classroom itself is for the teacher and the student. The
+              report arrives after the lesson.
+            </p>
+
+            <Button variant="outline" size="sm" onClick={() => router.refresh()}>
+              <RefreshCw className="h-4 w-4" /> Refresh
+            </Button>
+          </CardContent>
+        </Card>
+      </main>
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Pieces
+// ---------------------------------------------------------------------------
+
+type EndedOutcome = LessonOutcome | "cancelled";
+
 /** Live elapsed time since both joined (or final duration once ended). */
-function Elapsed({ startedAtMs, endedAtMs }: { startedAtMs: number | null; endedAtMs: number | null }) {
+export function Elapsed({
+  startedAtMs,
+  endedAtMs,
+  className,
+}: {
+  startedAtMs: number | null;
+  endedAtMs: number | null;
+  className?: string;
+}) {
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
-    if (endedAtMs) return;
+    if (endedAtMs || !startedAtMs) return;
     const id = setInterval(() => setNow(Date.now()), 1000);
     return () => clearInterval(id);
-  }, [endedAtMs]);
+  }, [endedAtMs, startedAtMs]);
 
+  const base = "inline-flex items-center gap-1.5 text-sm text-muted-foreground";
   if (!startedAtMs) {
     return (
-      <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
-        <Clock className="h-4 w-4" /> Waiting to start
+      <span className={cn(base, className)}>
+        <Clock className="h-4 w-4" /> {endedAtMs ? "—" : "Waiting to start"}
       </span>
     );
   }
@@ -254,16 +466,55 @@ function Elapsed({ startedAtMs, endedAtMs }: { startedAtMs: number | null; ended
   const pad = (n: number) => String(n).padStart(2, "0");
   const label = h > 0 ? `${h}:${pad(m)}:${pad(s)}` : `${pad(m)}:${pad(s)}`;
   return (
-    <span className="hidden items-center gap-1.5 text-sm text-muted-foreground sm:flex">
+    <span className={cn(base, className)}>
       <Clock className="h-4 w-4" />
       <span className="tabular-nums">{label}</span>
     </span>
   );
 }
 
+/**
+ * "Recording on (audio + board)" / "Not recorded (opted out)". `on` is the
+ * live state when Pencil has reported one, else the policy; `policyOn` is the
+ * policy itself, so a mismatch reads as a warning.
+ */
+function RecordingChip({ on, policyOn }: { on: boolean; policyOn: boolean }) {
+  if (on) {
+    return (
+      <Badge variant={policyOn ? "outline" : "destructive"} className="gap-1.5 text-[10px]">
+        <span className="relative flex h-2 w-2">
+          <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive opacity-60" />
+          <span className="relative inline-flex h-2 w-2 rounded-full bg-destructive" />
+        </span>
+        <span className="hidden sm:inline">Recording on (audio + board)</span>
+        <span className="sm:hidden">REC</span>
+      </Badge>
+    );
+  }
+  return (
+    <Badge variant={policyOn ? "warning" : "secondary"} className="gap-1 text-[10px]">
+      <CircleOff className="h-3 w-3" />
+      <span className="hidden sm:inline">{policyOn ? "Recording off" : "Not recorded (opted out)"}</span>
+      <span className="sm:hidden">{policyOn ? "Off" : "Not rec."}</span>
+    </Badge>
+  );
+}
+
+/** `recording_status_change{status}` — Pencil's exact vocabulary isn't documented; accept the obvious forms. */
+function recordingStatusOn(detail: Record<string, unknown> | null): boolean | null {
+  const raw = detail?.status ?? detail?.recording ?? detail?.enabled;
+  if (typeof raw === "boolean") return raw;
+  if (typeof raw !== "string") return null;
+  const v = raw.trim().toLowerCase();
+  if (["recording", "started", "start", "on", "active", "true", "resumed"].includes(v)) return true;
+  if (["stopped", "stop", "off", "inactive", "false", "idle", "paused", "ended"].includes(v)) return false;
+  return null;
+}
+
 function TabButton({ active, onClick, icon, label }: { active: boolean; onClick: () => void; icon: React.ReactNode; label: string }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className={cn(
         "flex flex-1 items-center justify-center gap-1.5 py-2.5 text-sm font-medium transition-colors",
@@ -276,136 +527,113 @@ function TabButton({ active, onClick, icon, label }: { active: boolean; onClick:
   );
 }
 
-/** Tracks the lg (1024px) breakpoint; null until first client measurement. */
-function useIsDesktop(): boolean | null {
-  const [isDesktop, setIsDesktop] = useState<boolean | null>(null);
-  useEffect(() => {
-    const mq = window.matchMedia("(min-width: 1024px)");
-    const update = () => setIsDesktop(mq.matches);
-    update();
-    mq.addEventListener("change", update);
-    return () => mq.removeEventListener("change", update);
-  }, []);
-  return isDesktop;
-}
-
-/** §7.2 The live coach nudge — teacher-only, glanceable, mutable, dismissible. */
-function CoachChip({ coach }: { coach: ReturnType<typeof useLiveCoach> }) {
-  if (coach.muted) {
-    return (
-      <button
-        onClick={() => coach.setMuted(false)}
-        className="absolute bottom-4 left-4 z-10 flex items-center gap-1.5 rounded-full border bg-card/90 px-3 py-1.5 text-xs text-muted-foreground shadow backdrop-blur hover:text-foreground"
-      >
-        <BellOff className="h-3.5 w-3.5" /> Coach muted
-      </button>
-    );
-  }
-  if (!coach.nudge) return null;
+function LessonEndedCard({ outcome, hostView, backHref }: { outcome: EndedOutcome | null; hostView: boolean; backHref: string }) {
+  const cancelled = outcome === "cancelled";
+  const noShow = outcome === "no_show";
   return (
-    <div className="pointer-events-auto absolute bottom-4 left-4 z-10 max-w-xs animate-fade-in rounded-xl border border-primary/20 bg-card/95 p-3 shadow-lg backdrop-blur">
-      <div className="flex items-start gap-2.5">
-        <span className="mt-0.5 flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-primary/10 text-primary">
-          <Sparkles className="h-4 w-4" />
-        </span>
-        <div className="min-w-0">
-          <div className="text-xs font-semibold">AI coach</div>
-          <p className="mt-0.5 text-sm text-muted-foreground">{coach.nudge.message}</p>
-        </div>
-        <div className="ml-1 flex shrink-0 flex-col gap-1">
-          <button onClick={coach.dismiss} className="text-muted-foreground hover:text-foreground" title="Dismiss">
-            <X className="h-3.5 w-3.5" />
-          </button>
-          <button onClick={() => coach.setMuted(true)} className="text-muted-foreground hover:text-foreground" title="Mute coach">
-            <BellOff className="h-3.5 w-3.5" />
-          </button>
-        </div>
-      </div>
+    <div className="flex h-full w-full items-center justify-center p-6">
+      <Card className="w-full max-w-md">
+        <CardContent className="flex flex-col items-center gap-3 p-8 text-center">
+          <span
+            className={cn(
+              "flex h-12 w-12 items-center justify-center rounded-full",
+              cancelled ? "bg-destructive/10 text-destructive" : noShow ? "bg-warning/15 text-warning-foreground" : "bg-success/12 text-success",
+            )}
+          >
+            {cancelled ? <Ban className="h-6 w-6" /> : noShow ? <UserX className="h-6 w-6" /> : <CheckCircle2 className="h-6 w-6" />}
+          </span>
+          <div>
+            <h2 className="text-lg font-semibold">
+              {cancelled ? "This lesson was cancelled." : noShow ? "Marked as no-show." : "Lesson ended."}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {cancelled
+                ? "The classroom is closed for this lesson."
+                : noShow
+                  ? "The student never joined. The classroom is closed and no lesson was recorded."
+                  : hostView
+                    ? "The classroom is closed for this lesson. Materials stay available on the side."
+                    : "The classroom is closed for this lesson. Your report will arrive once the teacher publishes it."}
+            </p>
+          </div>
+          <Button asChild variant="outline">
+            <Link href={backHref}>
+              <ChevronLeft className="h-4 w-4" /> Back to dashboard
+            </Link>
+          </Button>
+        </CardContent>
+      </Card>
     </div>
   );
 }
 
-/** Ends the lesson: runs the §7.3 post-session analysis and shows the feedback. */
+/**
+ * End lesson → endLesson(id, 'completed' | 'no_show'). "Mark as no-show" leads
+ * when the student was never seen; both are always available (the student may
+ * have joined from a device we got no embed event for).
+ */
 function EndLessonButton({
   sessionId,
-  courseName,
-  selfName,
-  peerName,
-  getSegments,
-  ended,
+  studentSeen,
+  usedFallback,
   onEnded,
 }: {
   sessionId: string;
-  courseName: string;
-  selfName: string;
-  peerName: string;
-  getSegments: () => { speaker: "teacher" | "student"; text: string; start_ms: number; end_ms: number }[];
-  ended: boolean;
-  onEnded: () => void;
+  studentSeen: boolean;
+  usedFallback: boolean;
+  onEnded: (outcome: LessonOutcome, actualEnd: string | null) => void;
 }) {
-  const [loading, setLoading] = useState(false);
-  const [feedback, setFeedback] = useState<TeacherFeedback | null>(null);
+  const [open, setOpen] = useState(false);
+  const [pending, setPending] = useState<LessonOutcome | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  async function end() {
-    setLoading(true);
+  async function run(outcome: LessonOutcome) {
+    setPending(outcome);
+    setError(null);
     try {
-      const fb = await finalizeLesson(sessionId, getSegments(), {
-        teacherName: selfName,
-        studentName: peerName,
-        course: courseName,
-      });
-      onEnded();
-      setFeedback(fb);
+      const res = await endLesson(sessionId, outcome, { usedFallback });
+      if (!res.ok) {
+        setError(res.message);
+        return;
+      }
+      setOpen(false);
+      onEnded(outcome, res.actual_end ?? null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Could not end the lesson.");
     } finally {
-      setLoading(false);
+      setPending(null);
     }
   }
 
   return (
     <>
-      <Button onClick={end} disabled={loading} size="sm" variant={ended ? "outline" : "default"}>
-        {loading ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareCheckBig className="h-4 w-4" />}
-        <span className="hidden sm:inline">{ended ? "View feedback" : "End & get feedback"}</span>
-        <span className="sm:hidden">{ended ? "Feedback" : "End"}</span>
+      <Button onClick={() => setOpen(true)} size="sm" variant="default">
+        <SquareCheckBig className="h-4 w-4" />
+        <span className="hidden sm:inline">End lesson</span>
+        <span className="sm:hidden">End</span>
       </Button>
 
-      <Dialog open={!!feedback} onOpenChange={(o) => !o && setFeedback(null)}>
-        <DialogContent className="max-h-[90vh] overflow-y-auto">
+      <Dialog open={open} onOpenChange={(o) => !pending && setOpen(o)}>
+        <DialogContent>
           <DialogHeader>
-            <DialogTitle className="flex items-center gap-2">
-              <Sparkles className="h-5 w-5 text-primary" /> Lesson feedback
-            </DialogTitle>
-            <DialogDescription>{feedback?.summary}</DialogDescription>
+            <DialogTitle>{studentSeen ? "End this lesson?" : "The student hasn't joined"}</DialogTitle>
+            <DialogDescription>
+              {studentSeen
+                ? "This closes the Pencil session for this lesson and marks it completed. The room is unmounted for everyone."
+                : "Mark it as a no-show (nothing is counted as taught), or end it normally if the student was present on another device."}
+            </DialogDescription>
           </DialogHeader>
-          {feedback && (
-            <div className="space-y-5">
-              <div className="grid gap-5 sm:grid-cols-2">
-                <div>
-                  <div className="mb-2 text-sm font-semibold text-success">Strengths</div>
-                  <ul className="space-y-1.5 text-sm">
-                    {feedback.strengths.map((s, i) => (
-                      <li key={i} className="flex gap-2">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-success" />
-                        {s}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-                <div>
-                  <div className="mb-2 text-sm font-semibold text-primary">Things to try</div>
-                  <ul className="space-y-1.5 text-sm">
-                    {feedback.suggestions.map((s, i) => (
-                      <li key={i} className="flex gap-2">
-                        <span className="mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full bg-primary" />
-                        {s}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              </div>
-              <ScoreBars scores={feedback.dimension_scores} />
-            </div>
-          )}
+          {error && <p className="text-sm text-destructive">{error}</p>}
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant={studentSeen ? "outline" : "default"} onClick={() => run("no_show")} disabled={pending !== null}>
+              {pending === "no_show" ? <Loader2 className="h-4 w-4 animate-spin" /> : <UserX className="h-4 w-4" />}
+              Mark as no-show
+            </Button>
+            <Button variant={studentSeen ? "default" : "outline"} onClick={() => run("completed")} disabled={pending !== null}>
+              {pending === "completed" ? <Loader2 className="h-4 w-4 animate-spin" /> : <SquareCheckBig className="h-4 w-4" />}
+              End lesson
+            </Button>
+          </DialogFooter>
         </DialogContent>
       </Dialog>
     </>

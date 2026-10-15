@@ -1,10 +1,13 @@
 # MathVision Global — mobile app
 
 A native (Expo / React Native) companion app for everything **except** the live
-lesson. Lessons — video, the shared notebook — stay on iPad/laptop in the web
-app; tapping **Join** here opens the lesson in the browser. Everything else is
-native: dashboards, lessons, homework (view, mark, grade), reports, follow-ups,
-booking, and push notifications.
+lesson. Lessons run in a **Pencil Space** (video + collaborative whiteboard) that
+is best used from an iPad or laptop browser; tapping **Join** here opens the
+lesson in the browser (a bearer-authenticated "space link" route that hands the
+system browser a fresh, short-lived Pencil sign-in URL arrives with the Phase 3
+mobile work). Parents see the lesson's status only — they have no seat in the
+Space. Everything else is native: dashboards, lessons, homework (view, mark,
+grade), reports, follow-ups, booking, and push notifications.
 
 It talks to the **same Supabase project** as the web app. Row Level Security
 enforces who sees what, so the anon key is safe to ship. The service-role key is
