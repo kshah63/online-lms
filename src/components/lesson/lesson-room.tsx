@@ -64,8 +64,15 @@ export interface LessonRoomProps {
   peerAvatarUrl: string | null;
   /** Pencil id of the student (mock-user-… in demo); gates the lesson clock. */
   studentPencilUserId: string | null;
-  /** Recording policy for this student (opt-out → false). */
+  /**
+   * Lessons are being recorded for this student: institution recording is on
+   * (PENCIL_RECORDING_ENABLED, Phase 2) AND the student is not opted out.
+   * False all through Phase 1 — the live `recording_status_change` event is
+   * then the only thing that can show "Recording on" (a host-started recording).
+   */
   recordingOn: boolean;
+  /** The family opted out of recording (recording_opt_outs). */
+  optedOut: boolean;
   /** Opted out but the Space hasn't confirmed recording_disabled → hard stop. */
   optOutUnconfirmed: boolean;
   /** The page could not read the room rows (service role / query error). */
@@ -91,6 +98,7 @@ export function LessonRoom({
   peerAvatarUrl,
   studentPencilUserId,
   recordingOn,
+  optedOut,
   optOutUnconfirmed,
   roomUnavailable,
   mock,
@@ -187,7 +195,11 @@ export function LessonRoom({
   const handleJoinInfo = useCallback((info: JoinInfo) => {
     if (info.studentPencilUserId) studentIdRef.current = info.studentPencilUserId;
     setProvider(info.provider);
+    // "Ran on the backup link" is about where the lesson ended up: a Retry that
+    // gets into the Space (after a rate-limit or a Pencil hiccup) clears it, so
+    // End still ends the Pencil session and the lesson isn't marked unrecorded.
     if (info.provider === "fallback") setUsedFallback(true);
+    else if (info.provider === "pencil") setUsedFallback(false);
   }, []);
 
   // A second lesson tab in the same browser: an authorize login logs out whoever
@@ -256,7 +268,7 @@ export function LessonRoom({
 
         <div className="ml-auto flex items-center gap-2 sm:gap-3">
           <Elapsed startedAtMs={startedAtMs} endedAtMs={endedAtMs} className="hidden sm:inline-flex" />
-          <RecordingChip on={recordingShown} policyOn={recordingOn} />
+          <RecordingChip on={recordingShown} expected={recordingOn} optedOut={optedOut} />
           <span className="hidden md:inline-flex">
             <ProviderBadge provider={provider} />
           </span>
@@ -272,13 +284,13 @@ export function LessonRoom({
       </header>
 
       {/* Notices */}
-      {!hostView && recordingOn && !over && (
+      {!hostView && recordingShown && !over && (
         <div className="flex shrink-0 items-center gap-2 border-b bg-primary/5 px-4 py-1.5 text-xs text-muted-foreground">
           <Disc className="h-3.5 w-3.5 text-destructive" />
           This lesson is recorded (audio + board).
         </div>
       )}
-      {hostView && !recordingOn && recordingLive === true && !over && (
+      {hostView && optedOut && recordingLive === true && !over && (
         <div className="flex shrink-0 items-center gap-2 bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground">
           <AlertTriangle className="h-4 w-4 shrink-0" />
           Recording is ON but this student is opted out — stop the recording in the Space now.
@@ -353,6 +365,7 @@ export function ParentStatusCard({
   actualStartISO,
   actualEndISO,
   recordingOn,
+  optedOut,
   backHref,
 }: {
   courseName: string;
@@ -361,7 +374,9 @@ export function ParentStatusCard({
   status: SessionStatus;
   actualStartISO: string | null;
   actualEndISO: string | null;
+  /** Institution recording is on and the child is not opted out. */
   recordingOn: boolean;
+  optedOut: boolean;
   backHref: string;
 }) {
   const router = useRouter();
@@ -409,7 +424,7 @@ export function ParentStatusCard({
               </dd>
               <dt className="text-muted-foreground">Recording</dt>
               <dd>
-                <RecordingChip on={recordingOn} policyOn={recordingOn} />
+                <RecordingChip on={recordingOn} expected={recordingOn} optedOut={optedOut} />
               </dd>
             </dl>
 
@@ -474,14 +489,16 @@ export function Elapsed({
 }
 
 /**
- * "Recording on (audio + board)" / "Not recorded (opted out)". `on` is the
- * live state when Pencil has reported one, else the policy; `policyOn` is the
- * policy itself, so a mismatch reads as a warning.
+ * The header's recording chip. `on` = what is happening (the live
+ * `recording_status_change` state when Pencil has reported one, else
+ * `expected`); `expected` = recording is switched on for this student;
+ * `optedOut` = the family opted out. Recording while opted out reads as a
+ * warning; "expected but stopped" as a caution; otherwise "Not recorded".
  */
-function RecordingChip({ on, policyOn }: { on: boolean; policyOn: boolean }) {
+function RecordingChip({ on, expected, optedOut }: { on: boolean; expected: boolean; optedOut: boolean }) {
   if (on) {
     return (
-      <Badge variant={policyOn ? "outline" : "destructive"} className="gap-1.5 text-[10px]">
+      <Badge variant={optedOut ? "destructive" : "outline"} className="gap-1.5 text-[10px]">
         <span className="relative flex h-2 w-2">
           <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-destructive opacity-60" />
           <span className="relative inline-flex h-2 w-2 rounded-full bg-destructive" />
@@ -491,11 +508,13 @@ function RecordingChip({ on, policyOn }: { on: boolean; policyOn: boolean }) {
       </Badge>
     );
   }
+  const label = optedOut ? "Not recorded (opted out)" : expected ? "Recording off" : "Not recorded";
+  const short = optedOut || !expected ? "Not rec." : "Off";
   return (
-    <Badge variant={policyOn ? "warning" : "secondary"} className="gap-1 text-[10px]">
+    <Badge variant={expected ? "warning" : "secondary"} className="gap-1 text-[10px]">
       <CircleOff className="h-3 w-3" />
-      <span className="hidden sm:inline">{policyOn ? "Recording off" : "Not recorded (opted out)"}</span>
-      <span className="sm:hidden">{policyOn ? "Off" : "Not rec."}</span>
+      <span className="hidden sm:inline">{label}</span>
+      <span className="sm:hidden">{short}</span>
     </Badge>
   );
 }

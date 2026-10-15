@@ -14,7 +14,7 @@ import { pencilLive } from "@/lib/pencil/client";
 import { canEndLesson, canJoinLesson } from "@/lib/pencil/authz";
 import { mockPencilUserId } from "@/lib/pencil/mock";
 import { getPencilUser, getSpaceForPair, isRecordingOptedOut, recordingPolicyBlocksJoin } from "@/lib/pencil/provision";
-import { lessonFallbackForced, resolveFallbackUrl } from "@/lib/pencil/urls";
+import { lessonFallbackForced, recordingActive, resolveFallbackUrl } from "@/lib/pencil/urls";
 import type { SessionView } from "@/lib/types";
 
 /**
@@ -40,6 +40,8 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
   const backHref = homePathForRole(profile.role);
   const state = await loadRoomState(session);
   const teacherName = session.teacher?.display_name ?? "Teacher (unassigned)";
+  // "Recorded" only once institution recording is actually on (Phase 2) — never from the policy alone.
+  const recordingOn = recordingActive() && !state.optedOut;
 
   // Parents: status card only — no Pencil user, no seat in the room (owner decision 3).
   if (profile.role === "parent") {
@@ -51,7 +53,8 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
         status={session.status}
         actualStartISO={session.actual_start}
         actualEndISO={session.actual_end}
-        recordingOn={!state.optedOut}
+        recordingOn={recordingOn}
+        optedOut={state.optedOut}
         backHref={backHref}
       />
     );
@@ -73,7 +76,8 @@ export default async function LessonPage({ params }: { params: { sessionId: stri
       peerName={hostView ? session.student.display_name : teacherName}
       peerAvatarUrl={peer?.avatar_url ?? null}
       studentPencilUserId={state.studentPencilUserId}
-      recordingOn={!state.optedOut}
+      recordingOn={recordingOn}
+      optedOut={state.optedOut}
       optOutUnconfirmed={state.policyUnconfirmed}
       roomUnavailable={state.unavailable}
       mock={!pencilLive}

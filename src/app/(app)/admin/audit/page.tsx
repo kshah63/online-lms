@@ -42,6 +42,7 @@ const ACTION_TONE: Record<string, "default" | "secondary" | "success" | "warning
   "account.reject": "destructive",
   "enrollment.approved": "success",
   "enrollment.denied": "destructive",
+  "session.assign_teacher": "default",
   // Pencil Spaces (0017). `pencil.join` details carry {spaceId, purpose, mode} — never the join URL.
   "pencil.user.create": "default",
   "pencil.space.create": "default",

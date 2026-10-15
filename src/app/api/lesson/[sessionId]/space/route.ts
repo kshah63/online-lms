@@ -1,5 +1,4 @@
 import { NextResponse } from "next/server";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { getChildren } from "@/lib/data/people";
@@ -7,23 +6,31 @@ import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import { logAudit } from "@/lib/audit";
 import { captureError } from "@/lib/observability";
+import { raiseAdminFollowup } from "@/lib/followups";
 import { LIMITS, rateLimit } from "@/lib/rate-limit";
 import { PencilError, pencilLive } from "@/lib/pencil/client";
 import { canEnterSpace, canJoinLesson } from "@/lib/pencil/authz";
 import {
-  applyRecordingPolicy,
   ensurePencilUser,
+  ensureRecordingPolicy,
   ensureSpace,
   getPencilUser,
   isRecordingOptedOut,
   recordingPolicyBlocksJoin,
   syncHosts,
 } from "@/lib/pencil/provision";
-import { lessonFallbackForced, mintJoinUrl, resolveFallbackUrl } from "@/lib/pencil/urls";
+import { lessonFallbackForced, mintJoinUrl, recordingActive, resolveFallbackUrl } from "@/lib/pencil/urls";
 import { mockSpaceJoin } from "@/lib/pencil/mock";
 import type { JoinMode, JoinPurpose } from "@/lib/pencil/types";
 import type { SpaceJoinResponse } from "@/components/lesson/space-stage";
-import type { SessionView } from "@/lib/types";
+
+/**
+ * A cold pair provisions sequentially (users, recovery lookup, create — 15 s
+ * timeouts each) and a request that lost the provisioning race waits up to
+ * 20 s for the winner; give the function room for that instead of the
+ * platform default.
+ */
+export const maxDuration = 60;
 
 /**
  * POST /api/lesson/[sessionId]/space — mint a Pencil join URL for the viewer.
@@ -38,8 +45,9 @@ import type { SessionView } from "@/lib/types";
  * page), then `canEnterSpace`: parents get the status card and never a Pencil
  * user. Provisioning (user / Space / hosts / recording policy) only runs when
  * rows are missing or stale; a warm join is exactly one Pencil call
- * (`authorize`, 5 s, no retry). The returned `url` is a credential valid for
- * 3600 s: it is returned as JSON only — never rendered, logged or persisted.
+ * (`authorize`, 5 s, no retry), plus one `GET /spaces/{id}` read-back for an
+ * opted-out student. The returned `url` is a credential valid for 3600 s: it
+ * is returned as JSON only — never rendered, logged or persisted.
  */
 export async function POST(req: Request, { params }: { params: { sessionId: string } }) {
   const profile = await getCurrentProfile();
@@ -87,7 +95,7 @@ export async function POST(req: Request, { params }: { params: { sessionId: stri
       reason: isDemoMode ? "demo" : "unconfigured",
       fallbackJoinUrl: fallbackUrl,
     });
-    return json({ ...mock, fallbackUrl });
+    return json({ ...mock, fallbackUrl, recordingOn: recordingActive() && !mock.optedOut });
   }
 
   const admin = createSupabaseAdminClient();
@@ -117,17 +125,30 @@ export async function POST(req: Request, { params }: { params: { sessionId: stri
       actor: profile,
     });
 
-    // Stale hosts (reassignment landed before the Space existed, or sync was skipped).
-    if (session.teacher_id && !space.host_profile_ids.includes(session.teacher_id)) {
-      space = await syncHosts(admin, space, [session.teacher_id], { actor: profile });
-    }
+    // Seats: the assigned teacher (reassignment landed before the Space existed,
+    // or the sync was skipped) and an ADMIN viewer (cover / observation — a
+    // private Space admits invited users only, and our admins are API
+    // 'Teacher' users, not Pencil institution admins). Never "the caller" in
+    // general: a teacher only gets here as session.teacher_id (canJoinLesson).
+    const seats = [session.teacher_id, profile.role === "admin" ? profile.id : null].filter(
+      (id): id is string => id !== null && !space.host_profile_ids.includes(id),
+    );
+    if (seats.length > 0) space = await syncHosts(admin, space, seats, { actor: profile });
 
-    // Opt-out not yet confirmed on the Space: PATCH + read-back now, before anyone enters.
-    if (optedOut && !space.recording_disabled) {
-      ({ space } = await applyRecordingPolicy(admin, space, true, { actor: profile }));
-    }
+    // Recording setting must match the policy before anyone enters: re-apply
+    // when the cached flag disagrees (either direction), read back once for an
+    // opted-out student to catch drift at Pencil.
+    ({ space } = await ensureRecordingPolicy(admin, space, optedOut, { actor: profile }));
     if (recordingPolicyBlocksJoin(optedOut, space)) {
-      await raiseRecordingPolicyFollowup(admin, session);
+      await raiseAdminFollowup(
+        admin,
+        {
+          studentId: session.student_id,
+          sessionId: session.id,
+          reason: "[Recording policy] Not applied: an opted-out student could not join — re-apply the opt-out on their Space",
+        },
+        "lesson space route: recording policy follow-up",
+      );
       await logAudit(profile, "pencil.join.blocked", { type: "session", id: session.id }, {
         spaceId: space.pencil_space_id,
         reason: "recording_policy",
@@ -159,7 +180,7 @@ export async function POST(req: Request, { params }: { params: { sessionId: stri
       expiresInSeconds: minted.expiresInSeconds,
       spaceId: space.pencil_space_id,
       studentPencilUserId: studentUser?.pencil_user_id ?? null,
-      recordingOn: !optedOut,
+      recordingOn: recordingActive() && !optedOut,
       optedOut,
       fallbackUrl,
     });
@@ -186,39 +207,5 @@ async function parseBody(req: Request): Promise<{ purpose?: unknown; mode?: unkn
     return parsed && typeof parsed === "object" ? (parsed as { purpose?: unknown; mode?: unknown }) : {};
   } catch {
     return {};
-  }
-}
-
-/**
- * Admin follow-up for the recording-policy hard stop. Uses the existing
- * `report_flag` type with the same "[Recording policy]" prefix as
- * setRecordingOptOut (dedicated types arrive with 0018) and never duplicates
- * an open/snoozed item. Best-effort: the join is already refused; a follow-up
- * failure must not turn into a 500.
- */
-async function raiseRecordingPolicyFollowup(admin: SupabaseClient, session: SessionView): Promise<void> {
-  const reason = "[Recording policy] Not applied: an opted-out student could not join — re-apply the opt-out on their Space";
-  try {
-    const { data: existing } = await admin
-      .from("followups")
-      .select("id")
-      .eq("student_id", session.student_id)
-      .eq("type", "report_flag")
-      .eq("reason", reason)
-      .in("status", ["open", "snoozed"])
-      .limit(1)
-      .maybeSingle();
-    if (existing) return;
-    const { error } = await admin.from("followups").insert({
-      student_id: session.student_id,
-      session_id: session.id,
-      type: "report_flag",
-      status: "open",
-      priority: "high",
-      reason,
-    });
-    if (error) throw error;
-  } catch (err) {
-    captureError(err, { where: "lesson space route: recording policy follow-up", session_id: session.id });
   }
 }

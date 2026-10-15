@@ -1,6 +1,7 @@
 import "server-only";
 import type { z } from "zod";
 import { isDemoMode } from "@/lib/env";
+import { scrubString } from "@/lib/sentry-scrub";
 import {
   PencilApiSpaceListSchema,
   PencilApiSpaceSchema,
@@ -62,10 +63,24 @@ export class PencilError extends Error {
     super(`Pencil ${status}${error_code ? ` ${error_code}` : ""}${err ? `: ${err}` : ""}`);
   }
 
-  /** 429 / 5xx / timeout / network — retryable, and a reason to offer the fallback link. */
+  /**
+   * Worth a Retry, and a reason to offer the fallback link: 429 / 5xx /
+   * timeout / network, a 2xx whose body we could not read (INVALID_RESPONSE —
+   * a truncated or HTML body is usually a proxy hiccup), and another request
+   * still provisioning the same Space (PROVISIONING_IN_PROGRESS).
+   */
   get transient(): boolean {
-    return this.status === 0 ? this.error_code === "TIMEOUT" || this.error_code === "NETWORK" : this.status === 429 || this.status >= 500;
+    if (this.error_code && TRANSIENT_CODES.has(this.error_code)) return true;
+    return this.status === 429 || this.status >= 500;
   }
+}
+
+const TRANSIENT_CODES: ReadonlySet<string> = new Set(["TIMEOUT", "NETWORK", "INVALID_RESPONSE", "PROVISIONING_IN_PROGRESS"]);
+
+/** First 200 chars of a non-JSON error body (HTML stripped, scrubbed) so Sentry keeps a hint. */
+function errorTextFrom(text: string): string | undefined {
+  const plain = text.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  return plain ? scrubString(plain).slice(0, 200) : undefined;
 }
 
 export interface PencilFetchOptions {
@@ -142,24 +157,29 @@ export async function pencilFetch<T>(
 
     const text = await res.text();
     let body: unknown = {};
+    let unparsable = false;
     if (text.trim()) {
       try {
         body = JSON.parse(text);
       } catch {
-        body = {};
+        unparsable = true;
       }
     }
 
     if (!res.ok) {
       const parsed = PencilErrorBodySchema.safeParse(body);
       const e = parsed.success ? parsed.data : {};
-      throw new PencilError(res.status, e.err ?? e.error ?? res.statusText, e.error_code);
+      const fallbackText = (unparsable ? errorTextFrom(text) : undefined) ?? (res.statusText || undefined);
+      throw new PencilError(res.status, e.err ?? e.error ?? fallbackText, e.error_code);
     }
 
+    // A non-JSON 2xx body is read as {} — fine for the `{}` endpoints (settings),
+    // INVALID_RESPONSE (transient) for anything that needs fields.
     const parsed = schema.safeParse(body);
     if (!parsed.success) {
       const where = parsed.error.issues.map((i) => i.path.join(".") || "(root)").slice(0, 5).join(", ");
-      throw new PencilError(res.status, `Unexpected response shape at ${where}`, "INVALID_RESPONSE");
+      const hint = unparsable ? ` (body was not JSON: ${errorTextFrom(text) ?? "empty"})` : "";
+      throw new PencilError(res.status, `Unexpected response shape at ${where}${hint}`, "INVALID_RESPONSE");
     }
     return parsed.data;
   }

@@ -41,6 +41,7 @@ export default async function ReportEditorPage({ params }: { params: { sessionId
         studentName={session.student.display_name}
         course={session.course.name}
         initial={report}
+        analysisStatus={session.analysis_status}
       />
     </div>
   );

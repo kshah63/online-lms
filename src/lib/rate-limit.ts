@@ -1,7 +1,6 @@
 import "server-only";
 import { headers } from "next/headers";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
-import { createSupabaseServerClient } from "@/lib/supabase/server";
 import { isDemoMode } from "@/lib/env";
 
 /**
@@ -12,6 +11,11 @@ import { isDemoMode } from "@/lib/env";
  * Fails OPEN: if the limiter itself errors (e.g. the migration isn't applied
  * yet) we let the call through rather than break a legitimate user. The goal is
  * to cap runaway cost/abuse, not to be a security boundary on top of RLS.
+ *
+ * Service role ONLY: `rl_check` takes the bucket and the limits from its
+ * caller, so 0017 revokes it from anon/authenticated (otherwise anyone with
+ * the public anon key could exhaust `pencil:join:<someone>` and lock them out
+ * of their lessons). Without SUPABASE_SERVICE_ROLE_KEY nothing is limited.
  */
 export async function rateLimit(
   bucket: string,
@@ -20,10 +24,11 @@ export async function rateLimit(
 ): Promise<boolean> {
   if (isDemoMode) return true; // no backend to count against
 
-  // Prefer the service-role client (bypasses RLS cleanly); fall back to the
-  // request-scoped client calling the SECURITY DEFINER function.
-  const client = createSupabaseAdminClient() ?? createSupabaseServerClient();
-  if (!client) return true;
+  const client = createSupabaseAdminClient();
+  if (!client) {
+    warnNoServiceRoleOnce();
+    return true;
+  }
 
   const { data, error } = await client.rpc("rl_check", {
     p_bucket: bucket,
@@ -36,6 +41,13 @@ export async function rateLimit(
     return true; // fail open
   }
   return data !== false;
+}
+
+let warnedNoServiceRole = false;
+function warnNoServiceRoleOnce() {
+  if (warnedNoServiceRole) return;
+  warnedNoServiceRole = true;
+  console.warn("rateLimit: SUPABASE_SERVICE_ROLE_KEY is not set — rate limits are not enforced.");
 }
 
 /** Best-effort client IP for throttling unauthenticated endpoints. */

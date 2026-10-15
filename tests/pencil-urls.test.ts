@@ -7,6 +7,7 @@ import {
   masterFallbackUrl,
   mintJoinUrl,
   PENCIL_ALLOWED_ORIGINS,
+  recordingActive,
   resolveFallbackUrl,
   spaceUrlFor,
 } from "@/lib/pencil/urls";
@@ -173,5 +174,18 @@ describe("lessonFallbackForced", () => {
     expect(lessonFallbackForced()).toBe(true);
     vi.stubEnv("LESSON_FALLBACK_MODE", "true");
     expect(lessonFallbackForced()).toBe(true);
+  });
+});
+
+describe("recordingActive (PENCIL_RECORDING_ENABLED)", () => {
+  it("demo mode (this suite) shows the full product unless switched off explicitly", () => {
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "");
+    expect(recordingActive()).toBe(true);
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "off");
+    expect(recordingActive()).toBe(false);
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "on");
+    expect(recordingActive()).toBe(true);
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "TRUE");
+    expect(recordingActive()).toBe(true);
   });
 });

@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { useFormStatus } from "react-dom";
+import { useFormState, useFormStatus } from "react-dom";
 import { Loader2, UserRoundPlus } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -11,8 +11,10 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { assignTeacher } from "@/lib/actions/sessions";
+import { assignTeacher, type AssignTeacherResult } from "@/lib/actions/sessions";
 import type { Profile } from "@/lib/types";
+
+const initial: AssignTeacherResult = { ok: false, message: "" };
 
 export function AssignControl({
   sessionId,
@@ -24,9 +26,12 @@ export function AssignControl({
   currentTeacherId: string | null;
 }) {
   const [value, setValue] = useState<string>(currentTeacherId ?? "");
+  // Refusals (lesson already started / over) and Pencil host-sync warnings come back here.
+  const [state, formAction] = useFormState((_: AssignTeacherResult, fd: FormData) => assignTeacher(fd), initial);
+  const note = !state.ok ? state.message : (state.warning ?? null);
 
   return (
-    <form action={assignTeacher} className="flex items-center gap-2">
+    <form action={formAction} className="flex flex-wrap items-center gap-2">
       <input type="hidden" name="session_id" value={sessionId} />
       <input type="hidden" name="teacher_id" value={value} />
       <Select value={value} onValueChange={setValue}>
@@ -42,6 +47,9 @@ export function AssignControl({
         </SelectContent>
       </Select>
       <AssignButton disabled={!value || value === currentTeacherId} reassign={!!currentTeacherId} />
+      {note && (
+        <span className={state.ok ? "max-w-xs text-xs text-warning-foreground" : "max-w-xs text-xs text-destructive"}>{note}</span>
+      )}
     </form>
   );
 }

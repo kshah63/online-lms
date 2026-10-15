@@ -3,6 +3,7 @@ import { CalendarDays, ClipboardCheck, Disc3, FileText, MicOff, Radio, Video } f
 import { DateTime } from "luxon";
 import { PageHeader, StatCard } from "@/components/page-header";
 import { ParentStatus, SessionCard, type RecordingIndicator } from "@/components/session-card";
+import { recordingActive } from "@/lib/pencil/urls";
 import { EmptyState } from "@/components/empty-state";
 import { HomeworkList } from "@/components/homework/homework-list";
 import { Avatar } from "@/components/ui/avatar";
@@ -37,11 +38,14 @@ export default async function HomePage() {
   ]);
   const openHomework = homework.filter((h) => h.status !== "completed").slice(0, 4);
 
-  // Recording policy (opt-out) for the viewer's own student(s) → "Recorded /
-  // Not recorded" indicator. Null = unknown (no service role): show nothing.
+  // Recording indicator for the viewer's own student(s): "Not recorded" for an
+  // opted-out child; "Recorded (audio + board)" only once institution
+  // recording is actually on (PENCIL_RECORDING_ENABLED, Phase 2) — never from
+  // the policy alone. Null = unknown (no service role): show nothing.
+  const recordingIsOn = recordingActive();
   const optOuts = await getRecordingOptOutSet(children.map((c) => c.id)).catch(() => null);
   const recordingFor = (studentId: string): RecordingIndicator | undefined =>
-    optOuts === null ? undefined : optOuts.has(studentId) ? "off" : "on";
+    optOuts === null ? undefined : optOuts.has(studentId) ? "off" : recordingIsOn ? "on" : undefined;
 
   // Bookable combos: each student (self or child) + the courses they're enrolled in.
   const bookOptions = await Promise.all(

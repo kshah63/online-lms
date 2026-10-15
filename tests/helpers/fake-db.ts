@@ -5,7 +5,7 @@ export type Row = Record<string, unknown>;
 /**
  * Tiny in-memory PostgREST look-alike for unit tests. Supports exactly the
  * query shapes the Pencil modules, the Space route and the admin actions use:
- * from().select / insert / upsert / update / delete, the eq / neq / in / is /
+ * from().select / insert / upsert (incl. ignoreDuplicates) / update / delete, the eq / neq / in / is /
  * gte / gt / lte / lt filters, order / limit, maybeSingle / single, and
  * `await` (thenable) for list results and `{count, head}` selects. Extend it
  * here rather than reaching for a real database.
@@ -38,6 +38,7 @@ export class FakeQuery {
   private op: Op = "select";
   private payload: Row | Row[] | null = null;
   private onConflict: string[] = [];
+  private ignoreDuplicates = false;
   private count = false;
   private head = false;
   private orderBy: { key: string; ascending: boolean } | null = null;
@@ -53,10 +54,11 @@ export class FakeQuery {
     return this;
   }
   insert(rows: Row | Row[]) { this.op = "insert"; this.payload = rows; return this; }
-  upsert(rows: Row | Row[], opts?: { onConflict?: string }) {
+  upsert(rows: Row | Row[], opts?: { onConflict?: string; ignoreDuplicates?: boolean }) {
     this.op = "upsert";
     this.payload = rows;
     this.onConflict = (opts?.onConflict ?? "").split(",").map((s) => s.trim()).filter(Boolean);
+    this.ignoreDuplicates = Boolean(opts?.ignoreDuplicates);
     return this;
   }
   update(patch: Row) { this.op = "update"; this.payload = patch; return this; }
@@ -65,7 +67,8 @@ export class FakeQuery {
   eq(k: string, v: unknown) { this.filters.push((r) => r[k] === v); return this; }
   neq(k: string, v: unknown) { this.filters.push((r) => r[k] !== v); return this; }
   in(k: string, vs: unknown[]) { this.filters.push((r) => vs.includes(r[k])); return this; }
-  is(k: string, v: unknown) { this.filters.push((r) => r[k] === v); return this; }
+  /** A column missing from a fixture row reads as NULL, as it would in Postgres. */
+  is(k: string, v: unknown) { this.filters.push((r) => (r[k] ?? null) === v); return this; }
   gte(k: string, v: unknown) { this.filters.push((r) => compare(r[k], v) >= 0); return this; }
   gt(k: string, v: unknown) { this.filters.push((r) => compare(r[k], v) > 0); return this; }
   lte(k: string, v: unknown) { this.filters.push((r) => compare(r[k], v) <= 0); return this; }
@@ -92,19 +95,24 @@ export class FakeQuery {
         return inserted;
       }
       case "upsert": {
+        // `ignoreDuplicates` = `on conflict do nothing`: only inserted rows come back.
         const list = Array.isArray(this.payload) ? this.payload : [this.payload!];
-        return list.map((incoming) => {
+        const out: Row[] = [];
+        for (const incoming of list) {
           const existing = this.rows.find(
             (r) => this.onConflict.length > 0 && this.onConflict.every((k) => r[k] === incoming[k]),
           );
           if (existing) {
+            if (this.ignoreDuplicates) continue;
             Object.assign(existing, incoming);
-            return existing;
+            out.push(existing);
+            continue;
           }
           const row = { id: `row-${this.rows.length + 1}`, ...incoming };
           this.rows.push(row);
-          return row;
-        });
+          out.push(row);
+        }
+        return out;
       }
       case "update": {
         const hit = this.rows.filter(match);

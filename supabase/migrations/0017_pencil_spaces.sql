@@ -43,6 +43,42 @@ create trigger on_profile_guard before update on public.profiles
 --     as the admin's per-lesson override. Nothing is stored per teacher, so
 --     profiles gains no column here.
 
+-- 1c. Close the signup half of the same hole: 0002's handle_new_user() copied
+--     `role` from raw_user_meta_data, which whoever calls GoTrue /signup with
+--     the public anon key controls (`options.data.role = 'admin'`). Every new
+--     auth user now starts as a 'student'; the real role is set by the service
+--     role right after admin.auth.admin.createUser (src/lib/actions/accounts.ts),
+--     which guard_profile_update allows because current_profile_role() is null
+--     there. Self-signup must ALSO be disabled in Auth settings (README checklist).
+create or replace function public.handle_new_user()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+begin
+  insert into public.profiles (id, role, display_name, email, timezone)
+  values (
+    new.id,
+    'student',                                   -- never from user-controlled metadata
+    coalesce(new.raw_user_meta_data->>'display_name', split_part(new.email, '@', 1)),
+    new.email,
+    coalesce(new.raw_user_meta_data->>'timezone', 'UTC')
+  )
+  on conflict (id) do nothing;
+  return new;
+end;
+$$;
+
+-- 1d. rl_check (0011) takes the bucket name AND the limits from its caller and
+--     was granted to anon/authenticated, so anyone holding the public anon key
+--     could exhaust another user's bucket (e.g. `pencil:join:<teacher id>` with
+--     p_limit 1) and lock them out of their lessons. The app only calls it with
+--     the service role (src/lib/rate-limit.ts), so take it away from everyone
+--     else — including PUBLIC, which functions get EXECUTE from by default.
+revoke execute on function public.rl_check(text, int, int) from public, anon, authenticated;
+grant execute on function public.rl_check(text, int, int) to service_role;
+
 -- ---------------------------------------------------------------------------
 -- 2. Pencil identity: service-role writes, admin-only reads (staff Pencil ids
 --    are not public). externalId on the Pencil side = profiles.id.
@@ -105,6 +141,12 @@ create policy pencil_spaces_admin_read on public.pencil_spaces
 drop trigger if exists on_pencil_spaces_touch on public.pencil_spaces;
 create trigger on_pencil_spaces_touch before update on public.pencil_spaces
   for each row execute function public.touch_updated_at();
+-- Per-pair provisioning lease: the first lesson of a course is exactly when
+-- teacher and student POST /space at the same moment. ensureSpace() claims the
+-- row (placeholder insert, or compare-and-swap on this column) before any
+-- Pencil call; the loser waits for the winner's row instead of creating
+-- duplicate users/Spaces. A crashed winner's lease simply expires.
+alter table public.pencil_spaces add column if not exists provision_lock_until timestamptz;
 
 -- ---------------------------------------------------------------------------
 -- 5. Sessions: Space actually used, Pencil session id (NOT unique: a forgotten
@@ -117,6 +159,47 @@ alter table public.sessions add column if not exists analysis_status   text not 
 alter table public.sessions add column if not exists fallback_join_url text;
 create index if not exists sessions_pencil_session_idx on public.sessions (pencil_session_id) where pencil_session_id is not null;
 -- NOTE: on_session_attach_notebook stays until 0019 (homework canvas keeps working through Phases 1-2)
+
+-- 5b. Column guard for the teacher's own-session UPDATE (0003
+--     sessions_teacher_update pins only teacher_id). Phase 1 makes student_id /
+--     course_id load-bearing for Pencil access: a teacher re-pointing their
+--     session at another student would pass canJoinLesson/canHostSpace and get
+--     a host seat in that child's persistent Space. A teacher (any non-admin
+--     JWT) may only touch what the lesson room writes: the clock
+--     (actual_start/actual_end), the agenda, status along the live path
+--     (scheduled|confirmed|in_progress -> in_progress|completed|no_show — never
+--     back, so the credit trigger cannot be replayed), and analysis_status
+--     'none' -> 'no_recording' (End during the Zoom fallback). Everything else,
+--     including columns added later, is admin / service-role only.
+create or replace function public.guard_session_update() returns trigger
+language plpgsql security definer set search_path = public as $$
+declare
+  r       text := public.current_profile_role();   -- null for service role / migrations / seed
+  allowed text[] := array['status','actual_start','actual_end','agenda','analysis_status'];
+begin
+  if r is null or r = 'admin' then
+    return new;
+  end if;
+  if (to_jsonb(new) - allowed) is distinct from (to_jsonb(old) - allowed) then
+    raise exception 'only admins may change this lesson''s student, course, teacher, time or links'
+      using errcode = '42501';
+  end if;
+  if new.status is distinct from old.status
+     and not (old.status in ('scheduled','confirmed','in_progress')
+              and new.status in ('in_progress','completed','no_show')) then
+    raise exception 'lesson status cannot move from % to %', old.status, new.status
+      using errcode = '42501';
+  end if;
+  if new.analysis_status is distinct from old.analysis_status
+     and not (old.analysis_status = 'none' and new.analysis_status = 'no_recording') then
+    raise exception 'analysis_status is owned by the post-session pipeline'
+      using errcode = '42501';
+  end if;
+  return new;
+end $$;
+drop trigger if exists on_session_guard on public.sessions;
+create trigger on_session_guard before update on public.sessions
+  for each row execute function public.guard_session_update();
 
 -- ---------------------------------------------------------------------------
 -- 6. Per-Pencil-session state machine (driven by webhooks/jobs from Phase 2;
@@ -168,7 +251,7 @@ create table if not exists public.pencil_webhook_events (
   delivery_key      text not null unique,   -- `${_type}:${eventType}:${sessionId|recordingId|eventId}:${timestamp}`
   event_group       text,
   event_type        text not null,
-  space_id          text,
+  pencil_space_id   text,                   -- Pencil's id (our uuid FK is always `space_id`)
   pencil_session_id text,
   recording_id      text,
   payload           jsonb not null,         -- never contains the Authorization header
@@ -177,6 +260,14 @@ create table if not exists public.pencil_webhook_events (
   received_at       timestamptz not null default now(),
   processed_at      timestamptz
 );
+-- An earlier draft of this migration named the column `space_id`; keep re-runs convergent.
+do $$
+begin
+  if exists (select 1 from information_schema.columns
+             where table_schema = 'public' and table_name = 'pencil_webhook_events' and column_name = 'space_id') then
+    alter table public.pencil_webhook_events rename column space_id to pencil_space_id;
+  end if;
+end $$;
 alter table public.pencil_webhook_events enable row level security;
 drop policy if exists pencil_webhook_events_admin_read on public.pencil_webhook_events;
 create policy pencil_webhook_events_admin_read on public.pencil_webhook_events

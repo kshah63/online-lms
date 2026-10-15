@@ -8,6 +8,7 @@ import { AddPersonDialog } from "@/components/admin/add-person-dialog";
 import { AccountRequests } from "@/components/admin/account-requests";
 import { RecordingToggle } from "@/components/admin/recording-toggle";
 import { requireRole } from "@/lib/data/auth";
+import { recordingActive } from "@/lib/pencil/urls";
 import {
   getPendingAccountRequests,
   listParents,
@@ -54,9 +55,11 @@ export default async function AdminPeoplePage() {
                 <Users className="h-4 w-4" /> Students
               </CardTitle>
               <CardDescription>
-                Lessons are recorded (audio + board) by default. Opting a student out pushes &ldquo;do not
-                record&rdquo; to every Pencil Space they have and is confirmed by read-back; no transcript,
-                summary or coaching exists for their lessons.
+                {recordingActive()
+                  ? "Lessons are recorded (audio + board) by default."
+                  : "Recording is not switched on yet (Phase 2) — no lesson is recorded today. Opt-outs set now already hold when it starts."}{" "}
+                Opting a student out pushes &ldquo;do not record&rdquo; to every Pencil Space they have and is
+                confirmed by read-back; no transcript, summary or coaching exists for their lessons.
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-y">

@@ -270,7 +270,8 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
       expiresInSeconds: 3600,
       spaceId: SPACE_ID,
       studentPencilUserId: "u-student",
-      recordingOn: true,
+      // Phase 1: institution recording is not switched on yet, so nobody is told "recorded".
+      recordingOn: false,
       optedOut: false,
       fallbackUrl: MASTER_ZOOM,
     });
@@ -418,6 +419,93 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
     expect(vi.mocked(audit.logAudit).mock.calls.map((c) => c[1])).toEqual(["pencil.space.hosts_changed", "pencil.join"]);
   });
 
+  it("recordingOn follows PENCIL_RECORDING_ENABLED (Phase 2 switch) and the opt-out", async () => {
+    seedWarmPair(db);
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "on");
+    try {
+      pencilServer({ "GET users/u-teacher/authorize": () => json({ url: TOKEN_URL }) });
+      const res = await post(route);
+      expect(res.body).toMatchObject({ configured: true, recordingOn: true, optedOut: false });
+    } finally {
+      vi.stubEnv("PENCIL_RECORDING_ENABLED", "");
+    }
+  });
+
+  it("an admin opening a warm Space gets a host seat first (private Space: invited users only), then the url", async () => {
+    seedWarmPair(db);
+    db.tables.pencil_users.push({ profile_id: ADMIN, pencil_user_id: "u-admin", pencil_email: null, pencil_name: "Admin Office", created_at: "2026-10-01T00:00:00.000Z" });
+    state.profile = adminProfile;
+    const { calls } = pencilServer({
+      [`PATCH spaces/${SPACE_ID}/updateUsers`]: (c) => {
+        expect(c.body).toEqual({ addUsers: [{ userId: "u-admin", role: "host" }], notifyInvitees: false });
+        return json(pencilSpace({ hosts: [{ userId: "u-teacher" }, { userId: "u-admin" }] }));
+      },
+      "GET users/u-admin/authorize": () => json({ url: TOKEN_URL }),
+    });
+    const res = await post(route);
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => `${c.method} ${c.path.split("?")[0]}`)).toEqual([
+      `PATCH spaces/${SPACE_ID}/updateUsers`,
+      "GET users/u-admin/authorize",
+    ]);
+    expect(db.tables.pencil_spaces[0]!.host_profile_ids).toEqual([TEACHER, ADMIN]);
+    expect(vi.mocked(audit.logAudit).mock.calls.map((c) => c[1])).toEqual(["pencil.space.hosts_changed", "pencil.join"]);
+
+    // Seated now: the next admin join is one call again.
+    vi.unstubAllGlobals();
+    const second = pencilServer({ "GET users/u-admin/authorize": () => json({ url: TOKEN_URL }) });
+    expect((await post(route)).status).toBe(200);
+    expect(second.calls).toHaveLength(1);
+  });
+
+  it("opted-out student with a confirmed Space: one read-back GET, then the url", async () => {
+    seedWarmPair(db);
+    db.tables.pencil_spaces = [activeSpaceRow({ recording_disabled: true })];
+    db.tables.recording_opt_outs = [{ student_id: STUDENT, set_by: ADMIN, set_at: "2026-10-01T00:00:00.000Z", note: null }];
+    const { calls } = pencilServer({
+      [`GET spaces/${SPACE_ID}`]: () => json(pencilSpace({ settings: { disableAlwaysOnRecording: true } })),
+      "GET users/u-teacher/authorize": () => json({ url: TOKEN_URL }),
+    });
+    const res = await post(route);
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ configured: true, recordingOn: false, optedOut: true });
+    expect(calls.map((c) => `${c.method} ${c.path.split("?")[0]}`)).toEqual([`GET spaces/${SPACE_ID}`, "GET users/u-teacher/authorize"]);
+  });
+
+  it("drift: the opt-out was switched off in Pencil's UI → re-applied before minting, hard stop if it won't stick", async () => {
+    seedWarmPair(db);
+    db.tables.pencil_spaces = [activeSpaceRow({ recording_disabled: true })];
+    db.tables.recording_opt_outs = [{ student_id: STUDENT, set_by: ADMIN, set_at: "2026-10-01T00:00:00.000Z", note: null }];
+    const { calls } = pencilServer({
+      [`GET spaces/${SPACE_ID}`]: (_c, n) => json(pencilSpace({ settings: { disableAlwaysOnRecording: n > 1 } })),
+      [`PATCH spaces/${SPACE_ID}/settings/`]: () => json({}),
+      "GET users/u-teacher/authorize": () => json({ url: TOKEN_URL }),
+    });
+    let res = await post(route);
+    expect(res.status).toBe(200);
+    expect(calls.map((c) => c.method + " " + c.path.split("?")[0])).toEqual([
+      `GET spaces/${SPACE_ID}`,
+      `PATCH spaces/${SPACE_ID}/settings/`,
+      `GET spaces/${SPACE_ID}`,
+      "GET users/u-teacher/authorize",
+    ]);
+    expect(db.tables.pencil_spaces[0]!.recording_disabled).toBe(true);
+
+    // Same drift, but Pencil keeps refusing: nothing is minted.
+    vi.unstubAllGlobals();
+    const stuck = pencilServer({
+      [`GET spaces/${SPACE_ID}`]: () => json(pencilSpace({ settings: { disableAlwaysOnRecording: false } })),
+      [`PATCH spaces/${SPACE_ID}/settings/`]: () => json({}),
+      "GET users/u-teacher/authorize": () => json({ url: TOKEN_URL }),
+    });
+    res = await post(route);
+    expect(res.status).toBe(409);
+    expect(res.body).toMatchObject({ blocked: "recording_policy" });
+    expect(authorizeOk(stuck.calls)).toHaveLength(0);
+    expect(db.tables.pencil_spaces[0]!.recording_disabled).toBe(false);
+    expect(recorded(audit, observability)).not.toContain(TOKEN);
+  });
+
   it("a Pencil failure answers 502 with the fallback link, transient for 5xx/timeout and not for 4xx", async () => {
     seedWarmPair(db);
     pencilServer({ "GET users/u-teacher/authorize": () => json({ err: "upstream", error_code: "UNAVAILABLE" }, 503) });
@@ -478,6 +566,7 @@ describe("POST /api/lesson/[id]/space — no Pencil key (mocked)", () => {
       studentPencilUserId: `mock-user-${STUDENT}`,
       teacherPencilUserId: `mock-user-${TEACHER}`,
       optedOut: false,
+      recordingOn: false,
       fallbackUrl: MASTER_ZOOM,
     });
     expect((res.body.space as Row).status).toBe("mock");

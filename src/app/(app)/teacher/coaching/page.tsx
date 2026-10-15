@@ -17,6 +17,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { ScoreBars, TrendBars } from "@/components/coaching/score-bars";
 import { cn } from "@/lib/utils";
 import { requireRole } from "@/lib/data/auth";
+import { recordingActive } from "@/lib/pencil/urls";
 import {
   analysisStatusLabel,
   avgScore,
@@ -41,7 +42,11 @@ export default async function TeacherCoachingPage() {
         <EmptyState
           icon={<Sparkles className="h-5 w-5" />}
           title="No coaching yet"
-          description="Every lesson is recorded and analyzed; strengths-first coaching appears here about 30–60 minutes after a lesson ends."
+          description={
+            recordingActive()
+              ? "Every lesson is recorded and analyzed; strengths-first coaching appears here about 30–60 minutes after a lesson ends."
+              : "Strengths-first coaching appears here once your lessons are analyzed."
+          }
         />
       </div>
     );

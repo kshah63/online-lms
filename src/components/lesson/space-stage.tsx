@@ -71,6 +71,8 @@ export interface SpaceJoinMock {
   studentPencilUserId: string;
   teacherPencilUserId: string | null;
   optedOut: boolean;
+  /** Recording is switched on (Phase 2+) and this student is not opted out. */
+  recordingOn: boolean;
   fallbackJoinUrl: string | null;
   fallbackUrl: string | null;
 }
@@ -122,6 +124,8 @@ const IFRAME_ALLOW =
   "clipboard-read; clipboard-write; display-capture; fullscreen; autoplay; camera; microphone; picture-in-picture; compute-pressure";
 
 const READY_TIMEOUT_MS = 15_000;
+
+const POPUP_BLOCKED = "Your browser blocked the new tab — allow pop-ups for this site and try again.";
 
 type Phase =
   | { kind: "booting" }
@@ -235,7 +239,7 @@ export function SpaceStage({
               teacherPencilUserId: data.teacherPencilUserId,
               peerJoined: false,
             },
-            info: { provider: "mock", studentPencilUserId: data.studentPencilUserId, recordingOn: !data.optedOut },
+            info: { provider: "mock", studentPencilUserId: data.studentPencilUserId, recordingOn: data.recordingOn },
           };
         case "recording_policy":
           return { kind: "phase", phase: { kind: "blocked" } };
@@ -252,7 +256,17 @@ export function SpaceStage({
             info: fallbackInfo,
           };
         case "rate_limited":
-          return { kind: "phase", phase: { kind: "error", message: data.error ?? "Too many join attempts — wait a few minutes.", retryable: true } };
+          // Same as an outage for the lesson in front of us: offer the backup link, and Retry later.
+          return {
+            kind: "phase",
+            phase: {
+              kind: "fallback",
+              url: data.fallbackUrl ?? fallbackUrl,
+              message: data.error ?? "Too many join attempts — wait a few minutes and try again.",
+              retryable: true,
+            },
+            info: fallbackInfo,
+          };
         case "ended":
           return { kind: "phase", phase: { kind: "error", message: data.error ?? "This lesson is over.", retryable: false } };
         default:
@@ -297,25 +311,31 @@ export function SpaceStage({
    * Redirect mode and the "Open in a new tab" rescue: open the tab inside the
    * user gesture (popup blockers), then point it at the freshly minted URL.
    * The new tab gets no `opener` — the Space can never reach back into our page.
+   * If the browser blocked the tab, nothing is minted (a credential nobody can
+   * use) and the caller keeps its current state instead of claiming success.
    */
   const openInNewTab = useCallback(
     async (purpose: JoinPurpose): Promise<{ ok: true } | { ok: false; message: string }> => {
       const popup = window.open("about:blank", "_blank");
-      if (popup) {
-        try {
-          popup.opener = null;
-        } catch {
-          /* cross-origin guard; ignore */
-        }
+      if (!popup) return { ok: false, message: POPUP_BLOCKED };
+      try {
+        popup.opener = null;
+      } catch {
+        /* cross-origin guard; ignore */
       }
       const result = await mint(purpose, "redirect");
       if (result.kind === "url") {
+        if (popup.closed) return { ok: false, message: "The new tab was closed before the classroom opened — try again." };
+        try {
+          popup.location.replace(result.url);
+        } catch {
+          popup.close();
+          return { ok: false, message: POPUP_BLOCKED };
+        }
         onJoinInfo(result.info);
-        if (popup && !popup.closed) popup.location.replace(result.url);
-        else window.open(result.url, "_blank", "noopener,noreferrer");
         return { ok: true };
       }
-      popup?.close();
+      popup.close();
       if (unmountedRef.current) return { ok: false, message: "" };
       if (result.info) onJoinInfo(result.info);
       if (result.phase.kind === "error" && result.phase.retryable) {

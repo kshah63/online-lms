@@ -12,10 +12,10 @@ import { logAudit } from "@/lib/audit";
 import { captureError } from "@/lib/observability";
 import { endOngoingSession, PencilError, pencilLive } from "@/lib/pencil/client";
 import { canEndLesson } from "@/lib/pencil/authz";
-import { getSpaceForPair, syncHosts } from "@/lib/pencil/provision";
+import { getSpaceForPair, removeHosts, syncHosts } from "@/lib/pencil/provision";
 import { lessonFallbackForced } from "@/lib/pencil/urls";
 import type { ActionResult } from "@/lib/actions/types";
-import type { Profile } from "@/lib/types";
+import type { Profile, SessionStatus } from "@/lib/types";
 
 /** Admin: schedule a one-off or recurring weekly session. */
 export async function scheduleSession(formData: FormData): Promise<ActionResult> {
@@ -106,16 +106,23 @@ export interface EndLessonResult extends ActionResult {
   actual_end?: string;
 }
 
+/** Statuses a lesson can still be ended from (anything else is over or cancelled). */
+const LIVE_STATUSES: SessionStatus[] = ["scheduled", "confirmed", "in_progress"];
+
 /**
  * End the lesson (plan decision b). Caller must be the assigned teacher or an
- * admin. Writes `status=outcome, actual_end=now()` with `.neq('status',
- * 'completed')` and aborts when no row comes back, THEN — best-effort, one
- * attempt, 5 s — `POST /spaces/{id}/endOngoingSession` so one Pencil session ==
- * one lesson, recording the `endedSessionId` as a hint in pencil_sessions and
- * sessions.pencil_session_id. Audits lesson.end | lesson.no_show.
+ * admin. Writes `status=outcome, actual_end=now()` only while the lesson is
+ * still live (`status in scheduled|confirmed|in_progress` — a no-show or a
+ * completed lesson can never be ended twice, re-audited or flipped into a
+ * credit-consuming 'completed') and aborts when no row comes back, THEN —
+ * best-effort, one attempt, 5 s — `POST /spaces/{id}/endOngoingSession` so one
+ * Pencil session == one lesson, recording the `endedSessionId` as a hint in
+ * pencil_sessions and sessions.pencil_session_id. Audits lesson.end | lesson.no_show.
  *
  * `opts.usedFallback` (the room ran on the Zoom link) or LESSON_FALLBACK_MODE
- * marks `analysis_status='no_recording'` so the post-session pipeline doesn't wait.
+ * marks `analysis_status='no_recording'` so the post-session pipeline doesn't
+ * wait, and skips the Pencil call entirely (decision n: End in fallback writes
+ * status and actual_end only — Pencil may be the thing that is down).
  */
 export async function endLesson(
   sessionId: string,
@@ -133,6 +140,7 @@ export async function endLesson(
     return { ok: false, message: "Only the assigned teacher or an admin can end this lesson." };
   }
   if (session.status === "cancelled") return { ok: false, message: "This lesson was cancelled." };
+  if (!LIVE_STATUSES.includes(session.status)) return { ok: false, message: "This lesson was already ended." };
 
   const now = new Date().toISOString();
   const noRecording = Boolean(opts.usedFallback) || lessonFallbackForced();
@@ -145,19 +153,23 @@ export async function endLesson(
 
   // Cookie client: RLS re-checks the teacher/admin right; the filter re-applies
   // the same rule so a stale page can never end someone else's lesson.
+  // analysis_status: only 'none' → 'no_recording' (the DB guard allows a
+  // teacher exactly that transition; anything else belongs to the pipeline).
+  const markNoRecording = noRecording && session.analysis_status === "none";
   const supabase = createSupabaseServerClient()!;
   let update = supabase
     .from("sessions")
-    .update({ status: outcome, actual_end: now, ...(noRecording ? { analysis_status: "no_recording" } : {}) })
+    .update({ status: outcome, actual_end: now, ...(markNoRecording ? { analysis_status: "no_recording" } : {}) })
     .eq("id", sessionId)
-    .neq("status", "completed");
+    .in("status", LIVE_STATUSES);
   if (profile.role === "teacher") update = update.eq("teacher_id", profile.id);
   const { data: updated, error } = await update.select("id");
   if (error) return { ok: false, message: error.message };
   if (!updated || updated.length === 0) return { ok: false, message: "This lesson was already ended." };
 
-  // Best-effort Pencil end — never blocks the outcome we just wrote.
-  await endPencilSession(sessionId, session.student_id, session.course_id, now);
+  // Best-effort Pencil end — never blocks the outcome we just wrote, and is
+  // skipped when the lesson ran on the fallback link.
+  if (!noRecording) await endPencilSession(sessionId, session.student_id, session.course_id, now);
 
   await logAudit(profile, outcome === "completed" ? "lesson.end" : "lesson.no_show", { type: "session", id: sessionId }, {
     outcome,
@@ -167,48 +179,92 @@ export async function endLesson(
   return { ok: true, message, outcome, actual_end: now };
 }
 
-/** Admin: assign (or reassign) a teacher to a session. Bound directly to a form. */
-export async function assignTeacher(formData: FormData): Promise<void> {
+/** Statuses a teacher can still be (re)assigned in. */
+const ASSIGNABLE_STATUSES: SessionStatus[] = ["scheduled", "confirmed"];
+
+/**
+ * Admin: assign (or reassign) a teacher to a session (plan decision g).
+ * Refused once the lesson has started or is over (cancel and rebook instead:
+ * the pipeline derives who taught from Pencil's attendees). After the update
+ * the (student, course) Space seats follow the assignment: the new teacher is
+ * added as a host, and the previous teacher is REMOVED when they have no other
+ * non-cancelled lesson and no open homework for that pair (so a reassigned
+ * teacher cannot keep opening the child's Space from Pencil's own UI). The
+ * Pencil part never fails the action; a problem comes back as a warning.
+ */
+export interface AssignTeacherResult extends ActionResult {
+  /** The assignment was saved but Pencil's hosts could not be updated. */
+  warning?: string;
+}
+
+export async function assignTeacher(formData: FormData): Promise<AssignTeacherResult> {
   const session_id = String(formData.get("session_id") ?? "");
   const teacher_id = String(formData.get("teacher_id") ?? "");
-  if (!session_id || !teacher_id) return;
+  if (!session_id || !teacher_id) return { ok: false, message: "Pick a teacher." };
 
-  if (!isDemoMode) {
-    // RLS already limits session updates to admins; the host sync below uses the
-    // service role, so the role is checked explicitly here as well.
-    const profile = await getCurrentProfile();
-    if (!profile || profile.role !== "admin") return;
-
-    const supabase = createSupabaseServerClient()!;
-    const { data: current, error: readError } = await supabase
-      .from("sessions")
-      .select("id,status,student_id,course_id")
-      .eq("id", session_id)
-      .maybeSingle();
-    if (readError || !current) return;
-    if (current.status === "in_progress" || current.status === "completed") {
-      // Plan (g): cancel and rebook instead; the pipeline derives taught_by from attendees.
-      console.warn(`assignTeacher refused: session ${session_id} is ${current.status}`);
-      return;
-    }
-
-    const { error } = await supabase
-      .from("sessions")
-      .update({ teacher_id, status: "confirmed" })
-      .eq("id", session_id)
-      .neq("status", "in_progress")
-      .neq("status", "completed");
-    if (error) {
-      captureError(error, { where: "assignTeacher", session_id });
-      return;
-    }
-
-    // Additive host sync, fire-and-forget: the join route also syncs lazily.
-    void syncSpaceHostForAssignment(profile, current.student_id, current.course_id, teacher_id);
+  if (isDemoMode) {
+    revalidatePath("/admin");
+    revalidatePath("/admin/sessions");
+    return { ok: true, message: "Demo mode: assignment not persisted." };
   }
+
+  // RLS already limits session updates to admins; the host sync below uses the
+  // service role, so the role is checked explicitly here as well.
+  const profile = await getCurrentProfile();
+  if (!profile || profile.role !== "admin") return { ok: false, message: "Only an admin can assign teachers." };
+
+  const supabase = createSupabaseServerClient()!;
+  const { data: current, error: readError } = await supabase
+    .from("sessions")
+    .select("id,status,student_id,course_id,teacher_id")
+    .eq("id", session_id)
+    .maybeSingle();
+  if (readError) return { ok: false, message: readError.message };
+  if (!current) return { ok: false, message: "Session not found." };
+  if (!ASSIGNABLE_STATUSES.includes(current.status as SessionStatus)) {
+    return {
+      ok: false,
+      message:
+        current.status === "in_progress" || current.status === "completed"
+          ? "This lesson has already started — cancel and rebook it instead of reassigning."
+          : "This lesson is over; it can't be reassigned.",
+    };
+  }
+  const previousTeacherId = (current.teacher_id as string | null) ?? null;
+  if (previousTeacherId === teacher_id) return { ok: true, message: "Already assigned." };
+
+  const { data: teacher } = await supabase.from("profiles").select("id,role").eq("id", teacher_id).maybeSingle();
+  if (!teacher || (teacher.role !== "teacher" && teacher.role !== "admin")) {
+    return { ok: false, message: "That profile is not a teacher." };
+  }
+
+  const { data: updated, error } = await supabase
+    .from("sessions")
+    .update({ teacher_id, status: "confirmed" })
+    .eq("id", session_id)
+    .in("status", ASSIGNABLE_STATUSES)
+    .select("id");
+  if (error) {
+    captureError(error, { where: "assignTeacher", session_id });
+    return { ok: false, message: error.message };
+  }
+  if (!updated || updated.length === 0) return { ok: false, message: "The lesson changed meanwhile — reload and try again." };
+
+  await logAudit(profile, "session.assign_teacher", { type: "session", id: session_id }, {
+    from: previousTeacherId,
+    to: teacher_id,
+  });
+
+  const warning = await syncSpaceHostsForAssignment(profile, {
+    studentId: current.student_id as string,
+    courseId: current.course_id as string,
+    teacherId: teacher_id,
+    previousTeacherId,
+  });
 
   revalidatePath("/admin");
   revalidatePath("/admin/sessions");
+  return { ok: true, message: previousTeacherId ? "Teacher reassigned." : "Teacher assigned.", ...(warning ? { warning } : {}) };
 }
 
 /** Admin: cancel a session. */
@@ -291,19 +347,75 @@ async function endPencilSession(sessionId: string, studentId: string, courseId: 
 }
 
 /**
- * After an assignment, make the new teacher a host of the (student, course)
- * Space — additive only (plan g). Skipped when the Space hasn't been
- * provisioned yet (ensureSpace adds the assigned teacher at first join).
+ * After an assignment: make the new teacher a host of the (student, course)
+ * Space (additive, plan g) and take the previous teacher's seat away when they
+ * have nothing left with this pair. Skipped when the Space hasn't been
+ * provisioned yet (ensureSpace seats the assigned teacher at first join).
+ * Never throws; returns a warning for the admin when Pencil could not be updated.
  */
-async function syncSpaceHostForAssignment(actor: Profile, studentId: string, courseId: string, teacherId: string): Promise<void> {
+async function syncSpaceHostsForAssignment(
+  actor: Profile,
+  pair: { studentId: string; courseId: string; teacherId: string; previousTeacherId: string | null },
+): Promise<string | null> {
+  const { studentId, courseId, teacherId, previousTeacherId } = pair;
   try {
-    if (!pencilLive) return;
+    if (!pencilLive) return null;
     const admin = createSupabaseAdminClient();
-    if (!admin) return;
-    const space = await getSpaceForPair(admin, studentId, courseId);
-    if (!space || space.status === "mock" || !space.pencil_space_id) return;
-    await syncHosts(admin, space, [teacherId], { actor });
+    if (!admin) return null;
+    let space = await getSpaceForPair(admin, studentId, courseId);
+    if (!space || space.status === "mock" || !space.pencil_space_id) return null;
+
+    space = await syncHosts(admin, space, [teacherId], { actor });
+    if (
+      previousTeacherId &&
+      previousTeacherId !== teacherId &&
+      space.host_profile_ids.includes(previousTeacherId) &&
+      (await mayLoseSeat(admin, previousTeacherId, studentId, courseId))
+    ) {
+      await removeHosts(admin, space, [previousTeacherId], { actor });
+    }
+    return null;
   } catch (err) {
-    captureError(err, { where: "assignTeacher syncHosts", student_id: studentId, course_id: courseId, teacher_id: teacherId });
+    captureError(err, { where: "assignTeacher host sync", student_id: studentId, course_id: courseId, teacher_id: teacherId });
+    return "Saved, but the classroom's hosts could not be updated in Pencil. The new teacher is added when they open the lesson; check the previous teacher's access in Pencil.";
   }
+}
+
+/**
+ * May `profileId` lose their host seat in the (student, course) Space? Only a
+ * teacher with no remaining non-cancelled lesson and no open (assigned /
+ * submitted) homework from their lessons for that pair. Admins keep theirs.
+ * Query errors throw, so the seat is KEPT and the admin is warned.
+ */
+async function mayLoseSeat(
+  admin: NonNullable<ReturnType<typeof createSupabaseAdminClient>>,
+  profileId: string,
+  studentId: string,
+  courseId: string,
+): Promise<boolean> {
+  const { data: person, error: personError } = await admin.from("profiles").select("id,role").eq("id", profileId).maybeSingle();
+  if (personError) throw personError;
+  if (person && person.role === "admin") return false;
+
+  const { data: theirs, error: sessionsError } = await admin
+    .from("sessions")
+    .select("id,status")
+    .eq("teacher_id", profileId)
+    .eq("student_id", studentId)
+    .eq("course_id", courseId);
+  if (sessionsError) throw sessionsError;
+  const rows = (theirs ?? []) as { id: string; status: SessionStatus }[];
+  if (rows.some((r) => r.status !== "cancelled")) return false;
+  if (rows.length === 0) return true;
+
+  const { count, error: homeworkError } = await admin
+    .from("homework")
+    .select("id", { count: "exact", head: true })
+    .in(
+      "session_id",
+      rows.map((r) => r.id),
+    )
+    .in("status", ["assigned", "submitted"]);
+  if (homeworkError) throw homeworkError;
+  return (count ?? 0) === 0;
 }

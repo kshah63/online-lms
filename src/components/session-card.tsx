@@ -11,9 +11,10 @@ import type { SessionView } from "@/lib/types";
 type Perspective = "admin" | "teacher" | "student" | "parent";
 
 /**
- * Recording policy for the lesson's student (opt-out model): "on" = recorded
- * (audio + board), "off" = the family opted out. Omit when unknown and no
- * indicator is shown.
+ * Recording indicator for the lesson's student: "on" = recorded (audio +
+ * board) — callers pass it only once institution recording is actually on
+ * (recordingActive(), Phase 2); "off" = the family opted out. Omit when unknown
+ * or when nothing is being recorded yet, and no indicator is shown.
  */
 export type RecordingIndicator = "on" | "off";
 

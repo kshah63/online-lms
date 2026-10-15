@@ -57,6 +57,12 @@ Demo personas:
    Migration `0017_pencil_spaces.sql` adds the Pencil tables; the seed creates one `status='mock'`
    Space per enrolment, which is upgraded in place the first time a real Pencil key is configured.
 
+   **Turn off self-signup** (Supabase dashboard → Authentication → Sign In / Providers → "Allow new
+   users to sign up" OFF; `enable_signup = false` in a CLI `config.toml`). Accounts are provisioned
+   by admins (`/admin/people`, account requests). Since `0017` a self-signed-up user is only ever a
+   `student` — the signup trigger ignores any `role` in the caller-controlled metadata — but they
+   should not exist at all.
+
 3. Run it:
 
    ```bash
@@ -91,14 +97,21 @@ on their dashboard instead of a Join button.
 **Spaces.** One persistent Space per **(student, course)**, created lazily by `ensureSpace()` with
 `externalId = '<course_id>:<student_id>'`, title `'<course> · <first name>'`, private, hosts = the
 assigned teacher (plus an admin actor), participant = the student. Recovery after a failed insert
-looks the Space up by `externalId` before creating, so no duplicate is ever made. Host changes are
-additive (`PATCH /spaces/{id}/updateUsers`) and only for profiles passing `canHostSpace`. Cached state
-lives in `pencil_spaces` (hosts, recording flag, verification timestamps), so a normal join makes
-exactly one Pencil call.
+looks the Space up by `externalId` before creating, so no duplicate is ever made. The first join of a
+pair takes a short **provisioning lease** on the `pencil_spaces` row (`provision_lock_until`), so a
+teacher and student opening the first lesson at the same moment never create two users or two
+Spaces — the second request waits for the first. Hosts follow the assignment: the assigned teacher
+and an admin who opens the lesson are seated on join (`PATCH /spaces/{id}/updateUsers`), and
+reassigning a lesson (`assignTeacher`) seats the new teacher and **removes the previous one** once
+they have no other non-cancelled lesson and no open homework for that pair (audited
+`pencil.space.hosts_changed {added, removed}`). Cached state lives in `pencil_spaces` (hosts,
+recording flag, verification timestamps), so a normal join makes exactly one Pencil call (plus one
+read-back of the Space settings for an opted-out student).
 
 **Join flow.** The page renders from the DB only (no Pencil calls in the server component, and no join
 URL ever appears in HTML or the RSC payload). The client calls `POST /api/lesson/[id]/space`, which
-re-applies the access rule, rate-limits (`pencil:join:<profile>` 30/h), provisions only when rows are
+re-applies the access rule, rate-limits (`pencil:join:<profile>` 30/h; the `rl_check` limiter is
+service-role only, so nobody can exhaust someone else's bucket), provisions only when rows are
 missing or stale, mints `GET /users/{id}/authorize?redirectUrl=<Space link + params>` (5 s timeout, no
 retry) and returns `{url}`. The client sets `iframe.src` on desktop or opens a new tab (Redirect mode) on
 mobile/unsupported browsers. **Authorize URLs are credentials**: valid 3600 s, minted per click, never
@@ -118,16 +131,22 @@ changes.
 ### Recording policy (opt-out) and teacher AI evaluation
 
 - **Lessons are recorded (audio + whiteboard; "Record participant video" OFF) unless the family asks us
-  not to.** Students and parents see "Recorded (audio + board)" / "Not recorded" on their session cards
-  and in the lesson view. Institution-level **always-on** recording is switched on at the start of
-  Phase 2; in Phase 1 the opt-out machinery is already live so the setting is in place before any
-  recording starts.
+  not to — from Phase 2.** Institution-level **always-on** recording is switched on at the start of
+  Phase 2, together with `PENCIL_RECORDING_ENABLED=on`. Until that flag is on **nothing is recorded and
+  no screen says so**: session cards, the lesson header, the student notice and the parent status
+  card show "Recorded (audio + board)" only when the flag is on (the lesson header also reacts to a
+  live `recording_status_change`, e.g. a host-started recording); an opted-out student always shows
+  "Not recorded". The opt-out machinery is already live in Phase 1 so the setting is in place before
+  any recording starts.
 - **Opt-out** is an admin action (`/admin/people` → "Opt out" / "Resume recording", `setRecordingOptOut`).
   It writes the service-only `recording_opt_outs` row, pushes `disableAlwaysOnRecording` to **every
   Space** of that student (`PATCH /spaces/{id}/settings/`) and **confirms by read-back**
   (`GET /spaces/{id}`); only a confirmed read-back sets `pencil_spaces.recording_disabled`. An opted-out
   student whose Space is not yet confirmed gets a **hard stop** on joining ("Recording policy not
-  applied — contact admin") and the policy is re-applied on the next join. Pencil can take up to 3 h to
+  applied — contact admin") and the policy is re-applied on the next join. Every join re-checks: a
+  cached flag that disagrees with the policy (either direction) is re-applied, and an opted-out
+  student's join reads the Space settings back once, so a setting flipped in Pencil's own UI is caught
+  before anyone enters. Pencil can take up to 3 h to
   propagate settings to a Space with recent calls, so opting out with a lesson inside that window shows
   the admin a warning and raises an admin follow-up. Every change is audited (`student.recording_opt_out`).
 - **Teacher AI evaluation is mandatory.** Every teacher's recorded lessons are analyzed (Pencil's
@@ -149,10 +168,11 @@ master Zoom meeting link for the whole school**:
 
 Resolution order: `sessions.fallback_join_url` → `LESSON_FALLBACK_URL` → "No backup link — contact admin".
 
-1. **Automatic.** When the join route fails with a transient Pencil error (429 / 5xx / timeout) the
-   room shows **"Classroom unavailable — Retry / Join on Zoom"**; Materials stays usable; **End lesson**
-   still works and marks the lesson `analysis_status='no_recording'` so the report editor says "write
-   from your notes". No transcript or coaching exists for a Zoom lesson.
+1. **Automatic.** When the join route fails with a transient Pencil error (429 / 5xx / timeout) or the
+   join is rate-limited, the room shows **"Classroom unavailable — Retry / Join on Zoom"**; Materials
+   stays usable; **End lesson** still works (status and `actual_end` only — no Pencil call) and marks
+   the lesson `analysis_status='no_recording'`, so the report editor shows "Not recorded — write from
+   your notes". No transcript or coaching exists for a Zoom lesson.
 2. **Planned / prolonged outage.** Set `LESSON_FALLBACK_MODE=on` in the hosting env and redeploy or
    restart; every room now renders the Zoom card directly. Set it back to `off` afterwards.
 3. **Two lessons at once on Zoom.** Set `sessions.fallback_join_url` for one of them to a second meeting
@@ -193,6 +213,7 @@ From the integration plan (decision k):
 | `NEXT_PUBLIC_PENCIL_APP_ORIGIN` | no | Origin of the Space UI for the postMessage allowlist (production + staging are always accepted). |
 | `LESSON_FALLBACK_URL` | recommended | Master Zoom link (see runbook). |
 | `LESSON_FALLBACK_MODE` | no | `on` forces every lesson onto the fallback link. |
+| `PENCIL_RECORDING_ENABLED` | Phase 2 | `on` once institution always-on recording is switched on in Pencil; until then no screen says "Recorded". |
 | `SUPABASE_SERVICE_ROLE_KEY` | **yes** for Pencil | Service role used for all Pencil-related reads/writes after authorization. |
 
 See `.env.example` for the full list (Materials Portal, Anthropic, WhatsApp, cron, Sentry).
@@ -207,7 +228,11 @@ See `.env.example` for the full list (Materials Portal, Anthropic, WhatsApp, cro
   All times are stored in UTC and **rendered in each viewer's own timezone** everywhere (`src/lib/time.ts`).
 - Four roles (admin / teacher / student / parent) with **Row Level Security** enforcing visibility
   (`supabase/migrations/0003_rls.sql`); `0017` closes the profiles self-update hole (role/email are
-  admin-only) and adds the service-only Pencil tables.
+  admin-only), makes signup always create a `student`, limits a teacher's own-session update to the
+  lesson-room columns (clock, agenda, status along the live path, `analysis_status` none →
+  no_recording — never the student, course, teacher, times or links), makes the rate limiter
+  service-role only, and adds the service-only Pencil tables. Check these with
+  `tests/profile-guard.sql` and `tests/session-guard.sql` (see *Tests* below).
 - **Admin daily schedule board** (`/admin`), **scheduling console** (`/admin/sessions`) with one-off or
   recurring lessons and per-session teacher assignment, **people directory** (`/admin/people`) with the
   recording-policy toggle and "Pencil linked" status, **audit log** (`/admin/audit`).
@@ -227,8 +252,9 @@ See `.env.example` for the full list (Materials Portal, Anthropic, WhatsApp, cro
 - The teacher jots **quick notes**; AI drafts a parent-facing report from the notes + the lesson
   transcript + metrics (`src/lib/reports/draft.ts`, Claude, heuristic fallback). The teacher edits every
   field and **publishes** to the parent/student. On publish it can also assign homework and raise a
-  follow-up. For lessons without a recording (Zoom fallback, opted-out student) the editor says
-  "Not recorded — write from your notes".
+  follow-up. For lessons marked as having no recording (`analysis_status` `no_recording` after a Zoom
+  fallback End; `skipped_opt_out` once the Phase 2 pipeline marks opted-out lessons) the editor shows
+  "Not recorded — write from your notes" and drafts from the notes alone.
 
 **Coaching dashboards** (`/teacher/coaching`, `/admin/coaching`, `/coaching/[sessionId]`)
 
@@ -269,6 +295,27 @@ this tree implements. Still to come:
 
 Also still stubbed: **Billing/Stripe** (credit balances exist and decrement on completion; checkout is
 the remaining piece) and timed WhatsApp reminders beyond the existing cron.
+
+---
+
+## Tests
+
+```bash
+pnpm typecheck && pnpm test          # tsc + vitest (tests/*.test.ts, no database or network)
+```
+
+The vitest suites fake Pencil at the `fetch` boundary and the database with an in-memory PostgREST
+look-alike (`tests/helpers/`), so they cannot see RLS or triggers. Those rules are checked against a
+real database by two psql scripts, run after `supabase db reset`:
+
+```bash
+DB_URL="$(supabase status -o env | sed -n 's/^DB_URL=//p' | tr -d '"')"
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f tests/profile-guard.sql   # role/email guard, signup role, rl_check grants
+psql "$DB_URL" -v ON_ERROR_STOP=1 -f tests/session-guard.sql   # what a teacher may change on their own session
+```
+
+Each prints `ok …` per case and aborts on the first `FAIL: …`; both run inside a transaction that is
+rolled back, so the seed data is untouched.
 
 ---
 

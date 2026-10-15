@@ -2,7 +2,7 @@
 
 import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Save, Send, Sparkles } from "lucide-react";
+import { Loader2, MicOff, Save, Send, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -10,19 +10,23 @@ import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { generateReportDraft, saveReport, type ReportInput } from "@/lib/actions/reports";
-import type { Report } from "@/lib/types";
+import type { AnalysisStatus, Report } from "@/lib/types";
 
 export function ReportEditor({
   sessionId,
   studentName,
   course,
   initial,
+  analysisStatus = "none",
 }: {
   sessionId: string;
   studentName: string;
   course: string;
   initial: Report | null;
+  /** sessions.analysis_status — 'no_recording' (Zoom fallback) / 'skipped_opt_out' mean there is no transcript. */
+  analysisStatus?: AnalysisStatus;
 }) {
+  const notRecorded = analysisStatus === "no_recording" || analysisStatus === "skipped_opt_out";
   const router = useRouter();
   const [drafting, setDrafting] = useState(false);
   const [pending, startTransition] = useTransition();
@@ -78,6 +82,20 @@ export function ReportEditor({
 
   return (
     <div className="space-y-6">
+      {notRecorded && (
+        <div className="flex items-start gap-2.5 rounded-lg border bg-muted/50 p-3 text-sm">
+          <MicOff className="mt-0.5 h-4 w-4 shrink-0 text-muted-foreground" />
+          <div>
+            <div className="font-medium">Not recorded — write from your notes</div>
+            <p className="text-muted-foreground">
+              {analysisStatus === "skipped_opt_out"
+                ? "The family opted out of recording, so there is no transcript or metrics for this lesson."
+                : "This lesson ran on the backup Zoom link, so there is no transcript or metrics for it."}
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* AI draft from notes */}
       <Card className="border-primary/20 bg-accent/30">
         <CardHeader className="pb-3">
@@ -85,7 +103,9 @@ export function ReportEditor({
             <Sparkles className="h-4 w-4 text-primary" /> Quick notes → AI draft
           </CardTitle>
           <CardDescription>
-            Jot a few notes; AI drafts the report from them plus the lesson transcript and metrics. You edit and publish.
+            {notRecorded
+              ? "Jot a few notes; AI drafts the report from them alone. You edit and publish."
+              : "Jot a few notes; AI drafts the report from them plus the lesson transcript and metrics. You edit and publish."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">

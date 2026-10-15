@@ -2,12 +2,12 @@
 
 import { revalidatePath } from "next/cache";
 import { DateTime } from "luxon";
-import type { SupabaseClient } from "@supabase/supabase-js";
 import { createSupabaseAdminClient } from "@/lib/supabase/admin";
 import { isDemoMode } from "@/lib/env";
 import { requireRole } from "@/lib/data/auth";
 import { logAudit } from "@/lib/audit";
 import { captureError } from "@/lib/observability";
+import { raiseAdminFollowup } from "@/lib/followups";
 import { PencilError } from "@/lib/pencil/client";
 import { applyRecordingPolicy } from "@/lib/pencil/provision";
 import type { PencilSpace } from "@/lib/types";
@@ -147,7 +147,7 @@ export async function setRecordingOptOut(
         ? `Pencil did not confirm ${what} on ${unconfirmed.length} of ${spaces.length} Space(s). ${firstName} cannot join those Spaces until the setting is confirmed (it is re-applied on the next join attempt).`
         : `Pencil did not confirm ${what} on ${unconfirmed.length} of ${spaces.length} Space(s) — recordings may still be off there.`,
     );
-    await raiseFollowup(admin, {
+    await raiseAdminFollowup(admin, {
       studentId,
       reason: `${FOLLOWUP_PREFIX} ${optOut ? "Opt-out" : "Recording resume"} for ${firstName} was NOT confirmed by Pencil on ${unconfirmed.length} Space(s). Open the Space settings in Pencil and verify "Disable always-on recording" is ${optOut ? "ON" : "OFF"}${optOut ? "; joins are blocked until confirmed" : ""}.`,
     });
@@ -159,7 +159,7 @@ export async function setRecordingOptOut(
     warnings.push(
       `${firstName} has ${course} starting ${DateTime.fromISO(next.scheduled_start, { zone: "utc" }).toRelative()} — Pencil can take up to ${PROPAGATION_WINDOW_HOURS} h to apply the change to a Space with recent calls. Check the Space before the lesson or tell the teacher not to record.`,
     );
-    await raiseFollowup(admin, {
+    await raiseAdminFollowup(admin, {
       studentId,
       sessionId: next.id,
       reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording with ${course} inside the ${PROPAGATION_WINDOW_HOURS} h propagation window. Verify the lesson is not recorded (Space setting / recording chip) and delete any recording that was made.`,
@@ -185,40 +185,4 @@ export async function setRecordingOptOut(
     optedOut: optOut,
     warnings,
   };
-}
-
-/**
- * Raise an admin follow-up with the existing table/types. The dedicated
- * `parent_contact`/pipeline types arrive with migration 0018 (Phase 2); until
- * then 'report_flag' with a clear, prefixed reason is used, and an open or
- * snoozed item with the same student + reason is never duplicated.
- */
-async function raiseFollowup(
-  admin: SupabaseClient,
-  input: { studentId: string; sessionId?: string | null; reason: string },
-): Promise<void> {
-  try {
-    const { data: existing } = await admin
-      .from("followups")
-      .select("id")
-      .eq("student_id", input.studentId)
-      .eq("type", "report_flag")
-      .eq("reason", input.reason)
-      .in("status", ["open", "snoozed"])
-      .limit(1)
-      .maybeSingle();
-    if (existing) return;
-    const { error } = await admin.from("followups").insert({
-      student_id: input.studentId,
-      session_id: input.sessionId ?? null,
-      type: "report_flag",
-      status: "open",
-      priority: "high",
-      reason: input.reason,
-    });
-    if (error) throw error;
-  } catch (err) {
-    // The warning is still shown to the admin; never fail the toggle over a follow-up.
-    captureError(err, { where: "setRecordingOptOut raiseFollowup", student_id: input.studentId });
-  }
 }

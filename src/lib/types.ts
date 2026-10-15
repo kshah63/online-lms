@@ -245,6 +245,12 @@ export interface PencilSpace {
   recording_disabled: boolean;
   recording_verified_at: string | null;
   status: PencilSpaceStatus;
+  /**
+   * Per-pair provisioning lease (ensureSpace): set while one request is
+   * creating the Pencil users/Space for a 'mock' row, null otherwise. Absent on
+   * demo/mock literals.
+   */
+  provision_lock_until?: string | null;
   created_at: string;
   updated_at: string;
 }

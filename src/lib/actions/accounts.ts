@@ -94,11 +94,19 @@ async function provision(input: {
   }
   const userId = data.user.id;
 
-  // The signup trigger creates the profile from metadata; set everything
-  // explicitly so it's correct regardless, and add the phone.
-  await admin
+  // The signup trigger always creates a 'student' profile (0017: the role in
+  // signup metadata is caller-controlled and ignored), so the real role is set
+  // HERE with the service role — and a failure must not leave e.g. a teacher
+  // account silently provisioned as a student.
+  const { error: profileError } = await admin
     .from("profiles")
     .upsert({ id: userId, role: input.role, display_name: input.display_name, email: input.email, phone: input.phone, timezone: tz });
+  if (profileError) {
+    return {
+      ok: false,
+      message: `The login for ${input.email} was created but its profile could not be saved (${profileError.message}); it has the student role until that is fixed — don't share the password yet.`,
+    };
+  }
 
   if (input.parentId && input.role === "student") {
     await admin.from("parent_student").upsert({ parent_id: input.parentId, student_id: userId });

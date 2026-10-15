@@ -117,9 +117,21 @@ describe("client", () => {
     expect(calls).toHaveLength(1);
   });
 
-  it("rejects an unexpected response shape instead of returning garbage", async () => {
+  it("rejects an unexpected response shape instead of returning garbage — as a TRANSIENT error (Retry + fallback)", async () => {
     pencilServer({ "GET spaces/": () => json({ hello: "world" }) });
-    await expect(client.getSpace("abc", { retries: 0 })).rejects.toMatchObject({ error_code: "INVALID_RESPONSE" });
+    await expect(client.getSpace("abc", { retries: 0 })).rejects.toMatchObject({ error_code: "INVALID_RESPONSE", transient: true });
+
+    vi.unstubAllGlobals();
+    pencilServer({ "GET spaces/": () => new Response("<html>gateway hiccup</html>", { status: 200 }) });
+    await expect(client.getSpace("abc", { retries: 0 })).rejects.toMatchObject({ error_code: "INVALID_RESPONSE", transient: true });
+  });
+
+  it("keeps a scrubbed hint of a non-JSON error body instead of dropping Pencil's text", async () => {
+    pencilServer({ "GET spaces/": () => new Response("<h1>Bad gateway</h1> upstream ?token=abc reset", { status: 400, statusText: "Bad Request" }) });
+    const err = await client.getSpace("abc", { retries: 0 }).catch((e: unknown) => e);
+    expect(err).toMatchObject({ status: 400, transient: false });
+    expect(String((err as Error).message)).toContain("Bad gateway upstream");
+    expect(String((err as Error).message)).not.toContain("token=abc");
   });
 
   it("findSpaceByExternalId sends base64 JSON filters and matches exactly", async () => {
@@ -164,12 +176,43 @@ describe("ensurePencilUser", () => {
     expect(calls).toHaveLength(0);
   });
 
-  it("renames lazily when display_name changed (best effort)", async () => {
-    const { calls } = happyPencil({ "PATCH users/": (c) => json(pencilUser("u-student", String(c.body?.name), STUDENT)) });
+  it("renames lazily when display_name changed — off the join path, best effort", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { calls } = happyPencil({
+      // A slow Pencil must not delay the join: the PATCH is still in flight when ensurePencilUser returns.
+      "PATCH users/": ((c: Call) => gate.then(() => json(pencilUser("u-student", String(c.body?.name), STUDENT)))) as unknown as (c: Call) => Response,
+    });
     await provision.ensurePencilUser(admin, studentProfile);
-    await provision.ensurePencilUser(admin, { ...studentProfile, display_name: "Ari Sharma" });
+    const row = await provision.ensurePencilUser(admin, { ...studentProfile, display_name: "Ari Sharma" });
+    expect(row.pencil_user_id).toBe("u-student");
     expect(calls[1]).toMatchObject({ method: "PATCH", path: "users/u-student", body: { name: "Ari" } });
-    expect(db.tables.pencil_users[0]!.pencil_name).toBe("Ari");
+    expect(db.tables.pencil_users[0]!.pencil_name).toBe("Aarav"); // not yet confirmed
+
+    release();
+    await vi.waitFor(() => expect(db.tables.pencil_users[0]!.pencil_name).toBe("Ari"));
+  });
+
+  it("converges when two cold requests create the same person concurrently (first insert wins)", async () => {
+    const observability = await import("@/lib/observability");
+    vi.mocked(observability.captureError).mockClear();
+    const { calls } = happyPencil({
+      "POST users/createAPIUser": (c, n) => json(pencilUser(`u-student-${n}`, String(c.body?.name), STUDENT)),
+    });
+    const [a, b] = await Promise.all([
+      provision.ensurePencilUser(admin, studentProfile),
+      provision.ensurePencilUser(admin, studentProfile),
+    ]);
+    expect(calls.filter((c) => c.path === "users/createAPIUser")).toHaveLength(2);
+    expect(db.tables.pencil_users).toHaveLength(1);
+    expect(a.pencil_user_id).toBe(db.tables.pencil_users[0]!.pencil_user_id);
+    expect(b.pencil_user_id).toBe(a.pencil_user_id);
+    // One audit for the kept user; the orphan is reported, not silently dropped.
+    expect(vi.mocked(audit.logAudit).mock.calls.filter((c) => c[1] === "pencil.user.create")).toHaveLength(1);
+    expect(vi.mocked(observability.captureError)).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.objectContaining({ orphaned_pencil_user_id: expect.stringMatching(/^u-student-/), kept_pencil_user_id: a.pencil_user_id }),
+    );
   });
 });
 
@@ -247,6 +290,113 @@ describe("ensureSpace", () => {
   });
 });
 
+describe("ensureSpace — concurrency and recovery", () => {
+  it("two simultaneous first joins create ONE Space and both get the same row", async () => {
+    const { calls } = happyPencil();
+    const [a, b] = await Promise.all([
+      provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER, actor: teacherProfile, pollMs: 5 }),
+      provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER, actor: studentProfile, pollMs: 5 }),
+    ]);
+    expect(calls.filter((c) => c.path === "spaces/create")).toHaveLength(1);
+    expect(calls.filter((c) => c.path === "users/createAPIUser")).toHaveLength(2); // student + teacher, once each
+    expect(a.id).toBe(b.id);
+    expect(a.pencil_space_id).toBe("aaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(b.status).toBe("active");
+    expect(db.tables.pencil_spaces).toHaveLength(1);
+    expect(db.tables.pencil_spaces[0]!.provision_lock_until).toBeNull(); // lease released
+  });
+
+  it("a live lease held by another request → waits, then a transient PROVISIONING_IN_PROGRESS; an expired lease is taken over", async () => {
+    const { calls } = happyPencil();
+    db.tables.pencil_spaces.push({
+      id: "held", student_id: STUDENT, course_id: COURSE, external_id: `${COURSE}:${STUDENT}`, pencil_space_id: null, link: null,
+      host_profile_ids: [], participant_profile_ids: [], recording_disabled: false, status: "mock",
+      provision_lock_until: new Date(Date.now() + 60_000).toISOString(),
+    });
+    await expect(
+      provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER, waitMs: 30, pollMs: 5 }),
+    ).rejects.toMatchObject({ error_code: "PROVISIONING_IN_PROGRESS", transient: true });
+    expect(calls).toHaveLength(0); // never raced the holder at Pencil
+
+    db.tables.pencil_spaces[0]!.provision_lock_until = new Date(Date.now() - 1_000).toISOString(); // holder crashed
+    const space = await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER });
+    expect(space.id).toBe("held");
+    expect(space.status).toBe("active");
+    expect(calls.filter((c) => c.path === "spaces/create")).toHaveLength(1);
+  });
+
+  it("releases the lease when provisioning fails, so the next join retries immediately", async () => {
+    happyPencil({ "POST spaces/create": () => json({ err: "bad key", error_code: "NOT_AUTHORIZED" }, 401) });
+    await expect(provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER })).rejects.toMatchObject({ status: 401 });
+    expect(db.tables.pencil_spaces[0]).toMatchObject({ status: "mock", provision_lock_until: null });
+  });
+
+  it("treats a duplicate-externalId 4xx from create as 'look it up again' (recovered)", async () => {
+    const { calls } = happyPencil({
+      "GET spaces?": (_c, n) => json({ results: n === 1 ? [] : [pencilSpace({ spaceId: "dddddddddddddddddddddddd" })] }),
+      "POST spaces/create": () => json({ err: "externalId must be unique", error_code: "INVALID_REQUEST_BODY" }, 400),
+    });
+    const space = await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER, actor: teacherProfile });
+    expect(space.pencil_space_id).toBe("dddddddddddddddddddddddd");
+    expect(calls.filter((c) => c.path.startsWith("spaces?"))).toHaveLength(2);
+    expect(audit.logAudit).toHaveBeenCalledWith(teacherProfile, "pencil.space.create", expect.anything(), expect.objectContaining({ recovered: true }));
+  });
+
+  it("a recovered Space whose participant is an orphaned user gets the student's CURRENT user added", async () => {
+    const { calls } = happyPencil({
+      "GET spaces?": () => json({ results: [pencilSpace({ participants: [{ userId: "u-orphan" }] })] }),
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/updateUsers": () => json(pencilSpace()),
+    });
+    await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER });
+    const patch = calls.find((c) => c.path.endsWith("/updateUsers"))!;
+    expect(patch.body).toEqual({ notifyInvitees: false, addUsers: [{ userId: "u-student", role: "participant" }] });
+  });
+
+  it("reads the Space itself when the list item omits members", async () => {
+    const { calls } = happyPencil({
+      "GET spaces?": () => json({ results: [{ spaceId: "aaaaaaaaaaaaaaaaaaaaaaaa", link: SPACE_LINK, externalId: `${COURSE}:${STUDENT}` }] }),
+      "GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa": () => json(pencilSpace()),
+    });
+    const space = await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER });
+    expect(calls.map((c) => `${c.method} ${c.path.split("?")[0]}`)).toContain("GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa");
+    expect(calls.some((c) => c.path.endsWith("/updateUsers"))).toBe(false); // teacher host + student participant already
+    expect(space.host_profile_ids).toEqual([TEACHER]);
+  });
+});
+
+describe("removeHosts", () => {
+  it("removes the user from the Space and the cache, tolerating a 4xx only when the read-back agrees", async () => {
+    const { calls } = happyPencil({
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/updateUsers": () => json(pencilSpace()),
+    });
+    let space = await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER, actor: adminProfile });
+    expect(space.host_profile_ids).toEqual(expect.arrayContaining([TEACHER, ADMIN]));
+
+    space = await provision.removeHosts(admin, space, [TEACHER, STUDENT], { actor: adminProfile });
+    expect(space.host_profile_ids).toEqual([ADMIN]);
+    const removal = calls.filter((c) => c.path.endsWith("/updateUsers")).at(-1)!;
+    expect(removal.body).toEqual({ notifyInvitees: false, removeUsers: [{ userId: "u-teacher" }] });
+    expect(audit.logAudit).toHaveBeenCalledWith(adminProfile, "pencil.space.hosts_changed", { type: "pencil_space", id: space.id }, { added: [], removed: [TEACHER] });
+
+    // No-op for someone who isn't a cached host: zero calls.
+    const before = calls.length;
+    await provision.removeHosts(admin, space, [TEACHER]);
+    expect(calls.length).toBe(before);
+  });
+
+  it("refuses to drop the cache entry when Pencil says the user is still in the Space", async () => {
+    happyPencil();
+    const space = await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER });
+    vi.unstubAllGlobals();
+    pencilServer({
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/updateUsers": () => json({ err: "cannot remove", error_code: "INVALID_REQUEST_BODY" }, 400),
+      "GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa": () => json(pencilSpace()), // u-teacher still a host
+    });
+    await expect(provision.removeHosts(admin, space, [TEACHER])).rejects.toMatchObject({ status: 400 });
+    expect(db.tables.pencil_spaces[0]!.host_profile_ids).toEqual([TEACHER]);
+  });
+});
+
 describe("syncHosts", () => {
   it("is additive, skips hosts already present, and never adds a student", async () => {
     const { calls } = happyPencil({
@@ -306,6 +456,68 @@ describe("applyRecordingPolicy", () => {
     expect(db.tables.pencil_spaces[0]).toEqual(before); // nothing written
     expect(provision.recordingPolicyBlocksJoin(true, result.space)).toBe(true);
     expect(provision.recordingPolicyBlocksJoin(false, result.space)).toBe(false);
+  });
+});
+
+describe("ensureRecordingPolicy (join path)", () => {
+  async function provisioned(over: Row = {}) {
+    happyPencil();
+    await provision.ensureSpace(admin, { studentId: STUDENT, courseId: COURSE, teacherId: TEACHER });
+    vi.unstubAllGlobals();
+    Object.assign(db.tables.pencil_spaces[0]!, over);
+    return { ...db.tables.pencil_spaces[0]! } as unknown as import("@/lib/types").PencilSpace;
+  }
+
+  it("not opted out and cached as recording → zero calls", async () => {
+    const space = await provisioned();
+    const { calls } = pencilServer({});
+    const res = await provision.ensureRecordingPolicy(admin, space, false);
+    expect(res).toEqual({ confirmed: true, space });
+    expect(calls).toHaveLength(0);
+  });
+
+  it("opted out and cached as disabled → one read-back GET; confirmed → no write", async () => {
+    const space = await provisioned({ recording_disabled: true });
+    const { calls } = pencilServer({ "GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa": () => json(pencilSpace({ settings: { disableAlwaysOnRecording: true } })) });
+    const res = await provision.ensureRecordingPolicy(admin, space, true);
+    expect(res.confirmed).toBe(true);
+    expect(calls.map((c) => c.method)).toEqual(["GET"]);
+  });
+
+  it("drift at Pencil: the row is corrected first, then re-applied; an unconfirmed re-apply leaves the hard stop on", async () => {
+    const space = await provisioned({ recording_disabled: true });
+    const { calls } = pencilServer({
+      "GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa": () => json(pencilSpace({ settings: { disableAlwaysOnRecording: false } })),
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/settings/": () => json({}),
+    });
+    const res = await provision.ensureRecordingPolicy(admin, space, true);
+    expect(calls.map((c) => c.method)).toEqual(["GET", "PATCH", "GET"]);
+    expect(res.confirmed).toBe(false);
+    expect(db.tables.pencil_spaces[0]!.recording_disabled).toBe(false);
+    expect(provision.recordingPolicyBlocksJoin(true, res.space)).toBe(true);
+  });
+
+  it("re-enables recording when the opt-out was lifted but the Space still has it disabled — best effort", async () => {
+    const space = await provisioned({ recording_disabled: true });
+    pencilServer({
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/settings/": () => json({ err: "nope", error_code: "NOT_AUTHORIZED" }, 401),
+    });
+    const res = await provision.ensureRecordingPolicy(admin, space, false);
+    expect(res.confirmed).toBe(false); // reported, not thrown
+    expect(provision.recordingPolicyBlocksJoin(false, res.space)).toBe(false);
+
+    vi.unstubAllGlobals();
+    const { calls } = pencilServer({
+      "PATCH spaces/aaaaaaaaaaaaaaaaaaaaaaaa/settings/": (c) => {
+        expect(c.body).toEqual({ settings: { disableAlwaysOnRecording: false } });
+        return json({});
+      },
+      "GET spaces/aaaaaaaaaaaaaaaaaaaaaaaa": () => json(pencilSpace({ settings: { disableAlwaysOnRecording: false } })),
+    });
+    const ok = await provision.ensureRecordingPolicy(admin, space, false);
+    expect(ok.confirmed).toBe(true);
+    expect(calls.map((c) => c.method)).toEqual(["PATCH", "GET"]);
+    expect(db.tables.pencil_spaces[0]!.recording_disabled).toBe(false);
   });
 });
 

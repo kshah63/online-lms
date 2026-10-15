@@ -1,4 +1,5 @@
 import "server-only";
+import { isDemoMode } from "@/lib/env";
 import type { PencilSpace, Session } from "@/lib/types";
 import { authorizeUrl, JOIN_FETCH, PencilError, pencilLive } from "@/lib/pencil/client";
 import { mockSpaceLink } from "@/lib/pencil/mock";
@@ -173,4 +174,23 @@ export function resolveFallbackUrl(session: Pick<Session, "fallback_join_url"> |
 export function lessonFallbackForced(): boolean {
   const v = (process.env.LESSON_FALLBACK_MODE ?? "").trim().toLowerCase();
   return v === "on" || v === "1" || v === "true";
+}
+
+// ---------------------------------------------------------------------------
+// Is anything actually being recorded?
+// ---------------------------------------------------------------------------
+
+/**
+ * PENCIL_RECORDING_ENABLED=on|1|true once institution always-on recording is
+ * switched on in Pencil — the start of Phase 2 (plan decision k). Until then
+ * NOTHING is recorded, so no screen may tell a family or a teacher that a
+ * lesson "is recorded" or will be analyzed; the opt-out flag and the Space
+ * setting are still enforced (they must be in place before recording starts).
+ * Unset → off, except in demo mode, which shows the full product so its copy
+ * matches the demo coaching data. Read at call time.
+ */
+export function recordingActive(): boolean {
+  const raw = (process.env.PENCIL_RECORDING_ENABLED ?? "").trim().toLowerCase();
+  if (!raw) return isDemoMode;
+  return raw === "on" || raw === "1" || raw === "true";
 }
