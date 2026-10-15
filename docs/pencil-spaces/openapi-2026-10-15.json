@@ -1,0 +1,5819 @@
+{
+ "openapi": "3.1.0",
+ "info": {
+  "description": "You can find API specs for the Pencil Spaces API below. If you have any questions, do not hesitate to contact us.\n\n**Note:** To authenticate requests, provide your API key as a bearer token in any calls to our API. See [this guide](https://learning.postman.com/docs/sending-requests/authorization/#bearer-token) for more details.",
+  "version": "1.1.0",
+  "title": "Pencil Spaces API",
+  "contact": {
+   "email": "developer@pencilspaces.com",
+   "name": "Pencil API Support"
+  },
+  "license": {
+   "name": "Apache 2.0",
+   "url": "http://www.apache.org/licenses/LICENSE-2.0.html"
+  },
+  "termsOfService": "https://www.pencilspaces.com/tos"
+ },
+ "servers": [
+  {
+   "description": "Staging Server",
+   "url": "https://staging-apis.pencilapp.com/public/api/"
+  },
+  {
+   "description": "Production Server",
+   "url": "https://apis.pencilapp.com/public/api/"
+  },
+  {
+   "description": "SwaggerHub API Auto Mocking",
+   "url": "https://virtserver.swaggerhub.com/Pencil/pencil-spaces-api/1.1.0"
+  }
+ ],
+ "paths": {
+  "/users/{userId}/authorize": {
+   "get": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Log-in an API-managed user",
+    "description": "Generate a direct login link for an API-managed user in your institution based on their `userId`. Note: Tokens are short-lived, and will expire after 3600 seconds.",
+    "operationId": "authorizeAPIUser",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "description": "The `userId` of the user you want to authorize",
+      "required": true,
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     },
+     {
+      "name": "redirectUrl",
+      "in": "query",
+      "description": "Optional. The URL of the page you wish to redirect the user to after a successful login. This needs to be of the form `https://my.pencilapp.com` in production or `https://staging.pencilapp.com` if staging. The URL path and any assocated query parameters will be passed through as part of the `continueUrl` parameter in the generated authorization link.",
+      "required": false,
+      "schema": {
+       "type": "string"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A direct login link to log a user into Pencil Spaces. If a client clicks their link, they will be logged into this account on their device.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "url": {
+           "type": "string",
+           "description": "The unique URL to log the user in to Pencil Spaces. If the user is already logged-in they will be logged-out and logged-in to their new account.",
+           "examples": [
+            "https://my.pencilapp.com/token-login?loginType=api&token={token}&continueUrl={encodedRedirectPath}"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "USER_NOT_API_MANAGED",
+            "REDIRECT_URL_INVALID"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "A user with the provided `userId` could not be found"
+     }
+    }
+   }
+  },
+  "/users/createAPIUser": {
+   "post": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Create an API-managed user",
+    "description": "Creates an API-managed user in your institution",
+    "operationId": "createAPIUser",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "The user's name",
+          "examples": [
+           "Bob Bill"
+          ]
+         },
+         "userRole": {
+          "type": "string",
+          "enum": [
+           "InstitutionAdmin",
+           "SiteAdmin",
+           "Student",
+           "Teacher"
+          ],
+          "description": "The desired role for the user. Note: you can't programmatically create an API-managed user with an `InstitutionAdmin` role.",
+          "examples": [
+           "Student"
+          ]
+         },
+         "externalId": {
+          "type": "string",
+          "description": "External user identifier. Optional.",
+          "examples": [
+           "6edc7a720dd50ee133b52685"
+          ]
+         },
+         "siteIds": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "examples": [
+            "60d5ec49f1d2f39f10b5e5f3"
+           ],
+           "description": "String object ID of the site."
+          },
+          "description": "Array of site IDs that the create api user belongs to. This field is required and applicable only for institutions with sites."
+         },
+         "customAttributes": {
+          "anyOf": [
+           {
+            "$ref": "#/components/schemas/customAttributeList"
+           }
+          ]
+         },
+         "languageCode": {
+          "type": "string",
+          "description": "BCP 47 language code for the user's preferred language. Optional; defaults to \"en\" (English) if not provided.",
+          "examples": [
+           "fr"
+          ]
+         }
+        },
+        "required": [
+         "userRole",
+         "profilePicture"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The user object for the user that was just created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/user"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid request parameters or body.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalidSiteIds": {
+          "summary": "Invalid site IDs",
+          "value": {
+           "err": "Invalid site ids: 668bf0914970bfeb7bb685a51.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "siteIdsNotBelonging": {
+          "summary": "Site IDs not belonging to institution",
+          "value": {
+           "err": "Site ids not belonging to institution: 65fb240449b6afa13825a97b.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "invalidLanguageCode": {
+          "summary": "Invalid language code - unrecognized or unsupported language setting",
+          "value": {
+           "err": "Invalid language code. Acceptable values are: ar, ar-sa, en, es,.....",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "A user with the provided `userId` could not be found"
+     }
+    }
+   }
+  },
+  "/spaces/create": {
+   "post": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Create a Space",
+    "operationId": "createSpace",
+    "description": "Create a Space",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "title": {
+          "type": "string",
+          "examples": [
+           "My First Space"
+          ],
+          "description": "The title of the Space. If not provided and `spaceToCloneId` is set, the existing Space name will be used. If not, a random Space name will be generated."
+         },
+         "spaceToCloneId": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/mongoDBID"
+           }
+          ],
+          "description": "The `spaceId` of the Space you want to clone. You may only clone Spaces that are templates, Spaces for which you are a host, and Spaces which you can access as an admin due to your institution settings."
+         },
+         "owner": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userSchema"
+           },
+           {
+            "description": "The owner of the Space. If not specified, the user associated with the API call will be set as the owner of the newly created Space."
+           }
+          ]
+         },
+         "hosts": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userList"
+           }
+          ],
+          "description": "The hosts you wish to invite to the Space. The user associated with your API key will always be added as a host"
+         },
+         "participants": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userList"
+           }
+          ],
+          "description": "The participants you wish to invite to the Space."
+         },
+         "visibility": {
+          "type": "string",
+          "description": "The default visibility for the Space",
+          "examples": [
+           "public"
+          ],
+          "default": "public",
+          "enum": [
+           "public",
+           "private"
+          ]
+         },
+         "notifyInvitees": {
+          "type": "boolean",
+          "description": "Whether you want to automatically notify invitees when you create your Space",
+          "examples": [
+           true
+          ],
+          "default": true
+         },
+         "siteId": {
+          "type": "string",
+          "description": "The ID of the site linked to the space. This field is required and applicable only for institutions with the sites.",
+          "examples": [
+           "65fb240449b6afa13825a97b"
+          ]
+         },
+         "externalId": {
+          "type": "string",
+          "examples": [
+           "abc123"
+          ],
+          "description": "The external ID of the Space. External IDs must be unique."
+         }
+        },
+        "required": [
+         "notifyInvitees"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The Space object for the Space that you just created",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/space"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "missing_input": {
+          "summary": "Missing site id",
+          "value": {
+           "err": "site id must be provided in request.",
+           "error_code": "MISSING_INPUT"
+          }
+         },
+         "not_supported": {
+          "summary": "Site feature disabled",
+          "value": {
+           "err": "site should not be provided in request, Site feature is disabled",
+           "error_code": "NOT_SUPPORTED"
+          }
+         },
+         "invalid_id": {
+          "summary": "Invalid site id",
+          "value": {
+           "err": "Invalid site id.",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "invalid_request_body": {
+          "summary": "Invalid request body",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "Request body is missing title"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "not_authorized": {
+          "summary": "Not authorized",
+          "value": {
+           "err": "Site does not belong to your institution",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "insufficient_permissions": {
+          "summary": "Insufficient permissions",
+          "value": {
+           "err": "User does not have enough permissions",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "You do not have permission to clone this Space",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "You do not have permission to clone this Space"
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "examples": [
+            "NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events/{eventId}": {
+   "delete": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Delete an event by event ID",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to delete",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Event deleted successfully"
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event not found",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Event not found",
+         "error_code": "EVENT_NOT_FOUND"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error"
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Get event details by event ID",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to retrieve",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Event details retrieved successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/eventResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Event ID is invalid",
+         "error_code": "INVALID_ID"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event not found",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Event not found",
+         "error_code": "EVENT_NOT_FOUND"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error"
+     }
+    }
+   },
+   "put": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Update an existing event",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to update",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/eventRequestBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Event updated successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/eventResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Invalid request",
+         "error_code": "INVALID_REQUEST_BODY",
+         "messages": [
+          "Request body is missing title"
+         ]
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event not found",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Event not found",
+         "error_code": "EVENT_NOT_FOUND"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error"
+     }
+    }
+   }
+  },
+  "/webhooks": {
+   "delete": {
+    "tags": [
+     "webhooks"
+    ],
+    "summary": "Delete the webhook config",
+    "description": "Delete the webhook configuration for your institution.",
+    "responses": {
+     "200": {
+      "description": "The webhook configuration was successfully deleted.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "message": {
+           "type": "string"
+          }
+         },
+         "examples": [
+          {
+           "message": "Webhook config deleted"
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "webhooks"
+    ],
+    "summary": "Get webhook config",
+    "description": "Retrieve the webhook config for your institution.",
+    "responses": {
+     "200": {
+      "description": "The webhook configuration for your institution. The response will be `{}` if no configuration is set.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "$ref": "#/components/schemas/webhookConfig"
+          },
+          {
+           "type": "object",
+           "additionalProperties": false
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "webhooks"
+    ],
+    "summary": "Create or update a webhook config",
+    "description": "Create or update the webhook configuration for your institution.",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/webhookConfig"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successfully created or updated the webhook configuration.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/webhookConfig"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad Request. Returned if the request body is invalid.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "MissingField": {
+          "summary": "Example of a missing required field",
+          "value": {
+           "err": "The following fields are required: url",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "InvalidURL": {
+          "summary": "Example of an invalid URL format",
+          "value": {
+           "err": "The field 'url' must be a valid URL with a protocol (http or https).",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/spaces/recordings/{spaceId}/{recordingId}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "description": "The `spaceId` you wish to query recordings for"
+    },
+    {
+     "in": "path",
+     "name": "recordingId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "description": "The `recordingId` of the recording you wish to delete"
+    }
+   ],
+   "delete": {
+    "tags": [
+     "recordings"
+    ],
+    "summary": "Delete a recording in a Space",
+    "operationId": "deleteRecording",
+    "responses": {
+     "200": {
+      "description": "Successful response will indicate that the recording was deleted successfully"
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space associated with the recording, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "The provided `spaceId` or `recordingId` could not be found."
+     }
+    }
+   }
+  },
+  "/analytics/sessions/{sessionId}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "sessionId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     }
+    }
+   ],
+   "delete": {
+    "tags": [
+     "sessions"
+    ],
+    "summary": "Delete a session",
+    "operationId": "deleteSession",
+    "description": "Delete a session in a Space",
+    "responses": {
+     "200": {
+      "description": "The session was successfully deleted"
+     },
+     "401": {
+      "description": "You were not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "A session with the provided `sessionId` could not be found."
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "sessions"
+    ],
+    "summary": "Get details for a session",
+    "description": "Get details for a session.",
+    "operationId": "getSession",
+    "responses": {
+     "200": {
+      "description": "Successful response will return the session object for the requested `sessionId`",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/session"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "SESSION_DOES_NOT_EXIST"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/spaces/{spaceId}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     }
+    }
+   ],
+   "delete": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Delete a Space",
+    "operationId": "deleteSpace",
+    "description": "Delete a Space",
+    "responses": {
+     "200": {
+      "description": "The Space was successfully deleted"
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "A Space with the provided `spaceId` could not be found."
+     }
+    }
+   },
+   "get": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Get details for a particular Space",
+    "description": "Get details for a particular Space.",
+    "operationId": "getSpaceDetails",
+    "responses": {
+     "200": {
+      "description": "Successful response will return the Space object for the requested `spaceId`",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/space"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "A Space with the provided `spaceId` could not be found."
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Update a Space",
+    "operationId": "updateSpace",
+    "description": "Update a Space's properties, including its name and visibility",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "space": {
+          "type": "object",
+          "properties": {
+           "title": {
+            "type": "string",
+            "examples": [
+             "My First Space"
+            ],
+            "description": "The title of the Space"
+           },
+           "visibility": {
+            "type": "string",
+            "description": "The default visibility for the Space (default = private)",
+            "examples": [
+             "public"
+            ],
+            "enum": [
+             "public",
+             "private"
+            ]
+           },
+           "archived": {
+            "type": "boolean",
+            "description": "Set whether the Space is marked as archived.",
+            "examples": [
+             true
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "description": "The parameters for the Spaces object that need to be updated for the given spaceId. \n\n**Note:** Only certain parameters can be changed using this method. If you're looking to add users / remove users / edit permissions from your Space, you will need to use the corresponding `space/{spaceId}/updateUsers` endpoint."
+    },
+    "responses": {
+     "200": {
+      "description": "The updated Space object for the Space that you just patched",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/space"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "A Space with the provided `spaceId` could not be found."
+     }
+    }
+   }
+  },
+  "/spaces/recordings/download/{recordingId}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "recordingId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "description": "The `recordingId` of the recording you wish to download"
+    }
+   ],
+   "get": {
+    "tags": [
+     "recordings"
+    ],
+    "summary": "Download a recording",
+    "operationId": "downloadRecording",
+    "responses": {
+     "200": {
+      "description": "The recording download link was successfully generated.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "recordingId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ID of the recording"
+            }
+           ]
+          },
+          "downloadLink": {
+           "type": "string",
+           "description": "A short-term access download link for the recording",
+           "examples": [
+            "https://x.y/abc"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space associated with the recording, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "The provided `recordingId` could not be found."
+     }
+    }
+   }
+  },
+  "/spaces/{spaceId}/endOngoingSession": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     }
+    }
+   ],
+   "post": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "End an ongoing session in a Space",
+    "operationId": "endOngoingSessioninSpace",
+    "description": "Session analytics is automatically logged whenever there is at least one user in a Space. In cases where events are back to back and where analytics data is required for each event, sessions may sometimes span multiple events as there is no guarantee that participants will leave the Space between events. \n\nTo address this, this API endpoint force ends an ongoing session. The ongoing session is then split into two sessions, one that ends when the endpoint is called, and another one that starts when the endpoint is called. All presence information is retained for the new event, but user join times are set to when the endpoint was called.",
+    "responses": {
+     "200": {
+      "description": "Ongoing session ended successfully. `endedSessionId` is the id of the session that was ongoing session that was terminated, while `newSessionId` is the id of the new session in this Space if there are users in the space when this endpoint was called, otherwise null is returned.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "endedSessionId": {
+           "$ref": "#/components/schemas/mongoDBID"
+          },
+          "newSessionId": {
+           "anyOf": [
+            {
+             "allOf": [
+              {
+               "$ref": "#/components/schemas/mongoDBID"
+              },
+              {
+               "description": "The new `sessionId` if available. This may be `null` if there are no users in the Space when the session is ended."
+              }
+             ]
+            },
+            {
+             "type": "null"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "NO_ONGOING_SESSIONS_IN_SPACE"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/attendance/{event_id}": {
+   "get": {
+    "tags": [
+     "attendance"
+    ],
+    "summary": "Retrieve attendance information for a past event",
+    "description": "Get the attendance details of all participants for the past event specified by the event ID. Attendance information can only be retrieved for events that have already occurred.",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "event_id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The unique identifier of the event."
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "A list of attendance records for the specified past event.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/attendanceList"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid event ID.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_event_id": {
+          "summary": "Invalid Event ID",
+          "value": {
+           "err": "Invalid event ID",
+           "error_code": "INVALID_ID"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "- Event is still in the future and no attendance data is available yet. - Event with specified ID not found.\n",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_in_future": {
+          "summary": "Event is in the future",
+          "value": {
+           "err": "Event is still in the future. No attendance data available yet.",
+           "error_code": "CANNOT_RETRIEVE_FUTURE_EVENT_ATTENDANCE"
+          }
+         },
+         "event_not_found": {
+          "summary": "Event not found",
+          "value": {
+           "err": "Event with specified ID not found",
+           "error_code": "EVENT_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events": {
+   "get": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Get all events within a specified date range",
+    "parameters": [
+     {
+      "name": "filters",
+      "in": "query",
+      "required": true,
+      "description": "Filter events using a Base64-encoded JSON object.\n\nThe `filters` query parameter is required.\n\nChoose the fields below, serialize the object to JSON, and Base64-encode the UTF-8 bytes. Enter the encoded value in the `filters` input. These fields belong inside the JSON object; they are not separate query parameters.\n\n**Decoded filter fields**\n\n| Field | Type | Description |\n| --- | --- | --- |\n| `timeRange` | object | Filters events by time range. All event start dates will be on or after `start`, and all end dates will be on or before `end`. |\n| `timeRange.start` | string | Start date and time for the events. Format: rfc3339Timestamp. |\n| `timeRange.end` | string | End date and time for the events. Format: rfc3339Timestamp. |\n| `organizers` | array of strings | Filters events by organizer userIds. Each item: mongodb id (12 byte hex string). Example: `[\"507f1f77bcf86cd799439011\"]`. |\n| `attendees` | array of strings | Filters events by attendee userIds. Each item: mongodb id (12 byte hex string). Example: `[\"507f1f77bcf86cd799439011\"]`. |\n| `otherAttendees` | array of strings | Filters events by otherAttendee userIds. Each item: mongodb id (12 byte hex string). Example: `[\"507f1f77bcf86cd799439011\"]`. |\n| `sites` | array of strings | Filter by site Each item: mongodb id (12 byte hex string). Example: `[\"507f1f77bcf86cd799439011\"]`. |\n| `customAttributes` | array of strings | Filter by event custom attributes Example: `[\"NydvLFSpxOJe2aO07hGxU\"]`. |\n\n**Example before encoding**\n\n```json\n{\n  \"timeRange\": {\n    \"start\": \"2024-06-30T01:00:00.000Z\",\n    \"end\": \"2024-07-30T23:59:00.000Z\"\n  }\n}\n```\n\n**Base64 value for the filters input**\n\n```text\neyJ0aW1lUmFuZ2UiOnsic3RhcnQiOiIyMDI0LTA2LTMwVDAxOjAwOjAwLjAwMFoiLCJlbmQiOiIyMDI0LTA3LTMwVDIzOjU5OjAwLjAwMFoifX0=\n```\n\n**Example request**\n\n```text\n/events?filters=eyJ0aW1lUmFuZ2UiOnsic3RhcnQiOiIyMDI0LTA2LTMwVDAxOjAwOjAwLjAwMFoiLCJlbmQiOiIyMDI0LTA3LTMwVDIzOjU5OjAwLjAwMFoifX0%3D\n```\n\n**Encode inline in Node.js**\n\n```javascript\nconst criteria = {\"timeRange\":{\"start\":\"2024-06-30T01:00:00.000Z\",\"end\":\"2024-07-30T23:59:00.000Z\"}};\nconst params = new URLSearchParams({\n  filters: Buffer.from(JSON.stringify(criteria), \"utf8\").toString(\"base64\")\n});\nconst path = \"/events?\" + params.toString();\n```\n\nBase64 encoding and URL encoding are separate steps. An HTTP client query-parameter helper can URL-encode the Base64 value for you. If constructing the URL manually, URL-encode the value once so `+`, `/`, and `=` are preserved.",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "eyJ0aW1lUmFuZ2UiOnsic3RhcnQiOiIyMDI0LTA2LTMwVDAxOjAwOjAwLjAwMFoiLCJlbmQiOiIyMDI0LTA3LTMwVDIzOjU5OjAwLjAwMFoifX0="
+       ],
+       "contentEncoding": "base64",
+       "contentMediaType": "application/json",
+       "contentSchema": {
+        "$ref": "#/components/schemas/eventsFilterSchema"
+       }
+      }
+     },
+     {
+      "name": "pageSize",
+      "in": "query",
+      "required": false,
+      "description": "Number of events per page",
+      "schema": {
+       "type": "integer",
+       "examples": [
+        20
+       ]
+      }
+     },
+     {
+      "name": "pageNumber",
+      "in": "query",
+      "required": false,
+      "description": "Page number to retrieve",
+      "schema": {
+       "type": "integer",
+       "examples": [
+        3
+       ]
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Events retrieved successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "array",
+         "items": {
+          "$ref": "#/components/schemas/eventResponse"
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "Invalid request",
+         "error_code": "INVALID_REQUEST"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error"
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Create a new event",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/eventPostRequestBody"
+       }
+      }
+     }
+    },
+    "responses": {
+     "201": {
+      "description": "Event created successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/eventResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "missing_input": {
+          "summary": "Missing site id",
+          "value": {
+           "err": "site id must be provided in request.",
+           "error_code": "MISSING_INPUT"
+          }
+         },
+         "not_supported": {
+          "summary": "Site feature disabled",
+          "value": {
+           "err": "site should not be provided in request, Site feature is disabled",
+           "error_code": "NOT_SUPPORTED"
+          }
+         },
+         "invalid_id": {
+          "summary": "Invalid site id",
+          "value": {
+           "err": "Invalid site id.",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "invalid_request_body": {
+          "summary": "Invalid request body",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "Request body is missing title"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "not_authorized": {
+          "summary": "Not authorized",
+          "value": {
+           "err": "Site does not belong to your institution",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "insufficient_permissions": {
+          "summary": "Insufficient permissions",
+          "value": {
+           "err": "User does not have enough permissions",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/alerts/{id}": {
+   "get": {
+    "tags": [
+     "alerts"
+    ],
+    "summary": "Get an alert by ID",
+    "description": "Retrieve the details of a single Control Center alert in your institution by its `alertId`.\n\n**Response nullability:** `triggeredBy`, `assignedTo` and `resolution` are always present in the response \u2014 when absent they are returned as explicit `null` rather than omitted from the object.\n\n**`triggeredBy` per alert type:**\n- `TEACHER_DECLINED_EVENT` \u2014 populated with the teacher who declined the event.\n- `EVENT_NO_SHOW` \u2014 always `null` (the alert is triggered by the absence of the organizer, not by a specific user action).",
+    "operationId": "getAlertById",
+    "parameters": [
+     {
+      "name": "id",
+      "in": "path",
+      "required": true,
+      "description": "The `alertId` of the alert to retrieve.",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Alert retrieved successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/alertResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid alert ID format",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "Invalid alert ID",
+         "error_code": "INVALID_REQUEST_BODY"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Alert not found. Also returned when the alert exists but belongs to a different institution than the caller's.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "Alert not found",
+         "error_code": "ALERT_NOT_FOUND"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/analytics/sessions/{sessionId}/reports": {
+   "get": {
+    "tags": [
+     "sessions"
+    ],
+    "summary": "Get reports for a session",
+    "description": "Returns the available coaching and safeguarding reports for a session.\n\nReport data is derived from the session's recordings and, when available,\nthe safeguarding document associated with the session.\n\nResponse behavior:\n- If the session has no recordings, both `coaching` and `safeguarding` are `null`.\n- If recordings exist but no coaching insights are available, `coaching` is `null`.\n- If no safeguarding document exists for the session, `safeguarding` is `null`.",
+    "operationId": "getAnalyticsSessionReports",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "sessionId",
+      "required": true,
+      "description": "The `sessionId` of the analytics session to retrieve reports for.",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Report payload. Both fields are always present; each may be `null` when there is no underlying data.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/sessionReport"
+        },
+        "examples": {
+         "emptyRecordings": {
+          "summary": "Session with no recordings",
+          "value": {
+           "coaching": null,
+           "safeguarding": null
+          }
+         },
+         "withData": {
+          "summary": "Session with coaching and safeguarding",
+          "value": {
+           "coaching": {
+            "sources": [
+             {
+              "recordingId": "507f1f77bcf86cd799439012",
+              "roomId": "room-abc",
+              "reportTimestamp": "2026-04-21T12:00:00.000Z",
+              "schemaVersion": "COACH_V1"
+             }
+            ],
+            "score": 3.75,
+            "categories": [
+             {
+              "name": "Engagement",
+              "score": 4,
+              "description": "Strong participation across the call.",
+              "categoryId": "507f1f77bcf86cd799439013"
+             }
+            ],
+            "items": [
+             {
+              "timestamp": "2026-04-21T12:05:30.000Z",
+              "recordingOffset": 120,
+              "recordingId": "507f1f77bcf86cd799439012",
+              "roomId": "room-abc",
+              "itemSeverity": 2,
+              "itemType": "PositiveMoment",
+              "itemContent": {
+               "note": "Example structured payload from insight details"
+              }
+             }
+            ]
+           },
+           "safeguarding": {
+            "schemaVersion": "SAFEGUARDING_V1",
+            "reportTimestamp": "2026-04-21T12:30:00.000Z",
+            "items": [
+             {
+              "source": "model",
+              "timestamp": "2026-04-21T12:08:00.000Z",
+              "recordingId": "507f1f77bcf86cd799439012",
+              "recordingTimestamp": 480,
+              "roomId": "room-abc",
+              "userId": "507f1f77bcf86cd799439014",
+              "itemSeverity": "medium",
+              "itemContent": "Example narrative or classification text"
+             }
+            ]
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Authentication failed, session not found, invalid `sessionId`, or caller is not authorized to access the session's Space.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalidAuth": {
+          "summary": "Invalid or expired authentication token",
+          "value": {
+           "err": "Invalid or expired authentication token.",
+           "error_code": "INVALID_AUTH_TOKEN"
+          }
+         },
+         "sessionNotFound": {
+          "summary": "Session id valid but no document",
+          "value": {
+           "err": "session not found",
+           "error_code": "SESSION_DOES_NOT_EXIST"
+          }
+         },
+         "invalidSessionId": {
+          "summary": "sessionId is not a valid ObjectId",
+          "value": {
+           "err": "invalid session id",
+           "error_code": "SESSION_DOES_NOT_EXIST"
+          }
+         },
+         "notHost": {
+          "summary": "User is not a host of the Space and is not an eligible public API admin",
+          "value": {
+           "err": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution.",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "publicApiNonAdmin": {
+          "summary": "Public API caller is not an institution admin",
+          "value": {
+           "err": "Unauthorized. Public API access is restricted to institution admins only.",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Returned when refresh-token based public API flow is used against a route that is not allowlisted for that flow.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "Not a valid api route"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Unhandled server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/availability/slots/{userId}": {
+   "get": {
+    "tags": [
+     "availability"
+    ],
+    "summary": "Get a user's availability slots",
+    "description": "Retrieve the stored weekly availability slots for the target user. If the user has never had availability set, the response's `availability` object contains only `userId` and an empty `slots` array \u2014 `id` and `timezone` are omitted.",
+    "operationId": "getAvailabilitySlots",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "required": true,
+      "description": "The `userId` of the user whose availability is being retrieved.",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Availability retrieved successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "required": [
+          "availability"
+         ],
+         "properties": {
+          "availability": {
+           "$ref": "#/components/schemas/availabilitySlotsResponse"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid `userId`",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "User Id is missing or invalid",
+         "error_code": "INVALID_REQUEST_BODY"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "User does not have enough permissions",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "The caller is not permitted to view this user's availability.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "Permission Denied",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "User not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "User not found",
+         "error_code": "USER_DOES_NOT_EXIST"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        }
+       }
+      }
+     }
+    }
+   },
+   "post": {
+    "tags": [
+     "availability"
+    ],
+    "summary": "Create or update a user's availability slots",
+    "description": "Upsert the target user's weekly availability slots. If the user has no availability record, one is created; if they do, all slots and the timezone are replaced with the values in the request body \u2014 this is not a partial update.",
+    "operationId": "upsertAvailabilitySlots",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "required": true,
+      "description": "The `userId` of the user whose availability is being set.",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/availabilitySlotsRequest"
+       },
+       "example": {
+        "slots": [
+         {
+          "day": 1,
+          "start": "08:45",
+          "end": "10:45"
+         },
+         {
+          "day": 2,
+          "start": "02:00",
+          "end": "10:05"
+         }
+        ],
+        "timezone": "America/New_York"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Availability created or updated successfully. The response contains the full stored availability after the upsert.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/availabilitySlotsResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid request body or path parameter",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_user_id": {
+          "summary": "Invalid or missing `userId`",
+          "value": {
+           "err": "User Id is missing or invalid",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "invalid_timezone": {
+          "summary": "Invalid timezone",
+          "value": {
+           "err": "Invalid timezone. Please provide a valid IANA timezone string (e.g., \"America/New_York\", \"Europe/London\")",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "The caller is not permitted to update this user's availability.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "Permission Denied",
+         "error_code": "NOT_AUTHORIZED"
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "User not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "example": {
+         "err": "User not found",
+         "error_code": "USER_DOES_NOT_EXIST"
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/spaces/recordings": {
+   "get": {
+    "tags": [
+     "recordings"
+    ],
+    "summary": "Get recordings for all your Spaces",
+    "operationId": "getRecordings",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "startingAfter",
+      "schema": {
+       "$ref": "#/components/schemas/rfc3339Timestamp"
+      },
+      "description": "**(Optional)** - The **URL encoded** lower bound timestamp for the desired lookup range"
+     },
+     {
+      "in": "query",
+      "name": "endingBefore",
+      "schema": {
+       "$ref": "#/components/schemas/rfc3339Timestamp"
+      },
+      "description": "**(Optional)** The **URL encoded** upper bound timestamp for the desired lookup range"
+     },
+     {
+      "$ref": "#/components/parameters/pageNumberQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/pageSizeQueryParam"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response will return the recordings across all your Spaces in the requested time range",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "recordings": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/recording"
+           }
+          },
+          "pageNumber": {
+           "type": "integer",
+           "description": "The page number for the current batch of results, given the supplied `pageSize`"
+          },
+          "pageSize": {
+           "type": "integer",
+           "description": "The `pageSize` supplied in the original request"
+          },
+          "totalPages": {
+           "type": "integer",
+           "description": "Total number of pages"
+          },
+          "totalRecords": {
+           "type": "integer",
+           "description": "Total number of records"
+          }
+         }
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Server cannot or will not process the request due to something that is perceived to be a client error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "type": "string",
+           "description": "Requested pageSize is too large, the maximum pageSize is 100"
+          },
+          {
+           "type": "string",
+           "description": "Incorrect starting or ending time specified. startingTime: <>, endingTime:<>"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "You are not authorized to make this request or the request was invalid."
+     }
+    }
+   }
+  },
+  "/spaces/recordings/{spaceId}": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "description": "The `spaceId` you wish to query recordings for"
+    }
+   ],
+   "get": {
+    "tags": [
+     "recordings"
+    ],
+    "summary": "Get recordings for a Space",
+    "operationId": "getRecordingsForSpace",
+    "parameters": [
+     {
+      "in": "query",
+      "name": "startingAfter",
+      "schema": {
+       "$ref": "#/components/schemas/rfc3339Timestamp"
+      },
+      "description": "**(Optional)** - The **URL encoded** lower bound timestamp for the desired lookup range"
+     },
+     {
+      "in": "query",
+      "name": "endingBefore",
+      "schema": {
+       "$ref": "#/components/schemas/rfc3339Timestamp"
+      },
+      "description": "**(Optional)** - The **URL encoded** upper bound timestamp for the desired lookup range"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response will return the recordings for the Space in the requested time range",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "recordings": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/recording"
+           }
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "You are not authorized to make this request. This could be because the account connected to your API key is not a host of the Space, or the owner of the Space is not part of your team / institution."
+     },
+     "404": {
+      "description": "The provided `spaceId` could not be found."
+     }
+    }
+   }
+  },
+  "/analytics/sessions": {
+   "get": {
+    "tags": [
+     "sessions"
+    ],
+    "summary": "Get a list of sessions",
+    "description": "Get a list of sessions from Spaces managed by the user associated with your API key",
+    "operationId": "getSessions",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/pageNumberQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/pageSizeQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/sessionsFilterQueryParam"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response will return an array of session objects in the given query range.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "results": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/session"
+           }
+          },
+          "pageNumber": {
+           "type": "integer",
+           "description": "The page number for the current batch of results, given the supplied `pageSize`"
+          },
+          "pageSize": {
+           "type": "integer",
+           "description": "The `pageSize` supplied in the original request"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "INVALID_MIN_TIME",
+            "INVALID_MAX_TIME",
+            "USER_DOES_NOT_EXIST",
+            "SPACE_DOES_NOT_EXIST"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/spaces": {
+   "get": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Get a list of Spaces",
+    "description": "Get a list of Spaces accessible by the account associated with your API key",
+    "operationId": "getSpaces",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/pageNumberQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/pageSizeQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/spacesFilterQueryParam"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response will return an array of Space objects in the given query range.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "results": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/space"
+           }
+          },
+          "pageNumber": {
+           "type": "integer",
+           "description": "The page number for the current batch of results, given the supplied `pageSize`, defaults to a value of `1` if not supplied"
+          },
+          "pageSize": {
+           "type": "integer",
+           "description": "The `pageSize` supplied in the original request, defaults to a value `25` if not supplied and has a max limit of `100` spaces"
+          },
+          "totalPages": {
+           "type": "integer",
+           "description": "Total number of pages"
+          },
+          "totalRecords": {
+           "type": "integer",
+           "description": "Total number of records"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "QUERY_INVALID",
+            "USER_DOES_NOT_EXIST"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/transcriptions/{recordingId}": {
+   "get": {
+    "tags": [
+     "transcripts"
+    ],
+    "summary": "Fetch transcription for a recording",
+    "description": "Fetch recording transcript, call users, and - if enabled - the transcript summary.",
+    "operationId": "getTranscription",
+    "parameters": [
+     {
+      "name": "recordingId",
+      "in": "path",
+      "required": true,
+      "description": "Unique identifier for the recording",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response with the recording's transcription details",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/transcript"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an issue accessing transcripts for this recording",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_id": {
+          "summary": "Recording does not exist",
+          "value": {
+           "err": "Invalid recordingId",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "insufficient_permissions": {
+          "summary": "Insufficient permissions",
+          "value": {
+           "err": "User does not have enough permissions",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "transcript_processing": {
+          "summary": "Transcript processing",
+          "value": {
+           "err": "Transcription is not ready, please try again later",
+           "error_code": "TRY_AGAIN_LATER"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/users/{userId}": {
+   "get": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Get the profile of a specific user",
+    "description": "Retrieve the profile of a user in your institution by their `userId`",
+    "operationId": "getUser",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "description": "The `userId` of the user you want to retrieve profile for",
+      "required": true,
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "The profile of user, if retrieved successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/user"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "A user with the provided `userId` could not be found"
+     }
+    }
+   },
+   "patch": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Modify user properties",
+    "description": "This endpoint allows modification of user attributes.",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the user to be modified.",
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "The user's updated name.",
+          "examples": [
+           "Alice Doe"
+          ]
+         },
+         "externalId": {
+          "type": "string",
+          "description": "External user identifier."
+         },
+         "siteIds": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "examples": [
+            "60d5ec49f1d2f39f10b5e5f3"
+           ],
+           "description": "String object ID of the site."
+          },
+          "description": "Array of site IDs that the user belongs to. This field is applicable only for institutions with sites. If the user being patched is an institution admin and the institution is site-enabled, the siteIds array is not required."
+         },
+         "customAttributes": {
+          "anyOf": [
+           {
+            "$ref": "#/components/schemas/customAttributeList"
+           }
+          ]
+         },
+         "languageCode": {
+          "type": "string",
+          "description": "BCP 47 language code for the user's preferred language. Optional; defaults to \"en\" (English) if not provided.",
+          "examples": [
+           "fr"
+          ]
+         }
+        },
+        "minProperties": 1
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The user object for the user that was just modified.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/user"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid request parameters or body.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalidUserId": {
+          "summary": "Invalid userId",
+          "value": {
+           "error": "Invalid userId: 5ee9.",
+           "error_code": "BAD_REQUEST"
+          }
+         },
+         "invalidRequestBody": {
+          "summary": "Invalid request body",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "externalId is required"
+           ]
+          }
+         },
+         "invalidSiteIds": {
+          "summary": "Invalid site IDs",
+          "value": {
+           "err": "Invalid site ids: 668bf0914970bfeb7bb685a51.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "siteIdsNotBelonging": {
+          "summary": "Site IDs not belonging to institution",
+          "value": {
+           "err": "Site ids not belonging to institution: 65fb240449b6afa13825a97b.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "invalidLanguageCode": {
+          "summary": "Invalid language code - unrecognized or unsupported language setting",
+          "value": {
+           "err": "Invalid language code. Acceptable values are: ar, ar-sa, en, es,.....",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "User not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "userNotFound": {
+          "summary": "User not found",
+          "value": {
+           "error": "User not found: userId: 5ee9bfb9e7179a6b636b3d95 does not belong to any user in your institution.",
+           "error_code": "USER_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/users": {
+   "get": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Get profiles for all institution users",
+    "description": "Query profiles for all institution users",
+    "operationId": "getUsers",
+    "parameters": [
+     {
+      "$ref": "#/components/parameters/pageNumberQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/pageSizeQueryParam"
+     },
+     {
+      "$ref": "#/components/parameters/usersFilterQueryParam"
+     }
+    ],
+    "responses": {
+     "200": {
+      "description": "Successful response will return an array of users in the given query range.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "results": {
+           "type": "array",
+           "items": {
+            "$ref": "#/components/schemas/user"
+           }
+          },
+          "pageNumber": {
+           "type": "integer",
+           "description": "The page number for the current batch of results, given the supplied `pageSize`"
+          },
+          "pageSize": {
+           "type": "integer",
+           "description": "The `pageSize` supplied in the original request"
+          },
+          "totalPages": {
+           "type": "integer",
+           "description": "Total number of pages"
+          },
+          "totalRecords": {
+           "type": "integer",
+           "description": "Total number of records"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "QUERY_INVALID"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/users/inviteUser": {
+   "post": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Invite a user to the institution via their email",
+    "description": "Invite a user by their email address to the institution",
+    "operationId": "inviteUser",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "name": {
+          "type": "string",
+          "description": "The name address of the user",
+          "examples": [
+           "John Doe"
+          ]
+         },
+         "email": {
+          "type": "string",
+          "format": "email",
+          "description": "The email address of the user",
+          "examples": [
+           "example@example.com"
+          ]
+         },
+         "userRole": {
+          "type": "string",
+          "enum": [
+           "Student",
+           "Teacher"
+          ],
+          "description": "The desired role for the user. Note: you can't programmatically invite a user as an `InstitutionAdmin`",
+          "examples": [
+           "Student"
+          ]
+         },
+         "externalId": {
+          "type": "string",
+          "description": "External user identifier. Optional.",
+          "examples": [
+           "6edc7a720dd50ee133b52685"
+          ]
+         },
+         "siteIds": {
+          "type": "array",
+          "items": {
+           "type": "string",
+           "examples": [
+            "60d5ec49f1d2f39f10b5e5f3"
+           ],
+           "description": "String object ID of the site."
+          },
+          "description": "Array of site IDs that the invited user belongs to. This field is required and applicable only for institutions with sites."
+         },
+         "customAttributes": {
+          "anyOf": [
+           {
+            "$ref": "#/components/schemas/customAttributeList"
+           }
+          ]
+         }
+        },
+        "required": [
+         "name",
+         "email",
+         "userRole"
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "204": {
+      "description": "User successfully invited (or created and invited) to the institution",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/user"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid request parameters or body.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalidSiteIds": {
+          "summary": "Invalid site IDs",
+          "value": {
+           "err": "Invalid site ids: 668bf0914970bfeb7bb685a51.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "siteIdsNotBelonging": {
+          "summary": "Site IDs not belonging to institution",
+          "value": {
+           "err": "Site ids not belonging to institution: 65fb240449b6afa13825a97b.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "USER_PART_OF_ANOTHER_INSTITUTION",
+            "USER_ALREADY_IN_INSTITUTION",
+            "USER_ALREADY_INVITED"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/attendance/{event_id}/update": {
+   "patch": {
+    "tags": [
+     "attendance"
+    ],
+    "summary": "Update attendance details for a user in a past event",
+    "description": "Update the attendance status or notes for a specific user in the past event specified by the event ID. Attendance can only be updated for events that have already occurred. Ongoing or future events cannot be updated.",
+    "parameters": [
+     {
+      "in": "path",
+      "name": "event_id",
+      "required": true,
+      "schema": {
+       "type": "string"
+      },
+      "description": "The unique identifier of the event."
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "attendance": {
+          "type": "object",
+          "required": [
+           "user_id"
+          ],
+          "properties": {
+           "user_id": {
+            "type": "string",
+            "examples": [
+             "632403991ae8ee2b706ffa2a"
+            ]
+           },
+           "status": {
+            "$ref": "#/components/schemas/attendanceStatus"
+           },
+           "notes": {
+            "type": "string",
+            "examples": [
+             "This is a test note."
+            ]
+           }
+          }
+         }
+        },
+        "anyOf": [
+         {
+          "required": [
+           "status"
+          ]
+         },
+         {
+          "required": [
+           "notes"
+          ]
+         },
+         {
+          "required": [
+           "status",
+           "notes"
+          ]
+         }
+        ]
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Successfully updated attendance details.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "examples": [
+          {}
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Invalid request payload.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_status": {
+          "summary": "Invalid Status",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "Status must be a valid Attendance Status value."
+           ]
+          }
+         },
+         "user_not_in_event": {
+          "summary": "User Not in Event",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "User must belong to the event."
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Forbidden - Only past event's attendance can be updated.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "cannot_edit_future_or_ongoing": {
+          "summary": "Cannot Edit Future or Ongoing Event Attendance",
+          "value": {
+           "err": "Only past event's attendance can be updated.",
+           "error_code": "CANNOT_EDIT_FUTURE_OR_ONGOING_EVENT_ATTENDANCE"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event with specified ID not found.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_not_found": {
+          "summary": "Event Not Found",
+          "value": {
+           "err": "Event with specified ID not found.",
+           "error_code": "EVENT_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/spaces/{spaceId}/settings/": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     }
+    }
+   ],
+   "patch": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Modify the space settings",
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "settings": {
+          "$ref": "#/components/schemas/spaceSettings"
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Success",
+      "content": {
+       "application/json": {
+        "schema": {
+         "description": "Success",
+         "type": "object"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Malformed Request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "description": "There were errors validating the settings, errors: [errors]",
+         "type": "object",
+         "properties": {
+          "err": {
+           "type": "string"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "User does not has sufficient permissions",
+      "content": {
+       "application/json": {
+        "schema": {
+         "oneOf": [
+          {
+           "description": "Only administrators can change the space settings",
+           "type": "object",
+           "properties": {
+            "err": {
+             "type": "string"
+            }
+           }
+          },
+          {
+           "description": "This user belongs to a different institution than the space being modified",
+           "type": "object",
+           "properties": {
+            "err": {
+             "type": "string"
+            }
+           }
+          }
+         ]
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events/{eventId}/update": {
+   "patch": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Partially update an existing event",
+    "description": "Update selected fields on an existing event. Unlike `PUT /events/{eventId}`, which requires the complete event object, this endpoint accepts a partial event object and only modifies the fields explicitly provided in the request body. Fields not included in the request remain unchanged. All properties in the request body are optional but at least one must be supplied.\n\n**Editability restrictions based on event state:**\n- **Past or cancelled events**: only `title`, `description` and `customAttributes` may be updated.\n- **Active future events**: all listed fields may be updated.\n\nSupplying a field that is not allowed for the event's current state will return `400 INVALID_REQUEST_BODY`.\n\n**`type` / `spaceId` / `location` mutual exclusion:**\n- For `ONLINE` events, `location` must not be supplied; if the event previously had a `location` it will be cleared.\n- For `OFFLINE` events, `spaceId` must not be supplied; if the event previously had a `spaceId` it will be cleared.\n\n**Recurring events:** the request updates only the single occurrence identified by `eventId`; there is no way via the public API to apply the change to the whole series or to \"this and future\" occurrences.",
+    "operationId": "patchEventPartial",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to update",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "$ref": "#/components/schemas/eventPatchUpdateRequestBody"
+       },
+       "example": {
+        "title": "Updated Event Title",
+        "description": "Updated event description."
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Event updated successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/eventResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_event_id": {
+          "summary": "Invalid Event ID",
+          "value": {
+           "err": "Invalid event Id",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "disallowed_field": {
+          "summary": "Field not allowed for event's current state",
+          "value": {
+           "err": "Invalid fields provided in body. start,end: are not allowed.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "space_id_not_allowed_for_offline": {
+          "summary": "`spaceId` supplied for an `OFFLINE` event",
+          "value": {
+           "err": "spaceId is not allowed for OFFLINE events.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "location_not_allowed_for_online": {
+          "summary": "`location` supplied for an `ONLINE` event",
+          "value": {
+           "err": "location is not allowed for ONLINE events.",
+           "error_code": "INVALID_REQUEST_BODY"
+          }
+         },
+         "invalid_request_body": {
+          "summary": "Invalid request body",
+          "value": {
+           "err": "Invalid request",
+           "error_code": "INVALID_REQUEST_BODY",
+           "messages": [
+            "title must be a non-empty string"
+           ]
+          }
+         },
+         "missing_input": {
+          "summary": "Missing required input for provided field",
+          "value": {
+           "err": "location must be provided for OFFLINE events.",
+           "error_code": "MISSING_INPUT"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "not_authorized": {
+          "summary": "Not authorized",
+          "value": {
+           "err": "Event is outside of your institution",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "insufficient_permissions": {
+          "summary": "Insufficient permissions",
+          "value": {
+           "err": "User does not have enough permissions",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Forbidden",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "free_user_restriction": {
+          "summary": "Free User Restriction",
+          "value": {
+           "err": "Free users cannot access this feature",
+           "error_code": "FEATURE_NOT_AVAILABLE"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_not_found": {
+          "summary": "Event Not Found",
+          "value": {
+           "err": "Event not found",
+           "error_code": "EVENT_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "internal_server_error": {
+          "summary": "General Server Error",
+          "value": {
+           "err": "Internal server error message"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events/{eventId}/cancel": {
+   "post": {
+    "tags": [
+     "events"
+    ],
+    "summary": "Cancel an existing event",
+    "description": "Cancel an event with the opton to provide a cancellation note",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to cancel",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "note": {
+          "type": "string",
+          "description": "Cancellation reason/note explaining why the event is being cancelled",
+          "maxLength": 300
+         }
+        },
+        "required": [
+         "note"
+        ]
+       },
+       "example": {
+        "note": "Meeting cancelled due to scheduling conflict with client presentation"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "Event cancelled successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/eventResponse"
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "invalid_event_id": {
+          "summary": "Invalid Event ID",
+          "value": {
+           "err": "Invalid event Id",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "missing_cancellation_note": {
+          "summary": "Missing or Invalid Cancellation Note",
+          "value": {
+           "err": "Cancellation note is required"
+          }
+         },
+         "cancellation_note_too_long": {
+          "summary": "Cancellation Note Too Long",
+          "value": {
+           "err": "Cancellation note is too long. Maximum length is 300 characters"
+          }
+         }
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "Unauthorized",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_outside_institution": {
+          "summary": "Event Outside Institution",
+          "value": {
+           "err": "Event is outside of your institution",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "403": {
+      "description": "Forbidden",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "insufficient_permissions": {
+          "summary": "Insufficient Permissions",
+          "value": {
+           "err": "User does not have enough permissions",
+           "error_code": "NOT_AUTHORIZED"
+          }
+         },
+         "free_user_restriction": {
+          "summary": "Free User Restriction",
+          "value": {
+           "err": "Free users cannot access this feature",
+           "error_code": "FEATURE_NOT_AVAILABLE"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Not Found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_not_found": {
+          "summary": "Event Not Found",
+          "value": {
+           "err": "Event not found",
+           "error_code": "EVENT_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Conflict",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_already_cancelled": {
+          "summary": "Event Already Cancelled",
+          "value": {
+           "err": "Event is already cancelled",
+           "error_code": "EVENT_ALREADY_CANCELLED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "internal_server_error": {
+          "summary": "General Server Error",
+          "value": {
+           "err": "Internal server error message"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/events/{eventId}/rsvp": {
+   "post": {
+    "tags": [
+     "events"
+    ],
+    "summary": "RSVP to an existing event",
+    "description": "RSVP to an event with an optional note.",
+    "parameters": [
+     {
+      "name": "eventId",
+      "in": "path",
+      "required": true,
+      "description": "ID of the event to RSVP to",
+      "schema": {
+       "type": "string",
+       "examples": [
+        "66221c62b3248a440f993208"
+       ]
+      }
+     }
+    ],
+    "requestBody": {
+     "required": true,
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "status": {
+          "type": "string",
+          "description": "RSVP response status",
+          "enum": [
+           "YES",
+           "NO"
+          ]
+         },
+         "user_id": {
+          "type": "string",
+          "description": "ID of the user updating their RSVP status",
+          "examples": [
+           "507f1f77bcf86cd799439013"
+          ]
+         },
+         "note": {
+          "type": "string",
+          "description": "Optional note explaining the RSVP response"
+         }
+        },
+        "required": [
+         "status",
+         "user_id"
+        ]
+       },
+       "example": {
+        "status": "NO",
+        "user_id": "507f1f77bcf86cd799439013",
+        "note": "Unable to attend due to conflicting appointment"
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "RSVP updated successfully",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "description": "Empty object on success",
+         "examples": [
+          {}
+         ]
+        }
+       }
+      }
+     },
+     "400": {
+      "description": "Bad request",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "missing_event_id": {
+          "summary": "Event Id not set",
+          "value": {
+           "err": "Event Id was not set",
+           "error_code": "MISSING_INPUT"
+          }
+         },
+         "invalid_event_id": {
+          "summary": "Invalid Event ID format",
+          "value": {
+           "err": "Invalid event Id",
+           "error_code": "INVALID_ID"
+          }
+         },
+         "invalid_rsvp_status": {
+          "summary": "Invalid RSVP Status",
+          "value": {
+           "message": "Invalid RSVP status"
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "Event not found",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_not_found": {
+          "summary": "Event Not Found",
+          "value": {
+           "err": "Event with specified Id not found",
+           "error_code": "EVENT_NOT_FOUND"
+          }
+         }
+        }
+       }
+      }
+     },
+     "409": {
+      "description": "Conflict",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "event_already_completed": {
+          "summary": "Event Already Completed",
+          "value": {
+           "err": "Event is already completed",
+           "error_code": "EVENT_ALREADY_COMPLETED"
+          }
+         }
+        }
+       }
+      }
+     },
+     "500": {
+      "description": "Internal server error",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/errorResponse"
+        },
+        "examples": {
+         "rsvp_update_failed": {
+          "summary": "RSVP Update Failed",
+          "value": {
+           "err": "Event update failed"
+          }
+         },
+         "internal_server_error": {
+          "summary": "General Server Error",
+          "value": {
+           "err": "Internal server error message"
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  },
+  "/users/{userId}/remove": {
+   "delete": {
+    "tags": [
+     "users"
+    ],
+    "summary": "Remove user from your institution",
+    "description": "Remove an existing user from your institution by their `userId`. Note: Once removed, API-authenticated users will not be re-addable to your institution and will be deactivated permanently.",
+    "operationId": "removeUser",
+    "parameters": [
+     {
+      "name": "userId",
+      "in": "path",
+      "description": "The `userId` of the user you want to be removed",
+      "required": true,
+      "schema": {
+       "$ref": "#/components/schemas/mongoDBID"
+      }
+     }
+    ],
+    "responses": {
+     "204": {
+      "description": "User successfully removed from the institution"
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "REMOVE_YOURSELF_NOT_ALLOWED"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "404": {
+      "description": "A user with the provided `userId` could not be found"
+     }
+    }
+   }
+  },
+  "/spaces/{spaceId}/updateUsers": {
+   "parameters": [
+    {
+     "in": "path",
+     "name": "spaceId",
+     "required": true,
+     "schema": {
+      "$ref": "#/components/schemas/mongoDBID"
+     }
+    }
+   ],
+   "patch": {
+    "tags": [
+     "spaces"
+    ],
+    "summary": "Add / remove a user or modify user roles in a Space",
+    "operationId": "updateSpaceUsers",
+    "description": "Update a user in an existing Space. A user can be identified either by `email` or `userId`.",
+    "requestBody": {
+     "content": {
+      "application/json": {
+       "schema": {
+        "type": "object",
+        "properties": {
+         "addUsers": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userListWithRole"
+           }
+          ],
+          "description": "Users you want to add to your Space, along with their role. Accepts input of type `userListWithRole`."
+         },
+         "modifyUsers": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userListWithRole"
+           }
+          ],
+          "description": "Users who you want to modify roles for. You may not downgrade the user associated with your API key to a participant. Accepts input of type `userListWithRole`."
+         },
+         "removeUsers": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/userList"
+           }
+          ],
+          "description": "Users you want to remove from your Space. You may not remove the user associated with your API key from a Space, and every Space needs at least one host. Accepts input of type `userList`."
+         },
+         "notifyInvitees": {
+          "type": "boolean",
+          "description": "Whether you want to automatically notify added invitees",
+          "examples": [
+           true
+          ],
+          "default": true
+         }
+        }
+       }
+      }
+     }
+    },
+    "responses": {
+     "200": {
+      "description": "The updated Space object for the Space that you just updated",
+      "content": {
+       "application/json": {
+        "schema": {
+         "$ref": "#/components/schemas/space"
+        }
+       }
+      }
+     },
+     "401": {
+      "description": "There was an error processing your request. This could be due to one of several reasons detailed in the API response.",
+      "content": {
+       "application/json": {
+        "schema": {
+         "type": "object",
+         "properties": {
+          "error": {
+           "type": "string",
+           "examples": [
+            "Error: Your request failed because you weren't authorized to make this request."
+           ]
+          },
+          "error_code": {
+           "type": "string",
+           "enum": [
+            "NOT_AUTHORIZED",
+            "INVALID_USER_ID",
+            "INVALID_EMAIL_ID",
+            "USER_NOT_IN_SPACE"
+           ],
+           "examples": [
+            "(See schema) NOT_AUTHORIZED"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   }
+  }
+ },
+ "components": {
+  "schemas": {
+   "mongoDBID": {
+    "type": "string",
+    "format": "mongodb id (12 byte hex string)",
+    "examples": [
+     "507f1f77bcf86cd799439011"
+    ]
+   },
+   "user": {
+    "required": [
+     "userId",
+     "email",
+     "isApiManaged"
+    ],
+    "properties": {
+     "userId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The descriptor for the user in the institution"
+       }
+      ]
+     },
+     "email": {
+      "type": "string",
+      "description": "The user's email address",
+      "examples": [
+       "example@example.com"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "description": "The user's name",
+      "examples": [
+       "John Doe"
+      ]
+     },
+     "isApiManaged": {
+      "type": "boolean",
+      "description": "Whether the user is managed by this institution.",
+      "examples": [
+       true
+      ]
+     },
+     "profilePic": {
+      "type": "string",
+      "description": "The user's profile picture, if available",
+      "examples": [
+       "https://example.com/profile.jpg"
+      ]
+     },
+     "userRole": {
+      "type": "string",
+      "enum": [
+       "InstitutionAdmin",
+       "SiteAdmin",
+       "Student",
+       "Teacher"
+      ],
+      "description": "The desired role for the user",
+      "examples": [
+       "Student"
+      ]
+     },
+     "externalId": {
+      "type": "string",
+      "description": "external user identifier. This is empty string if not set.",
+      "examples": [
+       "6edc7a720dd50ee133b52685"
+      ]
+     },
+     "siteIds": {
+      "type": "array",
+      "items": {
+       "type": "string",
+       "examples": [
+        "60d5ec49f1d2f39f10b5e5f3"
+       ]
+      },
+      "description": "Array of site IDs that the user belongs to. This field is only returned for institutions that are site-enabled. For institution admins, this array will be empty."
+     },
+     "customAttributes": {
+      "type": "array",
+      "description": "Array of custom attributes associated with the user. If the user does not have any custom attributes, this property will be an empty array.    refer to'#/components/schemas/customAttributeList'",
+      "items": {
+       "type": "string",
+       "examples": [
+        "UvOpCTDGzbiNhvjnpHTB:nmgkDIueg1v_c2CqUqOCk"
+       ]
+      }
+     },
+     "languageCode": {
+      "type": "string",
+      "description": "BCP 47 language code associated with the user. Defaults to en if not set"
+     }
+    }
+   },
+   "customAttributeList": {
+    "type": "array",
+    "items": {
+     "type": "string"
+    },
+    "description": "Array of custom attributes in the format `<keyId>:<valueKeyId>`.\n\nEach entry consists of a key-value pair representing the custom attribute and its value. For example, `\"UvOpCTDGzbiNhvjnpHTB:nmgkDIueg1v_c2CqUqOCk\"` refers to the value `Math` for the custom attribute `Subjects`.\n\nRefer to the `GET /attributes` endpoint to retrieve all available custom attributes.\n",
+    "examples": [
+     [
+      "UvOpCTDGzbiNhvjnpHTB:nmgkDIueg1v_c2CqUqOCk"
+     ]
+    ]
+   },
+   "errorResponse": {
+    "type": "object",
+    "properties": {
+     "err": {
+      "type": "string",
+      "description": "Error message",
+      "examples": [
+       "Error message"
+      ]
+     },
+     "error_code": {
+      "type": "string",
+      "description": "Specific error code",
+      "examples": [
+       "INVALID_REQUEST_BODY"
+      ]
+     }
+    }
+   },
+   "spaceSettings": {
+    "properties": {
+     "disableAlwaysOnRecording": {
+      "type": "boolean",
+      "description": "Set whether always-on-recording is disabled for the Space. This setting only applies if always-on-recording is available at the institution level"
+     },
+     "enableWaitingRoom": {
+      "type": "boolean",
+      "description": "Set whether Waiting Room is available by default"
+     }
+    }
+   },
+   "spaceUser": {
+    "required": [
+     "userId",
+     "email"
+    ],
+    "properties": {
+     "userId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "email": {
+      "type": "string",
+      "description": "The user's email address",
+      "examples": [
+       "example@example.com"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "description": "The user's name",
+      "examples": [
+       "John Doe"
+      ]
+     },
+     "profilePic": {
+      "type": "string",
+      "examples": [
+       "https://example.com/profile.jpg"
+      ]
+     }
+    }
+   },
+   "space": {
+    "required": [
+     "spaceId",
+     "title",
+     "users",
+     "link",
+     "visibility"
+    ],
+    "properties": {
+     "spaceId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "hosts": {
+      "type": "array",
+      "description": "An array of `spaceUser` corresponding to Space hosts",
+      "items": {
+       "allOf": [
+        {
+         "$ref": "#/components/schemas/spaceUser"
+        }
+       ]
+      }
+     },
+     "participants": {
+      "type": "array",
+      "description": "An array of `spaceUser` corresponding to Space participants",
+      "items": {
+       "allOf": [
+        {
+         "$ref": "#/components/schemas/spaceUser"
+        }
+       ]
+      }
+     },
+     "title": {
+      "type": "string",
+      "examples": [
+       "My First Space"
+      ]
+     },
+     "link": {
+      "type": "string",
+      "examples": [
+       "https://my.pencilapp.com/spaces/507f1f77bcf86cd799439011"
+      ]
+     },
+     "visibility": {
+      "type": "string",
+      "examples": [
+       "public"
+      ],
+      "enum": [
+       "private",
+       "public"
+      ]
+     },
+     "archived": {
+      "type": "boolean",
+      "examples": [
+       true
+      ]
+     },
+     "externalId": {
+      "type": "string",
+      "examples": [
+       "abc123"
+      ],
+      "description": "The external ID of the Space. External IDs must be unique."
+     },
+     "createdAt": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ]
+     },
+     "editedAt": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ]
+     },
+     "settings": {
+      "$ref": "#/components/schemas/spaceSettings"
+     },
+     "siteId": {
+      "type": "string",
+      "description": "The ID of the site linked to the space. If the space is not linked to any site, this field will not be included in the response.",
+      "examples": [
+       "65fb240449b6afa13825a97b"
+      ]
+     }
+    }
+   },
+   "userSchema": {
+    "type": "object",
+    "properties": {
+     "email": {
+      "type": "string",
+      "format": "email",
+      "examples": [
+       "bob.bill@bob.com"
+      ],
+      "description": "The email for this user. If `userId` is also provided, the email is ignored."
+     },
+     "userId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The `userId` for this user."
+       }
+      ]
+     }
+    }
+   },
+   "userList": {
+    "type": "array",
+    "items": {
+     "$ref": "#/components/schemas/userSchema"
+    }
+   },
+   "rfc3339Timestamp": {
+    "type": "string",
+    "format": "RFC3339 timestamp with mandatory time zone offset - e.g., YYYY-mm-ddTHH:MM:ss+00:00",
+    "examples": [
+     "2099-01-12T00:00:00.000+00:00"
+    ]
+   },
+   "attendanceStatus": {
+    "type": "string",
+    "enum": [
+     "Present",
+     "Late",
+     "Absent",
+     "Left",
+     "Excuse"
+    ],
+    "examples": [
+     "Absent"
+    ]
+   },
+   "attendanceRecord": {
+    "type": "object",
+    "properties": {
+     "id": {
+      "type": "string",
+      "examples": [
+       "60d0fe4f5311236168a109ca"
+      ]
+     },
+     "email": {
+      "type": "string",
+      "examples": [
+       "john.doe@example.com"
+      ]
+     },
+     "name": {
+      "type": "string",
+      "examples": [
+       "John Doe"
+      ]
+     },
+     "role": {
+      "type": "string",
+      "enum": [
+       "Attendee",
+       "Organizer"
+      ],
+      "examples": [
+       "Attendee"
+      ]
+     },
+     "status": {
+      "$ref": "#/components/schemas/attendanceStatus"
+     },
+     "notes": {
+      "type": [
+       "string",
+       "null"
+      ],
+      "examples": [
+       "Was absent due to personal reasons."
+      ]
+     },
+     "joinTime": {
+      "type": "string",
+      "format": "date-time",
+      "examples": [
+       "2024-05-29T14:15:00.940Z"
+      ]
+     },
+     "autoAdded": {
+      "type": "boolean",
+      "description": "Indicates if the user was automatically added to the attendance list by joining the event without an invitation.",
+      "examples": [
+       false
+      ]
+     }
+    }
+   },
+   "attendanceList": {
+    "type": "object",
+    "properties": {
+     "results": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/attendanceRecord"
+      }
+     }
+    }
+   },
+   "recurrence": {
+    "type": "object",
+    "properties": {
+     "rule": {
+      "type": "string",
+      "description": "The recurrence rule in RRULE format.",
+      "examples": [
+       "RRULE:FREQ=WEEKLY;INTERVAL=1;BYDAY=MO,TU,WE,TH,FR;UNTIL=20240423T143000Z"
+      ]
+     },
+     "recurringEventId": {
+      "type": "string",
+      "description": "The ID of the first event in the recurring events chain.",
+      "examples": [
+       "65eedff5ec482f7e3fc458eb"
+      ]
+     }
+    }
+   },
+   "eventResponse": {
+    "type": "object",
+    "properties": {
+     "event": {
+      "type": "object",
+      "properties": {
+       "id": {
+        "type": "string",
+        "examples": [
+         "66221c62b3248a440f993208"
+        ]
+       },
+       "creator": {
+        "type": "string",
+        "examples": [
+         "637f3ea23d7fd1fdcb090eba"
+        ]
+       },
+       "institutionId": {
+        "type": "string",
+        "examples": [
+         "61957dca833e9876e046bd6d"
+        ]
+       },
+       "title": {
+        "type": "string",
+        "examples": [
+         "My Test Event"
+        ]
+       },
+       "description": {
+        "type": "string",
+        "examples": [
+         "This is a detailed description of the test event."
+        ]
+       },
+       "state": {
+        "type": [
+         "object",
+         "null"
+        ],
+        "description": "Contains cancellation information if the event is cancelled; this key is omitted if the event is active.",
+        "properties": {
+         "status": {
+          "type": "string",
+          "description": "Event status - either COMPLETED or CANCELLED",
+          "enum": [
+           "COMPLETED",
+           "CANCELLED"
+          ],
+          "examples": [
+           "CANCELLED"
+          ]
+         },
+         "note": {
+          "type": "string",
+          "description": "The cancellation reason provided when the event was cancelled (max 300 characters).",
+          "maxLength": 300,
+          "examples": [
+           "Testing retroactive event cancellation"
+          ]
+         },
+         "statusUpdatedBy": {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/spaceUser"
+           },
+           {
+            "description": "The details of the user who cancelled the event. Only applicable if the status is \"CANCELLED\"."
+           }
+          ]
+         },
+         "statusUpdatedOn": {
+          "type": "string",
+          "format": "date-time",
+          "description": "ISO 8601 timestamp of when the event was cancelled. Required if the event is CANCELLED",
+          "examples": [
+           "2025-06-04T03:35:38.871Z"
+          ]
+         }
+        }
+       },
+       "start": {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       },
+       "end": {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       },
+       "organizers": {
+        "type": "array",
+        "items": {
+         "$ref": "#/components/schemas/spaceUser"
+        }
+       },
+       "attendees": {
+        "type": "array",
+        "items": {
+         "$ref": "#/components/schemas/spaceUser"
+        }
+       },
+       "spaceId": {
+        "type": "string",
+        "examples": [
+         "6618e97478a09fc877308b19"
+        ]
+       },
+       "recurrence": {
+        "anyOf": [
+         {
+          "allOf": [
+           {
+            "$ref": "#/components/schemas/recurrence"
+           },
+           {
+            "description": "Only present if the event is a recurring event"
+           }
+          ]
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "customAttributes": {
+        "type": "array",
+        "description": "Array of custom attributes associated with the event. If the event does not have any custom attributes, this property will be an empty array. refer to'#/components/schemas/customAttributeList'",
+        "items": {
+         "type": "string",
+         "examples": [
+          "UvOpCTDGzbiNhvjnpHTB:nmgkDIueg1v_c2CqUqOCk"
+         ]
+        }
+       },
+       "siteId": {
+        "type": "string",
+        "description": "The ID of the site linked to the event. If the event is not linked to any site, this field will not be included in the response.",
+        "examples": [
+         "65fb240449b6afa13825a97b"
+        ]
+       }
+      }
+     }
+    }
+   },
+   "eventsFilterSchema": {
+    "type": "object",
+    "description": "Filter criteria for events.\n\nThis schema describes the decoded JSON object for the `filters` query parameter on GET /events. Serialize the object to JSON, then Base64-encode the UTF-8 bytes before sending. The parameter description lists every field inline.",
+    "properties": {
+     "timeRange": {
+      "type": "object",
+      "description": "Filters events by time range. All event start dates will be on or after `start`, and all end dates will be on or before `end`.",
+      "properties": {
+       "start": {
+        "type": "string",
+        "format": "rfc3339Timestamp",
+        "description": "Start date and time for the events."
+       },
+       "end": {
+        "type": "string",
+        "format": "rfc3339Timestamp",
+        "description": "End date and time for the events."
+       }
+      }
+     },
+     "organizers": {
+      "type": "array",
+      "description": "Filters events by organizer userIds.",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "attendees": {
+      "type": "array",
+      "description": "Filters events by attendee userIds.",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "otherAttendees": {
+      "type": "array",
+      "description": "Filters events by otherAttendee userIds.",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "sites": {
+      "type": "array",
+      "description": "Filter by site",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "customAttributes": {
+      "type": "array",
+      "description": "Filter by event custom attributes",
+      "items": {
+       "type": "string",
+       "examples": [
+        "NydvLFSpxOJe2aO07hGxU"
+       ]
+      }
+     }
+    }
+   },
+   "webhookConfig": {
+    "type": "object",
+    "properties": {
+     "url": {
+      "type": "string",
+      "format": "uri",
+      "description": "The URL that will receive the webhook POST requests. Must include http:// or https://.",
+      "examples": [
+       "https://api.example.com/v1/webhooks"
+      ]
+     },
+     "secret": {
+      "type": "string",
+      "description": "A secret key that is sent as a Bearer token in the `Authorization` header of each webhook POST request. Example `Authorization: Bearer <your-secret-here>`.",
+      "examples": [
+       "very-long-and-secure-secret-string"
+      ]
+     }
+    }
+   },
+   "alertResolution": {
+    "type": "object",
+    "description": "Resolution details for a closed alert.",
+    "properties": {
+     "closedAt": {
+      "type": "string",
+      "format": "date-time",
+      "description": "ISO 8601 timestamp of when the alert was closed.",
+      "examples": [
+       "2026-06-04T14:32:00.000Z"
+      ]
+     },
+     "closedBy": {
+      "anyOf": [
+       {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/spaceUser"
+         },
+         {
+          "description": "The admin who closed the alert. May be `null` if the closer's user record is no longer available."
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "alertResponse": {
+    "type": "object",
+    "required": [
+     "alertId",
+     "type",
+     "status",
+     "priority",
+     "entityId",
+     "model",
+     "triggeredBy",
+     "assignedTo",
+     "resolution"
+    ],
+    "properties": {
+     "alertId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "type": {
+      "type": "string",
+      "description": "The kind of alert.",
+      "enum": [
+       "TEACHER_DECLINED_EVENT",
+       "EVENT_NO_SHOW"
+      ],
+      "examples": [
+       "TEACHER_DECLINED_EVENT"
+      ]
+     },
+     "status": {
+      "type": "string",
+      "description": "Current lifecycle status of the alert.",
+      "enum": [
+       "OPEN",
+       "ASSIGNED",
+       "CLOSED"
+      ],
+      "examples": [
+       "OPEN"
+      ]
+     },
+     "priority": {
+      "type": "string",
+      "description": "Priority level of the alert.",
+      "enum": [
+       "LOW",
+       "MEDIUM",
+       "HIGH",
+       "CRITICAL"
+      ],
+      "examples": [
+       "HIGH"
+      ]
+     },
+     "entityId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The ID of the entity this alert is linked to (e.g. the `eventId` of the event that was declined or that had a no-show). The type of entity is given by `model`."
+       }
+      ]
+     },
+     "model": {
+      "type": "string",
+      "description": "The class of entity referenced by `entityId`.",
+      "enum": [
+       "Event"
+      ],
+      "examples": [
+       "Event"
+      ]
+     },
+     "triggeredBy": {
+      "anyOf": [
+       {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/spaceUser"
+         },
+         {
+          "description": "The user whose action triggered this alert (e.g. the teacher who declined the event). Always `null` for `EVENT_NO_SHOW` alerts, which are not triggered by a specific user."
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "assignedTo": {
+      "anyOf": [
+       {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/spaceUser"
+         },
+         {
+          "description": "The admin the alert is assigned to. `null` when the alert has not been assigned."
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     },
+     "resolution": {
+      "anyOf": [
+       {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/alertResolution"
+         },
+         {
+          "description": "Details about when and by whom the alert was closed. `null` while the alert is still `OPEN` or `ASSIGNED`."
+         }
+        ]
+       },
+       {
+        "type": "null"
+       }
+      ]
+     }
+    }
+   },
+   "sessionReport": {
+    "type": "object",
+    "description": "Coaching and safeguarding reports for an analytics session.",
+    "required": [
+     "coaching",
+     "safeguarding"
+    ],
+    "properties": {
+     "coaching": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "description": "Aggregated coaching insight across session recordings. Null when there are no recordings, no insight documents, or aggregation fails.",
+      "required": [
+       "sources",
+       "score",
+       "categories",
+       "items"
+      ],
+      "properties": {
+       "sources": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "recordingId",
+          "roomId",
+          "reportTimestamp",
+          "schemaVersion"
+         ],
+         "properties": {
+          "recordingId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ObjectId of the recording."
+            }
+           ]
+          },
+          "roomId": {
+           "type": "string",
+           "description": "The room identifier associated with the recording.",
+           "examples": [
+            "room-abc"
+           ]
+          },
+          "reportTimestamp": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/rfc3339Timestamp"
+            },
+            {
+             "description": "Timestamp when the report was generated or stored."
+            }
+           ]
+          },
+          "schemaVersion": {
+           "type": "string",
+           "description": "Insight document type or schema discriminator from storage.",
+           "examples": [
+            "COACH_V1"
+           ]
+          }
+         }
+        }
+       },
+       "score": {
+        "type": "number",
+        "description": "Duration-weighted average score across recordings. The API rounds this value to two decimal places.",
+        "examples": [
+         3.75
+        ]
+       },
+       "categories": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "name",
+          "score",
+          "description",
+          "categoryId"
+         ],
+         "properties": {
+          "name": {
+           "type": "string",
+           "description": "Human-readable skill category label.",
+           "examples": [
+            "Engagement"
+           ]
+          },
+          "score": {
+           "type": "number",
+           "examples": [
+            4
+           ]
+          },
+          "description": {
+           "type": "string",
+           "description": "Reason text taken from the longest contributing recording in the category.",
+           "examples": [
+            "Strong participation across the call."
+           ]
+          },
+          "categoryId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ObjectId of the insight category."
+            }
+           ]
+          }
+         }
+        }
+       },
+       "items": {
+        "type": "array",
+        "description": "Flattened insight occurrences with timestamps and metadata.",
+        "items": {
+         "type": "object",
+         "required": [
+          "timestamp",
+          "recordingOffset",
+          "recordingId",
+          "roomId",
+          "itemSeverity",
+          "itemType",
+          "itemContent"
+         ],
+         "properties": {
+          "timestamp": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/rfc3339Timestamp"
+            },
+            {
+             "description": "Absolute wall time for the insight occurrence, calculated from recording start time plus the offset."
+            }
+           ]
+          },
+          "recordingOffset": {
+           "type": "number",
+           "description": "Seconds from recording start.",
+           "examples": [
+            120
+           ]
+          },
+          "recordingId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ObjectId of the recording."
+            }
+           ]
+          },
+          "roomId": {
+           "type": "string",
+           "description": "The room identifier associated with the insight occurrence.",
+           "examples": [
+            "room-abc"
+           ]
+          },
+          "itemSeverity": {
+           "type": "number",
+           "description": "Impact score from the insight record.",
+           "examples": [
+            2
+           ]
+          },
+          "itemType": {
+           "type": "string",
+           "description": "Insight type discriminator from the stored insight.",
+           "examples": [
+            "PositiveMoment"
+           ]
+          },
+          "itemContent": {
+           "type": "object",
+           "additionalProperties": true,
+           "description": "Insight-specific details object. Shape depends on `itemType`.",
+           "examples": [
+            {
+             "note": "Example structured payload from insight details"
+            }
+           ]
+          }
+         }
+        }
+       }
+      }
+     },
+     "safeguarding": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "description": "Safeguarding report for the analytics session, when persisted. Null when there is no safeguarding report for this session.",
+      "required": [
+       "schemaVersion",
+       "reportTimestamp",
+       "items"
+      ],
+      "properties": {
+       "schemaVersion": {
+        "type": "string",
+        "examples": [
+         "SAFEGUARDING_V1"
+        ]
+       },
+       "reportTimestamp": {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/rfc3339Timestamp"
+         },
+         {
+          "description": "Timestamp from the safeguarding insights document."
+         }
+        ]
+       },
+       "items": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "required": [
+          "source",
+          "timestamp",
+          "recordingId",
+          "recordingTimestamp",
+          "roomId",
+          "userId",
+          "itemSeverity",
+          "itemContent"
+         ],
+         "properties": {
+          "source": {
+           "type": "string",
+           "description": "Source that produced the safeguarding item.",
+           "examples": [
+            "model"
+           ]
+          },
+          "timestamp": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/rfc3339Timestamp"
+            },
+            {
+             "description": "Absolute wall time for the safeguarding item."
+            }
+           ]
+          },
+          "recordingId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ObjectId of the recording."
+            }
+           ]
+          },
+          "recordingTimestamp": {
+           "type": "number",
+           "description": "Offset or timestamp within the recording, in seconds or milliseconds depending on product usage.",
+           "examples": [
+            480
+           ]
+          },
+          "roomId": {
+           "type": "string",
+           "description": "The room identifier associated with the safeguarding item.",
+           "examples": [
+            "room-abc"
+           ]
+          },
+          "userId": {
+           "allOf": [
+            {
+             "$ref": "#/components/schemas/mongoDBID"
+            },
+            {
+             "description": "The MongoDB ObjectId of the user associated with the safeguarding item."
+            }
+           ]
+          },
+          "itemSeverity": {
+           "type": "string",
+           "description": "Severity label for the safeguarding item.",
+           "examples": [
+            "medium"
+           ]
+          },
+          "itemContent": {
+           "type": "string",
+           "description": "Narrative or classification text for the safeguarding item.",
+           "examples": [
+            "Example narrative or classification text"
+           ]
+          }
+         }
+        }
+       }
+      }
+     }
+    }
+   },
+   "weeklyScheduleItem": {
+    "type": "object",
+    "required": [
+     "day",
+     "start",
+     "end"
+    ],
+    "properties": {
+     "day": {
+      "type": "integer",
+      "description": "Day of the week (0 = Sunday, 1 = Monday, ..., 6 = Saturday)",
+      "minimum": 0,
+      "maximum": 6,
+      "examples": [
+       0
+      ]
+     },
+     "start": {
+      "type": "string",
+      "description": "Start time in HH:MM format",
+      "examples": [
+       "00:00"
+      ]
+     },
+     "end": {
+      "type": "string",
+      "description": "End time in HH:MM format",
+      "examples": [
+       "01:00"
+      ]
+     }
+    }
+   },
+   "availabilitySlotsResponse": {
+    "type": "object",
+    "required": [
+     "userId",
+     "slots"
+    ],
+    "properties": {
+     "id": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The identifier of the stored availability record. Omitted when the user has no availability set."
+       }
+      ]
+     },
+     "userId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "slots": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/weeklyScheduleItem"
+      }
+     },
+     "timezone": {
+      "type": "string",
+      "description": "IANA timezone the `slots` times are stored in. Omitted when the user has no availability set.",
+      "examples": [
+       "America/New_York"
+      ]
+     }
+    }
+   },
+   "recording": {
+    "required": [
+     "spaceId",
+     "roomId",
+     "recordingId",
+     "startingTime",
+     "duration",
+     "downloadLink"
+    ],
+    "properties": {
+     "spaceId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The ID of the Space associated with the recording"
+       }
+      ]
+     },
+     "roomId": {
+      "type": "string",
+      "examples": [
+       "e2a7c651-2e1d-4682-9602-72228004c78f"
+      ],
+      "description": "The ID of the Room associated with the recording. This id can either be `MainRoom` or a `UUIDv4` identifier. Please note that this room may have been deleted and is no longer accessible."
+     },
+     "recordingId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The unique ID of the recording."
+       }
+      ]
+     },
+     "startingTime": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       },
+       {
+        "description": "The starting time of the recording, measured in UTC epoch time in seconds"
+       }
+      ]
+     },
+     "duration": {
+      "type": "integer",
+      "examples": [
+       20
+      ],
+      "description": "The total duration of the video, measured in seconds"
+     },
+     "fileSize": {
+      "type": "integer",
+      "examples": [
+       49
+      ],
+      "description": "The total file size of the video, in bytes"
+     }
+    }
+   },
+   "session": {
+    "required": [
+     "sessionId",
+     "spaceId"
+    ],
+    "properties": {
+     "sessionId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "spaceId": {
+      "$ref": "#/components/schemas/mongoDBID"
+     },
+     "sessionTitle": {
+      "type": "string",
+      "examples": [
+       "Session 1 - June 15th"
+      ]
+     },
+     "sessionVisibility": {
+      "type": "string",
+      "description": "The visibility of the session",
+      "enum": [
+       "public",
+       "everyoneInSpace",
+       "attendeesAndHosts"
+      ]
+     },
+     "sessionStartTime": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ]
+     },
+     "sessionEndTime": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ]
+     },
+     "sessionStats": {
+      "type": "object",
+      "properties": {
+       "nActiveUsers": {
+        "type": "integer",
+        "description": "Number of users who attended the session at any point",
+        "examples": [
+         5
+        ]
+       },
+       "callDuration": {
+        "type": "number",
+        "description": "Call duration in seconds",
+        "examples": [
+         55.5
+        ]
+       }
+      }
+     },
+     "callStats": {
+      "type": "array",
+      "description": "Statistics calculated for the calls in the session",
+      "items": {
+       "type": "object",
+       "properties": {
+        "callStartTime": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/rfc3339Timestamp"
+          }
+         ]
+        },
+        "callEndTime": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/rfc3339Timestamp"
+          }
+         ]
+        }
+       }
+      }
+     },
+     "attendees": {
+      "type": "array",
+      "description": "Space level user metrics (aggregared across all rooms)",
+      "items": {
+       "type": "object",
+       "properties": {
+        "userId": {
+         "$ref": "#/components/schemas/mongoDBID"
+        },
+        "email": {
+         "type": "string",
+         "examples": [
+          "example@example.com"
+         ]
+        },
+        "callActiveTalkingDuration": {
+         "type": "number",
+         "description": "The total active time (in seconds) the user spent talking during the calls in the session",
+         "examples": [
+          13.2
+         ]
+        },
+        "callMicOnDuration": {
+         "type": "number",
+         "description": "The total time (in seconds) the user spent with their microphone unmuted / on during the calls in the session",
+         "examples": [
+          13.2
+         ]
+        },
+        "callVideoOnDuration": {
+         "type": "number",
+         "description": "The total time (in seconds) the user spent with their video on during the calls in the session",
+         "examples": [
+          13.2
+         ]
+        },
+        "callCountRaisedHands": {
+         "type": "integer",
+         "description": "The total number of times the user raised their hands during the calls in the session",
+         "examples": [
+          15
+         ]
+        },
+        "callCountReactions": {
+         "type": "integer",
+         "description": "The total number of times the user reacted (including raising hands) during the calls in the session",
+         "examples": [
+          25
+         ]
+        },
+        "callDuration": {
+         "type": "number",
+         "description": "The total time (in seconds) the user spent on the call",
+         "examples": [
+          13.2
+         ]
+        },
+        "callNetworkUnstableDuration": {
+         "type": "integer",
+         "description": "The total time (in seconds) the user was on call with an unstable network",
+         "examples": [
+          20
+         ]
+        },
+        "callDeviceStrugglingDuration": {
+         "type": "integer",
+         "description": "The total time (in seconds) the user was on call with a slow or lagging device",
+         "examples": [
+          20
+         ]
+        },
+        "callMicErrorDuration": {
+         "type": "integer",
+         "description": "The total time (in seconds) the user was on call with a mic device error (e.g., permission not granted)",
+         "examples": [
+          20
+         ]
+        },
+        "callCameraErrorDuration": {
+         "type": "integer",
+         "description": "The total time (in seconds) the user was on call with a camera device error (e.g., permission not granted)",
+         "examples": [
+          20
+         ]
+        },
+        "callMicErrorTypes": {
+         "type": "array",
+         "description": "A list of microphone error types encountered during the call (e.g., permission not granted, device not found).",
+         "items": {
+          "type": "string"
+         },
+         "examples": [
+          [
+           "permission-denied"
+          ]
+         ]
+        },
+        "callCameraErrorTypes": {
+         "type": "array",
+         "description": "A list of camera error types encountered during the call (e.g., permission not granted, device not found).",
+         "items": {
+          "type": "string"
+         },
+         "examples": [
+          [
+           "permission-denied"
+          ]
+         ]
+        },
+        "callBrowserTypes": {
+         "type": "array",
+         "description": "A list of browser types used during the call (e.g., Chrome, Safari).",
+         "items": {
+          "type": "string"
+         },
+         "examples": [
+          [
+           "Chrome",
+           "Safari",
+           "Firefox"
+          ]
+         ]
+        },
+        "callDeviceTypes": {
+         "type": "array",
+         "description": "A list of device types used during the call (e.g., mobile, tablet, desktop).",
+         "items": {
+          "type": "string"
+         },
+         "examples": [
+          [
+           "mobile",
+           "tablet",
+           "desktop"
+          ]
+         ]
+        },
+        "spaceCountPublicMessagesSent": {
+         "type": "integer",
+         "description": "The number of public chat messages the user made in the session",
+         "examples": [
+          5
+         ]
+        },
+        "spaceCountPrivateMessagesSent": {
+         "type": "integer",
+         "description": "The number of private (1:1) chat messages the user made in the session",
+         "examples": [
+          5
+         ]
+        },
+        "spaceDuration": {
+         "type": "number",
+         "description": "The total time (in seconds) the user spend in the Space in the session",
+         "examples": [
+          55.5
+         ]
+        },
+        "spaceDurationInBackground": {
+         "type": "integer",
+         "description": "The total time (in seconds) the user spent in the background",
+         "examples": [
+          5
+         ]
+        },
+        "spaceFirstJoinTime": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/rfc3339Timestamp"
+          },
+          {
+           "description": "The timestamp associated with the *first* time a user joins a Space"
+          }
+         ]
+        },
+        "spaceLastLeaveTime": {
+         "allOf": [
+          {
+           "$ref": "#/components/schemas/rfc3339Timestamp"
+          },
+          {
+           "description": "The timestamp associated with the *last* time a user joins a Space"
+          }
+         ]
+        },
+        "spaceCountJoined": {
+         "type": "integer",
+         "description": "The number of times a user joins a Space within a session (e.g., due to network disconnects etc.)"
+        }
+       }
+      }
+     },
+     "roomAttendees": {
+      "type": "array",
+      "description": "Room level user analytics",
+      "items": {
+       "type": "object",
+       "properties": {
+        "roomUid": {
+         "type": "string",
+         "examples": [
+          "507f1f77bcf86cd799439011:MainRoom"
+         ],
+         "description": "Unique id of the room"
+        },
+        "roomName": {
+         "type": "string",
+         "examples": [
+          "Main Room"
+         ],
+         "description": "Name of the room set by the user"
+        },
+        "isActive": {
+         "type": "boolean",
+         "examples": [
+          true
+         ],
+         "description": "Whether the room is active or deleted"
+        },
+        "attendees": {
+         "$ref": "#/components/schemas/session/properties/attendees"
+        }
+       }
+      }
+     }
+    }
+   },
+   "sessionsFilterSchema": {
+    "type": "object",
+    "description": "Filter criteria for sessions.\n\nThis schema describes the decoded JSON object for the `filters` query parameter on GET /analytics/sessions. Serialize the object to JSON, then Base64-encode the UTF-8 bytes before sending. The parameter description lists every field inline.",
+    "properties": {
+     "spaceIds": {
+      "type": "array",
+      "description": "The ids associated with the object in the filter.",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "createdStart": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ],
+      "description": "The time range associated with filtering the object by its created date (start)."
+     },
+     "createdEnd": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ],
+      "description": "The time range associated with filtering the object by its created date (end)."
+     },
+     "editedStart": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ],
+      "description": "The time range associated with filtering the object by its last edited date (start)."
+     },
+     "editedEnd": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      ],
+      "description": "The time range associated with filtering the object by its last edited date (end)."
+     },
+     "status": {
+      "type": "string",
+      "description": "Filters the sessions by status. If not specified, only `processed` sessions are returned by default.",
+      "enum": [
+       "inprogress",
+       "processed"
+      ],
+      "examples": [
+       "inprogress"
+      ]
+     },
+     "callsOnly": {
+      "type": "boolean",
+      "description": "Filters sessions to only return sessions with calls",
+      "examples": [
+       true
+      ]
+     },
+     "billedOnly": {
+      "type": "boolean",
+      "description": "Filters sessions to only return sessions with billed Space time",
+      "examples": [
+       true
+      ]
+     }
+    }
+   },
+   "spacesFilterSchema": {
+    "type": "object",
+    "description": "Filter criteria for Spaces.\n\nThis schema describes the decoded JSON object for the `filters` query parameter on GET /spaces. Serialize the object to JSON, then Base64-encode the UTF-8 bytes before sending. The parameter description lists every field inline.",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "The search key you'd like to search as part of the filter. This typically matches the title of the object and is a substring match.",
+      "examples": [
+       "My First Space"
+      ]
+     },
+     "sites": {
+      "type": "array",
+      "description": "Filter by site",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "hosts": {
+      "type": "array",
+      "description": "Filter by Space hosts",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439012"
+       ]
+      }
+     },
+     "participants": {
+      "type": "array",
+      "description": "Filter by Space participants",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439013"
+       ]
+      }
+     },
+     "owner": {
+      "type": "string",
+      "description": "Filter by a particular Space owner userId.",
+      "format": "mongodb id (12 byte hex string)",
+      "examples": [
+       "507f1f77bcf86cd799439014"
+      ]
+     },
+     "externalId": {
+      "type": "string",
+      "description": "Filter by a particular Space externalId.",
+      "examples": [
+       "abc123"
+      ]
+     },
+     "archiveStatus": {
+      "type": "string",
+      "description": "Whether to show or hide archived Spaces",
+      "examples": [
+       "ARCHIVED"
+      ],
+      "enum": [
+       "ARCHIVED",
+       "NON_ARCHIVED",
+       "ALL"
+      ]
+     },
+     "customAttributes": {
+      "type": "array",
+      "description": "Filter by Space custom attributes",
+      "items": {
+       "type": "string",
+       "examples": [
+        "NydvLFSpxOJe2aO07hGxU"
+       ]
+      }
+     },
+     "createdRange": {
+      "type": "object",
+      "description": "Filter by Space creation date",
+      "properties": {
+       "start": {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       },
+       "end": {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       }
+      }
+     }
+    }
+   },
+   "transcript": {
+    "type": "object",
+    "required": [
+     "recordingId",
+     "recordingStartTime",
+     "transcript",
+     "transcriptUsers",
+     "summary"
+    ],
+    "properties": {
+     "recordingId": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/mongoDBID"
+       },
+       {
+        "description": "The unique ID of the recording."
+       }
+      ]
+     },
+     "recordingStartTime": {
+      "allOf": [
+       {
+        "$ref": "#/components/schemas/rfc3339Timestamp"
+       },
+       {
+        "description": "The starting time of the recording, measured in UTC epoch time in seconds"
+       }
+      ]
+     },
+     "transcript": {
+      "type": [
+       "array",
+       "null"
+      ],
+      "description": "Recording transcript. If array is empty, no transcript is available. If `null`, the recording is a legacy recording with no diarized transcript.",
+      "items": {
+       "anyOf": [
+        {
+         "type": "object",
+         "required": [
+          "text",
+          "start",
+          "end"
+         ],
+         "properties": {
+          "text": {
+           "type": "string",
+           "description": "Transcript text",
+           "examples": [
+            "Hello, how can I help you?"
+           ]
+          },
+          "start": {
+           "type": "number",
+           "description": "Start time of the text in seconds from the recording start",
+           "examples": [
+            5.3
+           ]
+          },
+          "end": {
+           "type": "number",
+           "description": "End time of the text in seconds from the recording start",
+           "examples": [
+            10.7
+           ]
+          },
+          "userId": {
+           "anyOf": [
+            {
+             "allOf": [
+              {
+               "$ref": "#/components/schemas/mongoDBID"
+              },
+              {
+               "description": "Speaker ID. If `null` the speaker is not known."
+              }
+             ]
+            },
+            {
+             "type": "null"
+            }
+           ]
+          }
+         }
+        }
+       ]
+      }
+     },
+     "transcriptUsers": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/spaceUser"
+      },
+      "description": "List of users in the transcipt, but not necessarily in the recording"
+     },
+     "summary": {
+      "type": [
+       "object",
+       "null"
+      ],
+      "properties": {
+       "description": {
+        "type": "string",
+        "description": "Summary of the recording",
+        "examples": [
+         "Tom had a maths class with Jane."
+        ]
+       }
+      }
+     }
+    }
+   },
+   "usersFilterSchema": {
+    "type": "object",
+    "description": "Filter criteria for users. Provide one or more properties to apply filters.\n\nThis schema describes the decoded JSON object for the `filters` query parameter on GET /users. Serialize the object to JSON, then Base64-encode the UTF-8 bytes before sending. The parameter description lists every field inline.",
+    "properties": {
+     "query": {
+      "type": "string",
+      "description": "Search by a user's name",
+      "examples": [
+       "John Doe"
+      ]
+     },
+     "roles": {
+      "type": "array",
+      "description": "The list of roles you'd like to accept as part of the user filter",
+      "items": {
+       "type": "string",
+       "enum": [
+        "InstitutionAdmin",
+        "SiteAdmin",
+        "Teacher",
+        "Student"
+       ]
+      }
+     },
+     "sites": {
+      "type": "array",
+      "description": "Filter by site",
+      "items": {
+       "type": "string",
+       "format": "mongodb id (12 byte hex string)",
+       "examples": [
+        "507f1f77bcf86cd799439011"
+       ]
+      }
+     },
+     "customAttributes": {
+      "type": "array",
+      "description": "Filter by user custom attributes",
+      "items": {
+       "type": "string",
+       "examples": [
+        "NydvLFSpxOJe2aO07hGxU"
+       ]
+      }
+     }
+    }
+   },
+   "eventPatchUpdateRequestBody": {
+    "type": "object",
+    "description": "Partial update body for an event. See `PATCH /events/{eventId}/update` for editability rules.",
+    "minProperties": 1,
+    "properties": {
+     "title": {
+      "type": "string",
+      "examples": [
+       "My Test Event"
+      ]
+     },
+     "description": {
+      "type": "string",
+      "examples": [
+       "This is a detailed description of the test event."
+      ]
+     },
+     "customAttributes": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/customAttributeList"
+       }
+      ]
+     },
+     "organizers": {
+      "$ref": "#/components/schemas/userList"
+     },
+     "attendees": {
+      "$ref": "#/components/schemas/userList"
+     },
+     "type": {
+      "type": "string",
+      "description": "The type of event. `ONLINE` events take place in a Pencil Space; `OFFLINE` events take place at a physical `location`.",
+      "enum": [
+       "ONLINE",
+       "OFFLINE"
+      ],
+      "examples": [
+       "ONLINE"
+      ]
+     },
+     "spaceId": {
+      "type": "string",
+      "description": "The `spaceId` of the Space linked to the event. Applicable only for `ONLINE` events.",
+      "examples": [
+       "6618e97478a09fc877308b19"
+      ]
+     },
+     "location": {
+      "type": "string",
+      "description": "The physical location of the event. Applicable only for `OFFLINE` events.",
+      "examples": [
+       "Room 204, Main Building"
+      ]
+     }
+    }
+   },
+   "eventRequestBody": {
+    "type": "object",
+    "properties": {
+     "title": {
+      "type": "string",
+      "examples": [
+       "My Test Event"
+      ]
+     },
+     "description": {
+      "type": "string",
+      "examples": [
+       "This is a detailed description of the test event."
+      ]
+     },
+     "start": {
+      "$ref": "#/components/schemas/rfc3339Timestamp"
+     },
+     "end": {
+      "$ref": "#/components/schemas/rfc3339Timestamp"
+     },
+     "organizers": {
+      "$ref": "#/components/schemas/userList"
+     },
+     "attendees": {
+      "$ref": "#/components/schemas/userList"
+     },
+     "spaceId": {
+      "type": "string",
+      "examples": [
+       "6618e97478a09fc877308b19"
+      ]
+     },
+     "customAttributes": {
+      "anyOf": [
+       {
+        "$ref": "#/components/schemas/customAttributeList"
+       }
+      ]
+     },
+     "type": {
+      "type": "string",
+      "description": "The type of event. `ONLINE` events take place in a Pencil Space; `OFFLINE` events take place at a physical `location`.",
+      "enum": [
+       "ONLINE",
+       "OFFLINE"
+      ],
+      "examples": [
+       "ONLINE"
+      ]
+     },
+     "location": {
+      "type": "string",
+      "description": "The physical location of the event. Applicable only for `OFFLINE` events.",
+      "examples": [
+       "Room 204, Main Building"
+      ]
+     },
+     "timezone": {
+      "type": "string",
+      "description": "IANA timezone identifier for the event. Optional; if omitted, the API caller's timezone settings are used.",
+      "examples": [
+       "America/New_York"
+      ]
+     }
+    }
+   },
+   "eventPostRequestBody": {
+    "allOf": [
+     {
+      "$ref": "#/components/schemas/eventRequestBody"
+     },
+     {
+      "type": "object",
+      "properties": {
+       "siteId": {
+        "type": "string",
+        "description": "The ID of the site linked to the event. This field is optional and applicable only for institutions with the sites feature enabled.",
+        "examples": [
+         "65fb240449b6afa13825a97b"
+        ]
+       },
+       "recurrence": {
+        "allOf": [
+         {
+          "$ref": "#/components/schemas/recurrenceRule"
+         },
+         {
+          "description": "The recurrence rule for the event. This field is optional and should only be included for recurring events."
+         }
+        ]
+       }
+      }
+     }
+    ]
+   },
+   "recurrenceRule": {
+    "type": "object",
+    "properties": {
+     "rule": {
+      "type": "string",
+      "description": "The recurrence rule for the event, following the iCalendar RFC 554 format\n**Important Guidelines:**\n- The `DTSTART`, `DTEND`, and `TZID` lines are **not** allowed in this field; event start and end times should be specified in the `startTime` and `endTime` fields respectively.\n- The timezone for the recurrence is inferred from the event's start time.If the start time is specified in UTC, the API will use the API caller's timezone settings.\n- Exactly one of either `COUNT` or `UNTIL` must be provided. Supplying both or neither will result in an error.\n"
+     }
+    },
+    "examples": [
+     "FREQ=DAILY;INTERVAL=1;UNTIL=20240910T000000Z"
+    ]
+   },
+   "userListWithRole": {
+    "type": "array",
+    "items": {
+     "type": "object",
+     "properties": {
+      "role": {
+       "type": "string",
+       "enum": [
+        "host",
+        "participant"
+       ],
+       "examples": [
+        "host"
+       ]
+      },
+      "email": {
+       "type": "string",
+       "format": "Valid email address",
+       "examples": [
+        "bob.bill@bob.com"
+       ],
+       "description": "The email for this user. Note if `userId` is also provided, this email is ignored"
+      },
+      "userId": {
+       "allOf": [
+        {
+         "$ref": "#/components/schemas/mongoDBID"
+        },
+        {
+         "description": "The `userId` for this user"
+        }
+       ]
+      }
+     }
+    }
+   },
+   "availabilitySlotsRequest": {
+    "type": "object",
+    "required": [
+     "slots"
+    ],
+    "properties": {
+     "slots": {
+      "type": "array",
+      "items": {
+       "$ref": "#/components/schemas/weeklyScheduleItem"
+      }
+     },
+     "timezone": {
+      "type": "string",
+      "description": "IANA timezone identifier the `slots` times are expressed in. Optional; defaults to `Etc/UTC` when omitted.",
+      "examples": [
+       "America/New_York"
+      ]
+     }
+    }
+   }
+  },
+  "securitySchemes": {
+   "BearerAuth": {
+    "type": "http",
+    "scheme": "bearer"
+   }
+  }
+ }
+}
