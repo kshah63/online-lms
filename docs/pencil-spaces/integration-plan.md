@@ -27,7 +27,7 @@
 - Pencil outage fallback is Zoom (owner decision 5): one master Zoom meeting link for the whole school (env `LESSON_FALLBACK_URL`); nothing is stored per teacher; admins can override the link per lesson.
 - A student (or teacher) may use two devices in one lesson: laptop for the call, iPad for writing on the board (owner request; supported by Pencil, see decision o).
 - Homework tracking (owner decision 6): the work lives on a dedicated board in the student's Space; the student taps **Done** in our app (no photo required); Pencil's Space activity (student-only sessions after the assignment) is attached to the homework item automatically as a signal; the teacher verifies by viewing the board and recording the outcome in our app. Pencil has no assignment concept, board API or done flag, so status stays ours.
-- Parent progress dashboard (owner request, Phase 5): one page per child (web + mobile tab) with lesson attendance and time, homework completion, marks, Space activity, speaking minutes and published-report ratings over 4/12 weeks; aggregates only via a SECURITY DEFINER function; never teacher coaching data, AI drafts or transcripts; an interim v1 on today's data can ship after Phase 1. See "Parent progress dashboard (Phase 5)".
+- Parent progress dashboard (owner request, Phase 5): one page per child (web + mobile tab) with lesson attendance and time, homework completion, marks, Space activity, speaking minutes, camera-on share (owner decision 7: show both) and published-report ratings over 4/12 weeks; aggregates only via a SECURITY DEFINER function; never teacher coaching data, AI drafts or transcripts; an interim v1 on today's data can ship after Phase 1. See "Parent progress dashboard (Phase 5)".
 - Lessons app is Next.js 14 App Router (not 16).
 
 ## Architecture
@@ -670,7 +670,7 @@ Weekly buckets are Monday-start weeks in the **viewer's** timezone (`profile.tim
 | Open / overdue / awaiting review (snapshot, not windowed) | `status in ('assigned','incomplete')`, `… and due_at < now()`, `status='submitted'` | today |
 | Reports published, average rating | `reports` joined 1:1 to the student's sessions, **`published_at is not null` only**, `avg(rating)` | today |
 | Speaking minutes in lessons | `sum(session_metrics.student_speaking_s)` per week (Pencil `callActiveTalkingDuration`) | Phase 2 (0018) |
-| Camera on (optional, see open questions) | `avg(student_camera_pct)` (0–1) | Phase 2 |
+| Camera on share | `avg(student_camera_pct)` (0–1), shown as a percentage of call time with the camera on (owner decision 7: both speaking minutes and camera share are shown) | Phase 2 |
 | Time in their Space | **Not** `sum(homework.space_activity_s)`: decision (i) attributes one student-only Pencil session to *every* open item whose window contains it, so an item sum double-counts, and it would land in the assignment week. Instead one row per `pencil_sessions` row with `state='homework_activity'` in the student's Spaces, `sum(ended_at − started_at)` bucketed by `started_at` week. The per-item figure stays on the homework item ("Worked in Space 25 min on Tue"), as the plan already shows it | Phase 3 (0019; see dependency note) |
 
 Every rate whose denominator is 0 is `null` in `rollUp` and renders `—`. Before a metric's phase (`available.*` false, computed **student-wide**, not per window) the tile renders `—` with "Available once lessons run in the new classroom" / "Available once homework moves to the Space"; once available, an empty window shows `0 min` with the normal hint.
@@ -836,7 +836,7 @@ export function weekLabel(weekStartISODate: string, tz: string): string;  // "13
 
 **Web:** `src/app/(app)/home/progress/page.tsx` (`requireRole("student","parent")`, search params `student`, `weeks=4|12`, `course`), child switcher for parents (same `getChildren` list the booking dialog uses), course segments as links (server component, no client state). `NAV.student`/`NAV.parent` in `src/components/app-shell.tsx` gain `{ href: "/home/progress", label: "Progress", icon: TrendingUp }`; `/home` gets a "This month" strip (lessons, homework verified, Space minutes) linking to it. Admins pass the RPC rule; teachers do not — a staff view (`/teacher/students/[id]/progress`) needs the scoped branch above and is deferred.
 
-**Visuals:** four `StatCard` tiles (Lessons attended with "n no-shows · n awaiting the teacher's confirmation" hint, Lesson time, Homework verified / on time with the self-marked hint, Time in their Space) plus Reports (`Stars` from `home/reports/page.tsx`, lifted to `src/components/ui/stars.tsx`). Weekly series as `src/components/progress/weekly-bars.tsx`, a labelled extension of `TrendBars` in `src/components/coaching/score-bars.tsx` (CSS flex bars, x-axis `weekLabel`, `tabular-nums`, `aria-label` per bar, no chart library). **The implementer must load the `dataviz` skill before writing any tile or bar code** (web and mobile), and keep bars single-hue with the current week emphasised, as `TrendBars` does.
+**Visuals:** five `StatCard` tiles (Lessons attended with "n no-shows · n awaiting the teacher's confirmation" hint, Lesson time, Homework verified / on time with the self-marked hint, Time in their Space, and an Engagement tile with speaking minutes + camera-on share once Phase 2 data exists) plus Reports (`Stars` from `home/reports/page.tsx`, lifted to `src/components/ui/stars.tsx`). Weekly series as `src/components/progress/weekly-bars.tsx`, a labelled extension of `TrendBars` in `src/components/coaching/score-bars.tsx` (CSS flex bars, x-axis `weekLabel`, `tabular-nums`, `aria-label` per bar, no chart library). **The implementer must load the `dataviz` skill before writing any tile or bar code** (web and mobile), and keep bars single-hue with the current week emphasised, as `TrendBars` does.
 
 **Mobile:** new tab `mobile/app/(tabs)/progress.tsx` (`Tabs.Screen name="progress"` with `href: isStaff ? null : undefined` in `_layout.tsx`, icon `trending-up-outline`), child picker via `getActableChildren`, tiles as RN `Card`s and bars as flex `View`s; `mobile/lib/api.ts` `getProgress(studentId, weeks)` → bearer `GET /api/mobile/progress?student=&weeks=&tz=`; route `src/app/api/mobile/progress/route.ts`: `profileFromBearer` → `actableStudentIds` (lifted from `api/mobile/sessions/route.ts` into `src/lib/mobile/students.ts`) → `supabaseForBearer(token)` (new helper in `src/lib/mobile/auth.ts`: anon key + the caller's JWT so `auth.uid()` resolves inside the RPC) → `rpc("get_student_progress", { p_tz: IANAZone.isValidZone(tz) ? tz : profile.timezone })` → `rollUp` → JSON, so web and mobile render one shape. `rateLimit("progress:<profile id>", 120, 3600)` added to `LIMITS`.
 
@@ -849,6 +849,7 @@ export const PROGRESS_COPY = {
   selfMarked: (n: number) => `${n} marked done by the family (not yet checked)`,
   unsettled:  (n: number) => `${n} awaiting the teacher's confirmation`,
   speaking: "From the classroom's call analytics: minutes your child was speaking. Not a measure of understanding.",
+  camera: "Share of call time with your child's camera on. Cameras can be off for good reasons; this is context, not a score.",
   lessonTime: "Measured from when both teacher and student were present; lessons without that clock use the booked time.",
   recorded: "Lessons are recorded (audio + board) for the teacher's report and coaching.",   // decision d wording
   notRecorded: "Lessons are not recorded for this student.",                                  // recording_opt_outs
@@ -887,7 +888,6 @@ The recording line is gated twice: `pipelineEnabled` (the Phase 2 always-on swit
 
 ### Open questions
 
-- Should families see **speaking minutes** and **camera on %** at all (could read as surveillance), or speaking only? Default proposed: speaking on, camera off.
 - Show `avg_rating` only when `rating_n ≥ 3`? Week start Monday (ISO) for every locale?
 - Staff view (`/teacher/students/[id]/progress`, `/admin/people`): add the `teaches_student` branch scoped to `s.teacher_id = auth.uid()` / `r.teacher_id = auth.uid()`, with the test "a1 sees only own-lesson aggregates, not a2's ratings/speaking" — in scope later?
 - A weekly WhatsApp/push "progress summary" to parents via the existing reminders cron — desired?
