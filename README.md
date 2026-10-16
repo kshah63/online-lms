@@ -123,7 +123,7 @@ can start a call alone, which always-on recording would record and bill). "End l
 session `completed` (one credit) or **"Mark as no-show"** (never billed) and makes no Pencil call:
 Pencil's `endOngoingSession` ends only the analytics session, not the call or the recording. Instead
 every open room polls `GET /api/lesson/[id]/status` every 15 s and unmounts its Space once the
-lesson is over, so everyone leaves the call (a Space tab the room opened is closed with it); Pencil
+lesson is over, so everyone in the lesson page leaves the call; Pencil
 closes its session six minutes after the last participant leaves or becomes inactive. A Space tab whose
 lesson page is gone stays in the call until that tab is closed.
 

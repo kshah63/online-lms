@@ -135,6 +135,9 @@ export function LessonRoom({
   const [usedFallback, setUsedFallback] = useState(fallbackForced);
   const studentIdRef = useRef<string | null>(studentPencilUserId);
   const [secondTab, setSecondTab] = useState(false);
+  /** Redirect mode: the Space is in its own tab, so this page never sees the student join. */
+  const [presenceUnknown, setPresenceUnknown] = useState(false);
+  const handleRedirectMode = useCallback(() => setPresenceUnknown(true), []);
 
   const markStudentPresent = useCallback(() => {
     setStudentPresent(true);
@@ -146,7 +149,11 @@ export function LessonRoom({
       return;
     }
     startSessionClock(sessionId)
-      .then((r) => setStartedAtMs(Date.parse(r.actual_start)))
+      .then((r) => {
+        // null: the lesson was ended in another room before it ever started;
+        // no clock, and the status poll closes this room.
+        if (r.actual_start) setStartedAtMs(Date.parse(r.actual_start));
+      })
       .catch(() => setStartedAtMs(Date.now()));
   }, [hostView, sessionId]);
 
@@ -233,7 +240,9 @@ export function LessonRoom({
   // on, its recording — running for whoever is still in the Space, and End
   // does not touch Pencil (endOngoingSession ends only the analytics session;
   // Pencil support, 2026-10-16). Unmounting <SpaceStage> is what makes this
-  // viewer leave: it drops the iframe and closes a Space tab it opened. Pencil
+  // viewer leave the embedded Space. A Space open in its own tab cannot be
+  // closed from here (its `opener` is cut, so the browser ignores close()); the
+  // ended card asks the viewer to close it. Pencil
   // closes the session six minutes after the last participant leaves or becomes inactive. A backgrounded
   // tab (tablets suspend timers) checks again the moment it is shown.
   useEffect(() => {
@@ -312,6 +321,7 @@ export function LessonRoom({
             <EndLessonButton
               sessionId={sessionId}
               studentSeen={studentPresent || startedAtMs !== null}
+              presenceUnknown={presenceUnknown}
               usedFallback={usedFallback}
               onEnded={handleEnded}
             />
@@ -370,6 +380,7 @@ export function LessonRoom({
                 roomUnavailable={roomUnavailable}
                 onEmbedEvent={handleEmbedEvent}
                 onJoinInfo={handleJoinInfo}
+                onRedirectMode={handleRedirectMode}
               />
             )}
           </div>
@@ -635,15 +646,21 @@ function LessonEndedCard({ outcome, hostView, backHref }: { outcome: EndedOutcom
  */
 function EndLessonButton({
   sessionId,
-  studentSeen,
+  studentSeen: seen,
+  presenceUnknown,
   usedFallback,
   onEnded,
 }: {
   sessionId: string;
   studentSeen: boolean;
+  /** Redirect mode: we could not see who joined, so never lead with "no-show". */
+  presenceUnknown: boolean;
   usedFallback: boolean;
   onEnded: (outcome: LessonOutcome, actualEnd: string | null) => void;
 }) {
+  // Unknown presence counts as "seen" for the dialog: a taught lesson must not
+  // default to an unbilled no-show because this page could not watch the tab.
+  const studentSeen = seen || presenceUnknown;
   const [open, setOpen] = useState(false);
   const [pending, setPending] = useState<LessonOutcome | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -680,7 +697,9 @@ function EndLessonButton({
             <DialogTitle>{studentSeen ? "End this lesson?" : "The student hasn't joined"}</DialogTitle>
             <DialogDescription>
               {studentSeen
-                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within about 15 seconds. A classroom the student opened in its own tab closes with their lesson page; if that page is gone, the tab stays in the call until they close it."
+                ? presenceUnknown && !seen
+                  ? "The classroom is open in its own tab, so this page can't see who joined. End the lesson if the student came; mark a no-show only if they never did. A classroom open in its own tab stays in the call until it is closed."
+                  : "This marks the lesson completed and closes the classroom: for you now, and for the student within about 15 seconds when their classroom is in the lesson page. A classroom open in its own tab (tablets, phones) stays in the call until it is closed."
                 : "Mark it as a no-show (nothing is counted as taught), or end it normally if the student was present on another device."}
             </DialogDescription>
           </DialogHeader>

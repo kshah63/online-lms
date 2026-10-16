@@ -208,7 +208,7 @@ describe("endLesson / assignTeacher — Pencil live", () => {
     pencilServer({});
     for (const status of ["no_show", "completed", "cancelled"]) {
       seed(db, { status, actual_start: null });
-      await actions.startSessionClock(SESSION);
+      expect(await actions.startSessionClock(SESSION)).toEqual({ actual_start: null });
       expect(db.tables.sessions[0]).toMatchObject({ status, actual_start: null });
     }
     seed(db, { status: "confirmed", actual_start: null });

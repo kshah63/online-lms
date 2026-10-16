@@ -43,7 +43,7 @@ export interface RecordingOptOutResult {
  * (teachers open the room early, and lessons overrun), when it is still in
  * progress however late, or when it ended this recently.
  */
-const CALL_MAY_BE_RUNNING = { leadMinutes: 15, overrunMinutes: 30, endedMinutes: 30 };
+const CALL_MAY_BE_RUNNING = { leadMinutes: 15, overrunMinutes: 30, endedMinutes: 30, inProgressHours: 6 };
 
 /** Reasons carry this prefix so the same follow-up is never raised twice while open. */
 const FOLLOWUP_PREFIX = "[Recording policy]";
@@ -150,7 +150,14 @@ export async function setRecordingOptOut(
       .gte("scheduled_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.overrunMinutes }).toISO())
       .lte("scheduled_start", now.plus({ minutes: CALL_MAY_BE_RUNNING.leadMinutes }).toISO())
       .limit(5),
-    admin.from("sessions").select(select).eq("student_id", studentId).eq("status", "in_progress").limit(5),
+    // Bounded: a lesson nobody ended weeks ago stays in_progress until an admin settles it.
+    admin
+      .from("sessions")
+      .select(select)
+      .eq("student_id", studentId)
+      .eq("status", "in_progress")
+      .gte("scheduled_start", now.minus({ hours: CALL_MAY_BE_RUNNING.inProgressHours }).toISO())
+      .limit(5),
     admin
       .from("sessions")
       .select(select)
@@ -159,11 +166,26 @@ export async function setRecordingOptOut(
       .gte("actual_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.endedMinutes }).toISO())
       .limit(5),
   ]);
-  const byId = new Map<string, UpcomingLesson>();
-  for (const rows of [inSlot.data, running.data, justEnded.data]) {
-    for (const row of (rows ?? []) as unknown as UpcomingLesson[]) byId.set(row.id, row);
+  const liveCheckFailed = [inSlot, running, justEnded].some((r) => r.error);
+  if (liveCheckFailed) {
+    captureError([inSlot, running, justEnded].find((r) => r.error)?.error, { where: "setRecordingOptOut live lessons", student_id: studentId });
+    warnings.push("Could not check whether one of the student's lessons is in a call right now — check today's lessons.");
   }
-  const live = Array.from(byId.values()).sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
+  // The lesson most likely to be in a call comes first: in its slot or in
+  // progress (rank 0) before just ended (rank 1), then the latest start.
+  const candidates = new Map<string, { row: UpcomingLesson; rank: number }>();
+  const add = (rows: unknown, rank: number) => {
+    for (const row of (rows ?? []) as UpcomingLesson[]) {
+      const prev = candidates.get(row.id);
+      if (!prev || rank < prev.rank) candidates.set(row.id, { row, rank });
+    }
+  };
+  add(inSlot.data, 0);
+  add(running.data, 0);
+  add(justEnded.data, 1);
+  const live = Array.from(candidates.values())
+    .sort((a, b) => a.rank - b.rank || b.row.scheduled_start.localeCompare(a.row.scheduled_start))
+    .map((c) => c.row);
 
   if (unconfirmed.length > 0) {
     const what = optOut ? "'do not record'" : "'record again'";
@@ -196,7 +218,7 @@ export async function setRecordingOptOut(
     spaces: spaces.length,
     confirmed: confirmed.length,
     unconfirmed: unconfirmed.length,
-    lessons_in_progress: live.length,
+    lessons_call_may_be_running: live.length,
   });
 
   revalidatePath("/admin/people");

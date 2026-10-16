@@ -67,7 +67,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > I'm checking with our team on exactly what gets deleted alongside it (the transcript, summary, AI Coach and safeguarding items) and what we retain afterwards, and will get back to you on this one.
 
-**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops returning it (the response is not stated). So the transcript is copied into our DB before any retention delete. We record every delete we make in our own ledger, and a transcript job for a recording in it ends as `no_recording` at once instead of retrying (support did not say what the endpoint answers after a delete). Because a delete is final for us, opting a student out schedules the deletion of their past recordings 24 h later, so a mistaken toggle can be undone. Pencil-side retention stays a go-live prerequisite under (k).
+**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops returning it (the response is not stated). So the transcript is copied into our DB before any retention delete. We record every delete we make in our own ledger, and a transcript job for a recording in it ends at once instead of retrying (support did not say what the endpoint answers after a delete). Because a delete is final for us, opting a student out schedules the deletion of their past recordings 24 h later, so a mistaken toggle can be undone. Pencil-side retention stays a go-live prerequisite under (k).
 
 ## 8. Live nudges, idle and tab-switch alerts
 

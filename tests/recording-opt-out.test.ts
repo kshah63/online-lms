@@ -86,7 +86,7 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     expect(res.warnings[0]).toMatch(/applies from the next call/);
     expect(db.tables.followups).toHaveLength(1);
     expect(db.tables.followups[0]).toMatchObject({ session_id: "s-now", student_id: STUDENT });
-    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ opt_out: true, lessons_in_progress: 1 });
+    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ opt_out: true, lessons_call_may_be_running: 1 });
   });
 
   it("a lesson about to start (teacher may already be in the call) counts as on now", async () => {
@@ -102,7 +102,7 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     expect(res.ok).toBe(true);
     expect(res.warnings).toEqual([]);
     expect(db.tables.followups).toEqual([]);
-    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_in_progress: 0 });
+    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_call_may_be_running: 0 });
   });
 
   it("a lesson that ended long ago, or one cancelled, is not warned about", async () => {
@@ -126,6 +126,20 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     expect(db.tables.followups[0]).toMatchObject({ session_id: "s-late" });
   });
 
+  it("an in_progress lesson nobody ended days ago is not taken for a running call", async () => {
+    seed(db, [lesson("s-abandoned", -14 * 24 * 60, 60, "in_progress")]);
+    const res = await actions.setRecordingOptOut(STUDENT, true);
+    expect(res.warnings).toEqual([]);
+    expect(db.tables.followups).toEqual([]);
+  });
+
+  it("the lesson in a call now is the one warned about, ahead of one that just ended", async () => {
+    seed(db, [lesson("s-just", -70, 60, "completed", 5), lesson("s-now", -5)]);
+    const res = await actions.setRecordingOptOut(STUDENT, true);
+    expect(res.warnings).toHaveLength(1);
+    expect(db.tables.followups[0]).toMatchObject({ session_id: "s-now" });
+  });
+
   it("a lesson ended 5 min ago is warned about (a Space tab can still be in the call); one ended an hour ago is not", async () => {
     seed(db, [lesson("s-just", -70, 60, "completed", 5)]);
     expect((await actions.setRecordingOptOut(STUDENT, true)).warnings).toHaveLength(1);
@@ -140,7 +154,7 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     expect(res.ok).toBe(true);
     expect(res.warnings).toHaveLength(1);
     expect(res.warnings[0]).toMatch(/if that call is being recorded/);
-    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_in_progress: 1 });
+    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_call_may_be_running: 1 });
   });
 
   it("resuming recording never warns about a lesson on now", async () => {

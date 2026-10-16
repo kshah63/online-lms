@@ -73,7 +73,7 @@ export async function scheduleSession(formData: FormData): Promise<ActionResult>
  * Idempotent — only sets actual_start the first time. Returns the start ISO so
  * the client timer counts from the same instant on every device.
  */
-export async function startSessionClock(sessionId: string): Promise<{ actual_start: string }> {
+export async function startSessionClock(sessionId: string): Promise<{ actual_start: string | null }> {
   const now = new Date().toISOString();
   if (isDemoMode) return { actual_start: now };
 
@@ -92,13 +92,16 @@ export async function startSessionClock(sessionId: string): Promise<{ actual_sta
 
   if (data?.actual_start) return { actual_start: data.actual_start };
 
-  // Already started — return the existing value.
+  // Already started — return the existing value. Never started and no longer
+  // live (ended in another room) → null, so the client starts no clock.
   const { data: existing } = await supabase
     .from("sessions")
-    .select("actual_start")
+    .select("actual_start, status")
     .eq("id", sessionId)
     .maybeSingle();
-  return { actual_start: existing?.actual_start ?? now };
+  if (existing?.actual_start) return { actual_start: existing.actual_start };
+  if (existing && !LIVE_STATUSES.includes(existing.status as SessionStatus)) return { actual_start: null };
+  return { actual_start: now };
 }
 
 export type LessonOutcome = "completed" | "no_show";
@@ -125,7 +128,7 @@ const LIVE_STATUSES: SessionStatus[] = ["scheduled", "confirmed", "in_progress"]
  * at once for anyone still in the Space (Pencil support, 2026-10-16). What
  * ends the call is everyone leaving: this room unmounts its Space now, every
  * other open room sees the new status through /api/lesson/[id]/status and
- * unmounts too (closing a Space tab it opened), and Pencil closes the session
+ * unmounts too, and Pencil closes the session
  * six minutes after the last participant leaves or becomes inactive. A Space
  * tab whose lesson page is gone stays in the call until it is closed. The
  * Phase 2 pipeline correlates that session from webhooks and the time window

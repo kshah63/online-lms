@@ -159,6 +159,8 @@ export interface SpaceStageProps {
   roomUnavailable: boolean;
   onEmbedEvent: (evt: EmbedEvent) => void;
   onJoinInfo: (info: JoinInfo) => void;
+  /** The Space opens in its own tab (Redirect mode): this page gets no embed events, so presence is unknown. */
+  onRedirectMode?: () => void;
 }
 
 export function SpaceStage({
@@ -173,33 +175,16 @@ export function SpaceStage({
   roomUnavailable,
   onEmbedEvent,
   onJoinInfo,
+  onRedirectMode,
 }: SpaceStageProps) {
   const [phase, setPhase] = useState<Phase>({ kind: "booting" });
+  useEffect(() => {
+    if (phase.kind === "redirect") onRedirectMode?.();
+  }, [phase.kind, onRedirectMode]);
   const [embedCapable, setEmbedCapable] = useState<boolean | null>(null);
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const startedRef = useRef(false);
   const unmountedRef = useRef(false);
-  /**
-   * Space tabs this stage opened (Redirect mode, "Open in a new tab"). They are
-   * closed when the stage unmounts — the lesson ended (the room's status poll)
-   * or the viewer left — because End does not hang up Pencil's call, and a tab
-   * left open keeps this person in it. A script-opened tab may be closed by
-   * the page that opened it even after `opener` was cut.
-   */
-  const popupsRef = useRef<Window[]>([]);
-  useEffect(
-    () => () => {
-      for (const w of popupsRef.current) {
-        try {
-          if (!w.closed) w.close();
-        } catch {
-          /* already gone */
-        }
-      }
-      popupsRef.current = [];
-    },
-    [],
-  );
 
   useEffect(() => {
     unmountedRef.current = false;
@@ -345,6 +330,13 @@ export function SpaceStage({
         /* cross-origin guard; ignore */
       }
       const result = await mint(purpose, "redirect");
+      if (unmountedRef.current) {
+        // The lesson ended (or the viewer left) while minting: never send a
+        // tab into a call the room has already closed. The tab is still our
+        // blank page, so it can be closed.
+        popup.close();
+        return { ok: false, message: "" };
+      }
       if (result.kind === "url") {
         if (popup.closed) return { ok: false, message: "The new tab was closed before the classroom opened — try again." };
         try {
@@ -353,7 +345,6 @@ export function SpaceStage({
           popup.close();
           return { ok: false, message: POPUP_BLOCKED };
         }
-        popupsRef.current.push(popup);
         onJoinInfo(result.info);
         return { ok: true };
       }
