@@ -10,7 +10,6 @@ import { captureError } from "@/lib/observability";
 import { raiseAdminFollowup } from "@/lib/followups";
 import { PencilError } from "@/lib/pencil/client";
 import { applyRecordingPolicy } from "@/lib/pencil/provision";
-import { recordingActive } from "@/lib/pencil/urls";
 import type { PencilSpace } from "@/lib/types";
 
 // ============================================================================
@@ -24,9 +23,10 @@ import type { PencilSpace } from "@/lib/types";
 // the student's next join until a later join re-applies and confirms.
 //
 // Timing (Pencil support, 2026-10-16): the Space setting takes effect from the
-// NEXT call and does not stop a recording that is already running. So once
-// recording is switched on, the only lesson at risk is one whose call may be
-// running right now; before that (Phase 1) nothing is recorded to warn about.
+// NEXT call and does not stop a recording that is already running. So the
+// lesson at risk is one whose call may be running right now: about to start,
+// on, overrunning, or just ended (End does not hang up Pencil's call, so a
+// Space tab can still be in it).
 // ============================================================================
 
 export interface RecordingOptOutResult {
@@ -39,10 +39,11 @@ export interface RecordingOptOutResult {
 }
 
 /**
- * A lesson's call may be running now when its slot is within these bounds:
- * teachers open the room early, and lessons overrun.
+ * A lesson's call may be running now when its slot is within these bounds
+ * (teachers open the room early, and lessons overrun), when it is still in
+ * progress however late, or when it ended this recently.
  */
-const CALL_MAY_BE_RUNNING = { leadMinutes: 15, overrunMinutes: 30 };
+const CALL_MAY_BE_RUNNING = { leadMinutes: 15, overrunMinutes: 30, endedMinutes: 30 };
 
 /** Reasons carry this prefix so the same follow-up is never raised twice while open. */
 const FOLLOWUP_PREFIX = "[Recording policy]";
@@ -139,16 +140,30 @@ export async function setRecordingOptOut(
 
   // 3. A lesson whose call may be running now: the setting reaches only the next call.
   const now = DateTime.utc();
-  const { data: liveRows } = await admin
-    .from("sessions")
-    .select("id, scheduled_start, course:courses(name)")
-    .eq("student_id", studentId)
-    .in("status", ["scheduled", "confirmed", "in_progress"])
-    .gte("scheduled_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.overrunMinutes }).toISO())
-    .lte("scheduled_start", now.plus({ minutes: CALL_MAY_BE_RUNNING.leadMinutes }).toISO())
-    .order("scheduled_start")
-    .limit(5);
-  const live = ((liveRows ?? []) as unknown as UpcomingLesson[]);
+  const select = "id, scheduled_start, course:courses(name)";
+  const [inSlot, running, justEnded] = await Promise.all([
+    admin
+      .from("sessions")
+      .select(select)
+      .eq("student_id", studentId)
+      .in("status", ["scheduled", "confirmed", "in_progress"])
+      .gte("scheduled_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.overrunMinutes }).toISO())
+      .lte("scheduled_start", now.plus({ minutes: CALL_MAY_BE_RUNNING.leadMinutes }).toISO())
+      .limit(5),
+    admin.from("sessions").select(select).eq("student_id", studentId).eq("status", "in_progress").limit(5),
+    admin
+      .from("sessions")
+      .select(select)
+      .eq("student_id", studentId)
+      .in("status", ["completed", "no_show"])
+      .gte("actual_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.endedMinutes }).toISO())
+      .limit(5),
+  ]);
+  const byId = new Map<string, UpcomingLesson>();
+  for (const rows of [inSlot.data, running.data, justEnded.data]) {
+    for (const row of (rows ?? []) as unknown as UpcomingLesson[]) byId.set(row.id, row);
+  }
+  const live = Array.from(byId.values()).sort((a, b) => a.scheduled_start.localeCompare(b.scheduled_start));
 
   if (unconfirmed.length > 0) {
     const what = optOut ? "'do not record'" : "'record again'";
@@ -163,16 +178,16 @@ export async function setRecordingOptOut(
     });
   }
 
-  if (optOut && recordingActive() && live.length > 0) {
+  if (optOut && live.length > 0) {
     const current = live[0]!;
     const course = current.course?.name ?? "a lesson";
     warnings.push(
-      `${firstName} has ${course} now (scheduled ${DateTime.fromISO(current.scheduled_start, { zone: "utc" }).toRelative()}). The change applies from the next call: a call that is already running keeps recording until it ends. Ask the teacher to end the call in the Space and start a new one, and delete the recording once it appears.`,
+      `${firstName} may be in a call for ${course} now (scheduled ${DateTime.fromISO(current.scheduled_start, { zone: "utc" }).toRelative()}). The change applies from the next call: if that call is being recorded, it keeps recording until it ends. Ask the teacher to end the call in the Space and start a new one; the recording is deleted when Pencil delivers it.`,
     );
     await raiseAdminFollowup(admin, {
       studentId,
       sessionId: current.id,
-      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording while ${course} may have been in a call. Pencil applies the setting from the next call only, so that call is recorded until the teacher ends it and starts a new one. Check the recording is deleted when Pencil delivers it, and tell the family.`,
+      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording while ${course} may have been in a call. Pencil applies the setting from the next call only, so if that call was being recorded it kept recording until the teacher ended it. Check any such recording is deleted when Pencil delivers it, and tell the family.`,
     });
   }
 

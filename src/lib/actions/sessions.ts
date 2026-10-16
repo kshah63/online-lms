@@ -78,12 +78,15 @@ export async function startSessionClock(sessionId: string): Promise<{ actual_sta
   if (isDemoMode) return { actual_start: now };
 
   const supabase = createSupabaseServerClient()!;
-  // Set only if not already started; mark the lesson in progress.
+  // Set only if not already started and still live: a room that has not yet
+  // seen the End (other rooms learn it by polling) must not turn a no-show or
+  // a completed lesson back into one in progress.
   const { data } = await supabase
     .from("sessions")
     .update({ actual_start: now, status: "in_progress" })
     .eq("id", sessionId)
     .is("actual_start", null)
+    .in("status", LIVE_STATUSES)
     .select("actual_start")
     .maybeSingle();
 
@@ -122,9 +125,11 @@ const LIVE_STATUSES: SessionStatus[] = ["scheduled", "confirmed", "in_progress"]
  * at once for anyone still in the Space (Pencil support, 2026-10-16). What
  * ends the call is everyone leaving: this room unmounts its Space now, every
  * other open room sees the new status through /api/lesson/[id]/status and
- * unmounts too, and Pencil closes the session six minutes after the last
- * person leaves. The Phase 2 pipeline correlates that session from webhooks
- * and the time window (plan decision b), not from a hint written here.
+ * unmounts too (closing a Space tab it opened), and Pencil closes the session
+ * six minutes after the last participant leaves or becomes inactive. A Space
+ * tab whose lesson page is gone stays in the call until it is closed. The
+ * Phase 2 pipeline correlates that session from webhooks and the time window
+ * (plan decision b), not from a hint written here.
  *
  * `opts.usedFallback` (the room ran on the Zoom link) or LESSON_FALLBACK_MODE
  * marks `analysis_status='no_recording'` so the post-session pipeline doesn't

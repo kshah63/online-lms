@@ -149,7 +149,7 @@ describe("endLesson / assignTeacher — Pencil live", () => {
     // Pencil support, 2026-10-16: endOngoingSession ends only the analytics
     // session — not the call, not the recording — and immediately opens a new
     // one for anyone still in the Space. Pencil closes the session itself six
-    // minutes after the last person leaves, so End leaves Pencil alone and the
+    // minutes after the last participant leaves or becomes inactive, so End leaves Pencil alone and the
     // rooms close themselves (lesson-room polls /api/lesson/[id]/status).
     expect(calls).toHaveLength(0);
     expect(db.tables.pencil_sessions).toHaveLength(0);
@@ -202,6 +202,18 @@ describe("endLesson / assignTeacher — Pencil live", () => {
     expect(db.tables.pencil_sessions).toHaveLength(0);
     expect(vi.mocked(observability.captureError)).not.toHaveBeenCalled();
     expect(audited()).toEqual(["lesson.no_show"]);
+  });
+
+  it("startSessionClock never revives a lesson already ended in another room", async () => {
+    pencilServer({});
+    for (const status of ["no_show", "completed", "cancelled"]) {
+      seed(db, { status, actual_start: null });
+      await actions.startSessionClock(SESSION);
+      expect(db.tables.sessions[0]).toMatchObject({ status, actual_start: null });
+    }
+    seed(db, { status: "confirmed", actual_start: null });
+    const r = await actions.startSessionClock(SESSION);
+    expect(db.tables.sessions[0]).toMatchObject({ status: "in_progress", actual_start: r.actual_start });
   });
 
   it("Zoom fallback: marks analysis_status='no_recording' and skips Pencil entirely", async () => {

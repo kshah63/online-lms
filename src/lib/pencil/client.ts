@@ -282,7 +282,7 @@ export function updateSpaceSettings(spaceId: string, settings: SpaceSettingsPatc
 // `POST /spaces/{spaceId}/endOngoingSession` is deliberately not wrapped: it
 // ends only the analytics session — not the call, not the recording — and at
 // once opens a new session for anyone still in the Space. Pencil closes a
-// session itself six minutes after the last person leaves (Pencil support,
+// session itself six minutes after the last participant leaves or becomes inactive (Pencil support,
 // 2026-10-16), so "End lesson" unmounts every room instead of calling it.
 
 // ---------------------------------------------------------------------------

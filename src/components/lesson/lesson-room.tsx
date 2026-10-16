@@ -37,6 +37,7 @@ import {
 } from "@/components/ui/dialog";
 import { endLesson, startSessionClock, type LessonOutcome } from "@/lib/actions/sessions";
 import type { LessonStatusResponse } from "@/app/api/lesson/[sessionId]/status/route";
+import { embedEventShowsStudent, isEndedStatus } from "@/components/lesson/room-logic";
 import { isDemoMode } from "@/lib/env";
 import type { SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -151,37 +152,18 @@ export function LessonRoom({
 
   /**
    * Embed events (already source- and origin-checked by <SpaceStage>). The clock
-   * starts on the first event proving the STUDENT is present: `participant_join`
-   * with the student's Pencil id, or `participantupdate.count >= 2`. The
-   * teacher's own `user_joined_call` only drives the "waiting for student" badge.
+   * starts on the first event proving the STUDENT is present
+   * (`embedEventShowsStudent`, room-logic.ts). The teacher's own
+   * `user_joined_call` only drives the "waiting for student" badge.
    */
   const handleEmbedEvent = useCallback(
     (evt: EmbedEvent) => {
       const detail = evt.detail;
       switch (evt.type) {
-        case "participant_join": {
-          const id = typeof detail?.id === "string" ? detail.id : null;
-          if (hostView) {
-            if (id !== null && studentIdRef.current !== null && id === studentIdRef.current) markStudentPresent();
-          } else if (id === null || id !== studentIdRef.current) {
-            // Someone else joined the student's room → both present. The
-            // student's own "use this device for writing" iPad has the same
-            // Pencil id and does not count.
-            markStudentPresent();
-          }
+        case "participant_join":
+        case "participantupdate":
+          if (embedEventShowsStudent(evt, { hostView, studentPencilUserId: studentIdRef.current })) markStudentPresent();
           break;
-        }
-        case "participantupdate": {
-          // Whether `count` counts users or devices is unconfirmed, and a
-          // teacher or student may open a second, whiteboard-only device. A
-          // host trusts only participant_join with the student's id; the count
-          // is the fallback while that id is unknown.
-          if (hostView && studentIdRef.current !== null) break;
-          const raw = detail?.count;
-          const count = typeof raw === "number" ? raw : Number(raw);
-          if (Number.isFinite(count) && count >= 2) markStudentPresent();
-          break;
-        }
         case "user_started_call":
         case "user_joined_call":
           setInCall(true);
@@ -210,7 +192,7 @@ export function LessonRoom({
     setProvider(info.provider);
     // "Ran on the backup link" is about where the lesson ended up: a Retry that
     // gets into the Space (after a rate-limit or a Pencil hiccup) clears it, so
-    // End still ends the Pencil session and the lesson isn't marked unrecorded.
+    // End does not mark a lesson that ran in Pencil as unrecorded.
     if (info.provider === "fallback") setUsedFallback(true);
     else if (info.provider === "pencil") setUsedFallback(false);
   }, []);
@@ -250,19 +232,21 @@ export function LessonRoom({
   // End, an admin's). Pencil keeps the call — and, once always-on recording is
   // on, its recording — running for whoever is still in the Space, and End
   // does not touch Pencil (endOngoingSession ends only the analytics session;
-  // Pencil support, 2026-10-16). Unmounting the Space is what makes this
-  // viewer leave; Pencil closes the session six minutes after the last one.
+  // Pencil support, 2026-10-16). Unmounting <SpaceStage> is what makes this
+  // viewer leave: it drops the iframe and closes a Space tab it opened. Pencil
+  // closes the session six minutes after the last participant leaves or becomes inactive. A backgrounded
+  // tab (tablets suspend timers) checks again the moment it is shown.
   useEffect(() => {
     if (over || isDemoMode) return;
     let inFlight = false;
-    const id = window.setInterval(async () => {
+    const check = async () => {
       if (inFlight) return;
       inFlight = true;
       try {
         const res = await fetch(`/api/lesson/${sessionId}/status`, { cache: "no-store" });
         if (!res.ok) return;
         const s = (await res.json()) as LessonStatusResponse;
-        if (s.status === "completed" || s.status === "no_show" || s.status === "cancelled") {
+        if (isEndedStatus(s.status)) {
           setEndedOutcome(s.status);
           setEndedAtMs(s.actual_end ? Date.parse(s.actual_end) : Date.now());
         }
@@ -271,9 +255,18 @@ export function LessonRoom({
       } finally {
         inFlight = false;
       }
-    }, STATUS_POLL_MS);
-    return () => window.clearInterval(id);
+    };
+    const id = window.setInterval(() => void check(), STATUS_POLL_MS);
+    const onVisible = () => {
+      if (document.visibilityState === "visible") void check();
+    };
+    document.addEventListener("visibilitychange", onVisible);
+    return () => {
+      window.clearInterval(id);
+      document.removeEventListener("visibilitychange", onVisible);
+    };
   }, [over, sessionId]);
+
 
   const liveStatus: SessionStatus = endedOutcome ?? (startedAtMs ? "in_progress" : status);
   const recordingShown = recordingLive ?? recordingOn;
@@ -687,7 +680,7 @@ function EndLessonButton({
             <DialogTitle>{studentSeen ? "End this lesson?" : "The student hasn't joined"}</DialogTitle>
             <DialogDescription>
               {studentSeen
-                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within about 15 seconds."
+                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within about 15 seconds. A classroom the student opened in its own tab closes with their lesson page; if that page is gone, the tab stays in the call until they close it."
                 : "Mark it as a no-show (nothing is counted as taught), or end it normally if the student was present on another device."}
             </DialogDescription>
           </DialogHeader>

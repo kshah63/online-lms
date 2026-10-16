@@ -14,7 +14,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 
 > If your endpoint doesn't return a 2xx within 15 seconds, we retry with exponential backoff (starting at 30 seconds and growing to 10 minutes between attempts), for up to 10 delivery attempts in total. Ordering is not guaranteed, especially when a delivery fails and is retried.
 
-**For us:** with doubling capped at 10 minutes, the nine gaps are 30 s, 1, 2, 4, 8, 10, 10, 10 and 10 min. A delivery is therefore abandoned about 55 minutes after the first attempt, so an outage longer than that loses events and only `reconcile` recovers them. The route answers 2xx for everything it stored or chose to ignore, and 5xx only when it could not store the delivery. No job may assume an order. With the timings in (3) and (4), `RECORDING_AVAILABLE` (minutes after the call) is likely to arrive *before* `SESSION_ENDED` (six minutes after everyone leaves, plus processing) even with no retries at all.
+**For us:** with doubling capped at 10 minutes, the nine gaps are 30 s, 1, 2, 4, 8, 10, 10, 10 and 10 min. A delivery would then be abandoned about 55 minutes after the first attempt; Pencil gave no total, so the design never relies on one: `reconcile` asks Pencil for sessions itself, which also recovers events lost to a longer outage. The route answers 2xx for everything it stored or chose to ignore, and 5xx only when it could not store the delivery. No job may assume an order. With the timings in (3) and (4), we expect `RECORDING_AVAILABLE` (within a few minutes of the call ending) often to arrive *before* `SESSION_ENDED` (six minutes after the last participant leaves or becomes inactive, plus processing), even with no retries at all — our inference, to be observed on staging.
 
 ## 3. Timings and the reports endpoint
 
@@ -29,7 +29,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > We recommend using the `COACHING_AVAILABLE` webhook as your trigger, and checking `coaching.status` if you poll. The webhook is only sent when a report completes with insights, so the status field is how you'll see the other outcomes.
 
-**For us:** the coach report is triggered by `COACHING_AVAILABLE`, with a status poll as the fallback. Every terminal `coaching.status` is stored and shown. A `coaching` that stays `null` long after the transcript means AI Coach does not apply. These timings replace the helpdesk's "~1 h" for recordings and "~30 min" for insights.
+**For us:** the coach report is triggered by `COACHING_AVAILABLE`, with a status poll as the fallback. Every terminal `coaching.status` is stored and shown. A `coaching` that stays `null` long after the transcript most likely means AI Coach does not apply (or there was no recording); Pencil gave no deadline, so our `not_applicable` after 2 h is a cut-off, and a later `COACHING_AVAILABLE` still overrides it. These timings replace the helpdesk's "~1 h" for recordings and "~30 min" for insights.
 
 ## 4. `POST /spaces/{spaceId}/endOngoingSession`
 
@@ -37,7 +37,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > We end the session six minutes after the last participant leaves or becomes inactive, so I don't think you would need to explicitly call this endpoint.
 
-**For us:** "End lesson" no longer calls it. Calling it while the student was still connected split off a short student-only session, which decision (i) would have counted as homework activity. Ending the call is now everyone leaving: every open lesson room polls the lesson's status and unmounts its Space once the lesson is over. A session closes six minutes after the last person leaves; our notes said five.
+**For us:** "End lesson" no longer calls it. Calling it while the student was still connected split off a short student-only session, which decision (i) would have counted as homework activity. Ending the call is now everyone leaving: every open lesson room polls the lesson's status and unmounts its Space once the lesson is over. A session closes six minutes after the last participant leaves or becomes inactive; our notes said five.
 
 ## 5. Student alone in a Space, and starting a call
 
@@ -59,7 +59,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > More info: https://helpdesk.pencilspaces.com/en/articles/12641384-how-to-enable-always-on-cloud-recording
 
-**For us:** an opt-out reaches the next call. The only lesson at risk is one whose call is running now, whose recording must be deleted when it lands. The per-Space "up to 3 h" window and the pre-lesson `apply_space_settings` re-PATCH are dropped. We read the helpdesk's 3 h figure as being about switching the institution mode on, not this setting; Pencil did not comment, so it is a follow-up question. We switch always-on on ourselves at the start of Phase 2.
+**For us:** an opt-out reaches the next call. If our reading of the helpdesk's 3 h below holds, the only lesson at risk is one whose call is running now, whose recording is deleted when it lands. The per-Space "up to 3 h" window and the pre-lesson `apply_space_settings` re-PATCH are dropped. We read the helpdesk's 3 h figure as being about switching the institution mode on, not this setting; Pencil did not comment, so it is a follow-up question. We switch always-on on ourselves at the start of Phase 2.
 
 ## 7. Deleting a recording
 
@@ -67,7 +67,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > I'm checking with our team on exactly what gets deleted alongside it (the transcript, summary, AI Coach and safeguarding items) and what we retain afterwards, and will get back to you on this one.
 
-**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops answering. So the transcript is copied into our DB before any retention delete. We record every delete we make in our own ledger, and a transcript job for a recording in it ends as `no_recording` at once instead of retrying (support did not say what the endpoint answers after a delete). Because a delete is final for us, opting a student out schedules the deletion of their past recordings 24 h later, so a mistaken toggle can be undone. Pencil-side retention stays a go-live prerequisite under (k).
+**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops returning it (the response is not stated). So the transcript is copied into our DB before any retention delete. We record every delete we make in our own ledger, and a transcript job for a recording in it ends as `no_recording` at once instead of retrying (support did not say what the endpoint answers after a delete). Because a delete is final for us, opting a student out schedules the deletion of their past recordings 24 h later, so a mistaken toggle can be undone. Pencil-side retention stays a go-live prerequisite under (k).
 
 ## 8. Live nudges, idle and tab-switch alerts
 
@@ -78,7 +78,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 > - **Tab switching:** `SPACE_USER` webhooks with eventType `USER_ENTERED_BACKGROUND` and `USER_ENTERED_FOREGROUND`
 > - **Session analytics:** a per-user `spaceDurationInBackground` (visible to admins/hosts)
 
-**For us:** decision (j) is rewritten: no live coaching from Pencil, and distraction alerts become an owner decision. The tab events are named `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`; the spec printed `hideTab` / `unhideTab`. Opening Materials raises a distraction alert to the teacher and counts as background time in both layouts. In Redirect mode the Space is in its own tab and Materials in ours. In the desktop room every Materials file opens in a new tab, which hides the Space. Homework activity therefore counts only the time the Space was in view (`spaceDuration − spaceDurationInBackground`). The owner decides whether to keep the alerts on (plan, open questions).
+**For us:** decision (j) is rewritten: no live coaching from Pencil, and distraction alerts become an owner decision. The tab events are named `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`; Pencil's webhook docs printed `hideTab` / `unhideTab`. Opening Materials raises a distraction alert to the teacher and counts as background time. In Redirect mode the Space is in its own tab and Materials in ours. In the desktop room every Materials file opens in a new tab, which hides the Space, so we expect the same there (a staging check). Homework activity therefore counts only the time the Space was in view (`spaceDuration − spaceDurationInBackground`). The owner decides whether to keep the alerts on (plan, open questions).
 
 ## 9. Second device (iPad)
 
@@ -88,7 +88,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > Tip: add `mode=whiteboardonly` to the iPad's Space URL to hide the call controls and join prompts on that device.
 
-**For us:** the "Use this device for writing" link is `standalone=true&mode=whiteboardonly`. The "tap Not Now, keep the speaker off" rules are gone. Homework links use the same mode. Our End cannot close that device's tab, and the six-minute close in (4) means an open writing tab keeps the lesson's session going, so the student is asked to close it when the lesson ends.
+**For us:** the "Use this device for writing" link is `standalone=true&mode=whiteboardonly`. The "tap Not Now" rule is gone; the speaker-off rule stays, softened, until Pencil says whether a whiteboard-only device plays call audio (follow-up 9). Homework links use the same mode. Our End cannot close that device's tab, and with the six-minute close in (4) an open writing tab may keep the lesson's session going (whether an idle whiteboard-only device counts as inactive is follow-up 8), so the student is asked to close it when the lesson ends.
 
 ## 10. Boards API
 
@@ -120,7 +120,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 ## Follow-up questions for Pencil
 
 1. **`COACHING_AVAILABLE` payload:** what is its `_type`, and which ids does it carry (`sessionId`, `recordingId`, `spaceId`)?
-2. **`SPACE_USER` eventType strings:** you name the tab events `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`, while the spec prints `hideTab` / `unhideTab`. Are join and leave `joinSpace` / `leaveSpace`, or upper-case forms? Could you send the full current list for every `_type`?
+2. **`SPACE_USER` eventType strings:** you name the tab events `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`, while your webhook docs print `hideTab` / `unhideTab`. Are join and leave `joinSpace` / `leaveSpace`, or upper-case forms? Could you send the full current list for every `_type`?
 3. **Retries:** does a redelivery carry the same `timestamp` as the first attempt, and is there a delivery id we can deduplicate on?
 4. **Owner:** if we pass `owner`, can it later be changed, or the owner removed with `updateUsers`, when a student moves to a different tutor?
 5. **Call start without `skipCallHostCheck`:** with `startCall=true` alone, does a participant who arrives first join the call automatically once the host starts it, or see a join prompt?

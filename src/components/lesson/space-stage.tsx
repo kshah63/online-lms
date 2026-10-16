@@ -179,6 +179,27 @@ export function SpaceStage({
   const iframeRef = useRef<HTMLIFrameElement | null>(null);
   const startedRef = useRef(false);
   const unmountedRef = useRef(false);
+  /**
+   * Space tabs this stage opened (Redirect mode, "Open in a new tab"). They are
+   * closed when the stage unmounts — the lesson ended (the room's status poll)
+   * or the viewer left — because End does not hang up Pencil's call, and a tab
+   * left open keeps this person in it. A script-opened tab may be closed by
+   * the page that opened it even after `opener` was cut.
+   */
+  const popupsRef = useRef<Window[]>([]);
+  useEffect(
+    () => () => {
+      for (const w of popupsRef.current) {
+        try {
+          if (!w.closed) w.close();
+        } catch {
+          /* already gone */
+        }
+      }
+      popupsRef.current = [];
+    },
+    [],
+  );
 
   useEffect(() => {
     unmountedRef.current = false;
@@ -332,6 +353,7 @@ export function SpaceStage({
           popup.close();
           return { ok: false, message: POPUP_BLOCKED };
         }
+        popupsRef.current.push(popup);
         onJoinInfo(result.info);
         return { ok: true };
       }
@@ -522,7 +544,7 @@ export function SpaceStage({
                 <div className="font-semibold">{phase.opened ? "Lesson open in another tab" : "Join from this device"}</div>
                 <p className="text-sm text-muted-foreground">
                   {phase.opened
-                    ? "Switch to the Pencil tab to continue. Opening the Space twice on one device breaks the call."
+                    ? "Switch to the Pencil tab to continue. Opening the Space twice on one device breaks the call. When the lesson ends, close the Pencil tab if it is still open."
                     : "On tablets and phones the Space opens in its own tab."}
                 </p>
               </div>
@@ -542,7 +564,8 @@ export function SpaceStage({
             <div className="rounded-lg bg-muted/60 p-3 text-xs text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">Using this as a second device for writing?</div>
               <ol className="list-decimal space-y-0.5 pl-4">
-                <li>&ldquo;Use this device for writing&rdquo; opens the board only — no call, camera or sound here.</li>
+                <li>&ldquo;Use this device for writing&rdquo; opens the board only — no call controls here.</li>
+                <li>If you hear the call on this device too, turn its volume down.</li>
                 <li>Stay in the call on your other device.</li>
                 <li>Never open the Space twice on one device.</li>
                 <li>Close this tab when the lesson ends — the Space stays open on this device until you do.</li>

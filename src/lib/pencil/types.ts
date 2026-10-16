@@ -156,10 +156,11 @@ export const PencilErrorBodySchema = z
 // and the route agree on a shape). `_type` discriminates.
 //
 // Delivery (Pencil support, 2026-10-16): anything but a 2xx within 15 s is
-// retried with exponential backoff (30 s growing to 10 min) for up to 10
-// attempts — about an hour in all — and ORDER IS NOT GUARANTEED. So the route
-// answers 2xx for every payload it stored or chose to ignore (an unknown
-// `_type` included; a 4xx only buys ten pointless redeliveries), and no job
+// retried with exponential backoff (30 s growing to 10 min), up to 10
+// delivery attempts in all (no total time given; about 55 min if the gaps
+// double), and ORDER IS NOT GUARANTEED. So the route answers 2xx for every
+// payload it stored or chose to ignore (an unknown `_type` included; a 4xx
+// only buys up to nine pointless redeliveries), and no job
 // may assume one event arrives before another.
 // ---------------------------------------------------------------------------
 
@@ -169,7 +170,7 @@ export const SpaceUserEventSchema = z
     spaceId: z.string(),
     sessionId: z.string(),
     timestamp: z.union([z.string(), z.number()]),
-    // Spec: joinSpace | leaveSpace | hideTab | unhideTab. Pencil support
+    // Pencil's webhook docs: joinSpace | leaveSpace | hideTab | unhideTab. Pencil support
     // (2026-10-16) names the tab events USER_ENTERED_BACKGROUND /
     // USER_ENTERED_FOREGROUND — a different naming scheme, not just a different
     // case — so the join/leave strings are confirmed only by the first staging
@@ -187,7 +188,7 @@ export const SpaceSessionEventSchema = z
     spaceId: z.string(),
     sessionId: z.string(),
     timestamp: z.union([z.string(), z.number()]),
-    eventType: z.string(), // SESSION_ENDED (analytics ready, about 6 min after the last person leaves)
+    eventType: z.string(), // SESSION_ENDED: analytics processed (the session closes 6 min after the last participant leaves or becomes inactive, then processing)
   })
   .passthrough();
 

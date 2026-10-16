@@ -123,14 +123,16 @@ can start a call alone, which always-on recording would record and bill). "End l
 session `completed` (one credit) or **"Mark as no-show"** (never billed) and makes no Pencil call:
 Pencil's `endOngoingSession` ends only the analytics session, not the call or the recording. Instead
 every open room polls `GET /api/lesson/[id]/status` every 15 s and unmounts its Space once the
-lesson is over, so everyone leaves the call; Pencil closes its session six minutes after the last
-person leaves. A Space open in a separate tab (Redirect mode) stays open until that tab is closed.
+lesson is over, so everyone leaves the call (a Space tab the room opened is closed with it); Pencil
+closes its session six minutes after the last participant leaves or becomes inactive. A Space tab whose
+lesson page is gone stays in the call until that tab is closed.
 
 **Second device for writing (iPad + laptop).** On a coarse-pointer device the lesson page offers
 **"Join the call here"** and **"Use this device for writing"** (opens the Space with
 `standalone=true&mode=whiteboardonly`, in a new tab: no call controls and no join prompt on that
-device). Each tap re-mints its own URL. Two rules are left: never open the Space twice on one device,
-and close the writing tab when the lesson ends (our End cannot close it). Pencil counts call participants by who joins the call, bills and records attendance per user,
+device). Each tap re-mints its own URL. Three rules are left: never open the Space twice on one device,
+close the writing tab when the lesson ends (our End cannot close it), and turn the device's volume down
+if it plays the call (Pencil has not said whether a whiteboard-only device does). Pencil counts call participants by who joins the call, bills and records attendance per user,
 and a whiteboard-only device never starts or stops a recording, so nothing in our data model changes.
 
 ### Recording policy (opt-out) and teacher AI evaluation
@@ -141,7 +143,7 @@ and a whiteboard-only device never starts or stops a recording, so nothing in ou
   3 h before the next lesson, together with `PENCIL_RECORDING_ENABLED=on`. Until that flag is on **nothing is recorded and
   no screen says so**: session cards, the lesson header, the student notice and the parent status
   card show "Recorded (audio + board)" only when the flag is on (the lesson header also reacts to a
-  live `recording_status_change`, e.g. a host-started recording); an opted-out student always shows
+  live `recording_status_change`, e.g. if the institution mode is changed in Pencil); an opted-out student always shows
   "Not recorded". The opt-out machinery is already live in Phase 1 so the setting is in place before
   any recording starts.
 - **Opt-out** is an admin action (`/admin/people` → "Opt out" / "Resume recording", `setRecordingOptOut`).
@@ -203,8 +205,8 @@ From the integration plan (decision k):
 - Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails **OFF** (or
   present hosts only — the generic API account is an invited host of every Space and is not an "API
   user", so "off for API users" would still mail it every summary); In Session → distraction
-  notifications: owner decision (they fire whenever a student opens Materials: switching to our tab
-  in Redirect mode, or a file opening in a new tab in the desktop room).
+  notifications: owner decision (in Redirect mode they will fire whenever a student switches to our tab
+  for Materials; whether a file opening in a new tab from the desktop room triggers them is a staging check).
 - "Grant admins access to all Spaces" **ON** (Pencil's default): it lets the API account manage Spaces
   it is not a member of; the Spaces we create have it as a host anyway.
 - Standalone branding for the embedded Space.
@@ -231,7 +233,7 @@ From the integration plan (decision k):
 |---|---|---|
 | `PENCIL_SPACES_API_KEY` | for a real classroom | Institution API key. Unset → mock Space panel, no Pencil calls. |
 | `PENCIL_API_BASE_URL` | no | Default `https://apis.pencilapp.com/public/api/`; staging `https://staging-apis.pencilapp.com/public/api/`. |
-| `PENCIL_WEBHOOK_SECRET` | Phase 2 | Bearer secret Pencil sends with webhook deliveries; the webhook route fails closed (503) while empty. Pencil redelivers a non-2xx up to 10 times over about an hour, then drops it, so set the secret before registering the URL. |
+| `PENCIL_WEBHOOK_SECRET` | Phase 2 | Bearer secret Pencil sends with webhook deliveries; the webhook route fails closed (503) while empty. Pencil makes up to 10 delivery attempts for a non-2xx (gaps growing from 30 s to 10 min; no total given), then gives up, so set the secret before registering the URL. |
 | `NEXT_PUBLIC_PENCIL_APP_ORIGIN` | no | Origin of the Space UI for the postMessage allowlist (production + staging are always accepted). |
 | `LESSON_FALLBACK_URL` | recommended | Master Zoom link (see runbook). |
 | `LESSON_FALLBACK_MODE` | no | `on` forces every lesson onto the fallback link. |
@@ -305,8 +307,10 @@ Pencil Space, parent status view, recording opt-out toggle, Zoom fallback, secon
 this tree implements. Still to come:
 
 - **Phase 2 — recording + post-session pipeline.** Institution always-on recording switched on;
-  retention and opt-out deletion jobs (a recording is deleted only after our transcript copy exists,
-  because Pencil's transcript endpoint stops answering after a delete);
+  retention and opt-out deletion jobs (retention deletes a recording only after our transcript copy
+  exists, because Pencil's transcript endpoint stops returning it after a delete; an opted-out
+  student's recordings are deleted without copying anything — past ones 24 h after the opt-out, so a
+  mistaken toggle can be undone);
   Pencil webhooks (`/api/webhooks/pencil`) as hints, a job queue drained by cron, transcript + Pencil
   AI Coach report + our Claude coaching stored per lesson, AI-pre-filled report drafts, AI follow-ups,
   teacher notifications. Tables `pencil_sessions`, `pencil_webhook_events`, `pencil_jobs` already exist
@@ -314,7 +318,8 @@ this tree implements. Still to come:
 - **Phase 3 — homework in the Space + mobile.** The tldraw homework canvas is replaced by a board in the
   student's Space (`standalone=true&mode=whiteboardonly`; Pencil has no board deep link, so the Space
   opens on the last-viewed board and the item names the board to switch to; a participant cannot start
-  a call, so homework time is never recorded, and time alone is not billed), mobile join via a bearer
+  a call by default, so the time a student spends alone is not recorded, nor billed at default plan
+  thresholds), mobile join via a bearer
   "space link" route, and the
   `tldraw` dependency is removed.
 - **Phase 4 — recommended.** Pencil Events mirroring (session timer, attendance), recording playback for

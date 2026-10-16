@@ -64,7 +64,7 @@ export interface Session {
   cancel_reason: string | null;
   /** The Pencil Space (pencil_spaces.id) this lesson ran in; set lazily on first join. */
   space_id: string | null;
-  /** Pencil's analytics session id, bound by the End button / pipeline. NOT unique. */
+  /** Primary bound Pencil analytics session, set by the Phase 2 pipeline (never by End). NOT unique. */
   pencil_session_id: string | null;
   analysis_status: AnalysisStatus;
   /** Admin per-session override of the outage fallback link (any https URL). */

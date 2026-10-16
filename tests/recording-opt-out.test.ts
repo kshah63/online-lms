@@ -7,7 +7,8 @@ import { FakeDb, type Row } from "./helpers/fake-db";
 // not stop a recording that is already running. So the admin is warned (and a
 // follow-up raised) for a lesson whose call may be running now — and no longer
 // for one that merely starts later today, which the old "up to 3 h" rule did.
-// Before recording is switched on (Phase 1) there is nothing to warn about.
+// "May be running" includes an overrunning lesson and one ended moments ago:
+// End does not hang up Pencil's call, so a Space tab can still be in it.
 // Spaces here are mock rows, so the policy confirms without network.
 
 const state = vi.hoisted(() => ({ db: null as unknown, actor: null as unknown }));
@@ -36,8 +37,12 @@ const admin: Profile = {
 
 const minutesFromNow = (m: number) => new Date(Date.now() + m * 60_000).toISOString();
 
-function lesson(id: string, startInMin: number, lengthMin = 60, status = "confirmed"): Row {
-  return { id, student_id: STUDENT, course_id: COURSE, status, scheduled_start: minutesFromNow(startInMin), scheduled_end: minutesFromNow(startInMin + lengthMin) };
+function lesson(id: string, startInMin: number, lengthMin = 60, status = "confirmed", endedMinAgo: number | null = null): Row {
+  return {
+    id, student_id: STUDENT, course_id: COURSE, status,
+    scheduled_start: minutesFromNow(startInMin), scheduled_end: minutesFromNow(startInMin + lengthMin),
+    actual_end: endedMinAgo === null ? null : minutesFromNow(-endedMinAgo),
+  };
 }
 
 function seed(db: FakeDb, sessions: Row[]) {
@@ -107,13 +112,34 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     expect(db.tables.followups).toEqual([]);
   });
 
-  it("Phase 1 (recording not switched on): a lesson on now is not warned about", async () => {
+  it("the slot's overrun bound: ended 20 min ago is warned about, 40 min ago is not", async () => {
+    seed(db, [lesson("s-overrun", -80)]);
+    expect((await actions.setRecordingOptOut(STUDENT, true)).warnings).toHaveLength(1);
+    seed(db, [lesson("s-gone", -100)]);
+    expect((await actions.setRecordingOptOut(STUDENT, true)).warnings).toEqual([]);
+  });
+
+  it("a lesson still in progress long after its slot is warned about", async () => {
+    seed(db, [lesson("s-late", -150, 60, "in_progress")]);
+    const res = await actions.setRecordingOptOut(STUDENT, true);
+    expect(res.warnings).toHaveLength(1);
+    expect(db.tables.followups[0]).toMatchObject({ session_id: "s-late" });
+  });
+
+  it("a lesson ended 5 min ago is warned about (a Space tab can still be in the call); one ended an hour ago is not", async () => {
+    seed(db, [lesson("s-just", -70, 60, "completed", 5)]);
+    expect((await actions.setRecordingOptOut(STUDENT, true)).warnings).toHaveLength(1);
+    seed(db, [lesson("s-old", -130, 60, "completed", 65)]);
+    expect((await actions.setRecordingOptOut(STUDENT, true)).warnings).toEqual([]);
+  });
+
+  it("Phase 1 too (recording not switched on): a host may have started a recording by hand, so it still warns", async () => {
     vi.stubEnv("PENCIL_RECORDING_ENABLED", "");
     seed(db, [lesson("s-now", -20)]);
     const res = await actions.setRecordingOptOut(STUDENT, true);
     expect(res.ok).toBe(true);
-    expect(res.warnings).toEqual([]);
-    expect(db.tables.followups).toEqual([]);
+    expect(res.warnings).toHaveLength(1);
+    expect(res.warnings[0]).toMatch(/if that call is being recorded/);
     expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_in_progress: 1 });
   });
 

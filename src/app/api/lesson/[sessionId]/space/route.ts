@@ -37,7 +37,8 @@ export const maxDuration = 60;
  *
  * Body: `{ purpose?: 'lesson' | 'board', mode?: 'iframe' | 'redirect' }`.
  *  - purpose 'lesson' = the call (startCall, embed events); 'board' = a second
- *    device used only for writing (standalone, no call).
+ *    device used only for writing (standalone + mode=whiteboardonly: board
+ *    only, no call controls or join prompt).
  *  - mode is what the client will do with the URL (iframe.src or a new tab);
  *    it is echoed back and audited, nothing more.
  *
