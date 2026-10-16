@@ -300,7 +300,7 @@ create table if not exists public.pencil_sessions (
   pencil_session_id    text primary key,
   pencil_space_id      text not null,
   space_id             uuid references public.pencil_spaces(id) on delete set null,
-  hint_session_id      uuid references public.sessions(id) on delete set null,  -- from End button / joinSpace, unverified
+  hint_session_id      uuid references public.sessions(id) on delete set null,  -- from joinSpace (End no longer writes one), unverified
   session_id           uuid references public.sessions(id) on delete set null,  -- verified by analytics; null = unmatched
   taught_by_profile_id uuid references public.profiles(id),
   teacher_present      boolean, student_present boolean,
@@ -576,7 +576,7 @@ notify pgrst, 'reload schema';
 | Path | Action | What / why |
 |---|---|---|
 | `src/app/hw/[id]/page.tsx` | modify | Keep role gating; drop snapshot; pass `spaceReady`, `canOpenSpace` (student self, admin, teacher passing `canHostSpace` — parents false) to `HomeworkWorkspace`. |
-| `src/components/homework/homework-workspace.tsx` | new | Header/status/Actions/AttachmentsBar/marks + "Open my Space board" (re-mints per click, new tab), board-hint instructions ("do not start a call"), mock panel in demo; parent mode hides the Space button. |
+| `src/components/homework/homework-workspace.tsx` | new | Header/status/Actions/AttachmentsBar/marks + "Open my Space board" (re-mints per click, new tab), board-hint instructions (which board to switch to; the whiteboard-only link has no call to start), mock panel in demo; parent mode hides the Space button. |
 | `src/components/homework/homework-canvas.tsx`, `homework-canvas-loader.tsx`, `src/lib/notebook/use-notebook-sync.ts`, `src/lib/actions/notebook.ts` | remove | tldraw (Phase 3, together with the `tldraw` dependency). |
 | `src/components/homework/attachments-bar.tsx`, `grade-dialog.tsx`, `homework-marks.tsx`, `homework-list.tsx`, `src/app/api/homework/**` | keep | Fallback evidence path; grade dialog gets an "Open board in Space" link (host, `canHostSpace`). |
 | `src/lib/actions/homework.ts` | modify | Delete `setHomeworkPage`; `submitHomework` actor check (student/parent-of/admin) + `logAudit 'homework.submit'` + fix `revalidatePath('/hw/${id}')`; add `getHomeworkSpaceLink(id)` resolving the Space from `(hw.student_id, hw.course_id)` via `pencil_spaces`, never from `homework.space_id`, with `canHostSpace`/self check, opt-out hard stop, `pencilJoin` limit, audit. |

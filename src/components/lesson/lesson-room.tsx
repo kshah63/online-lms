@@ -678,7 +678,7 @@ function EndLessonButton({
             <DialogTitle>{studentSeen ? "End this lesson?" : "The student hasn't joined"}</DialogTitle>
             <DialogDescription>
               {studentSeen
-                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within a few seconds."
+                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within about 15 seconds."
                 : "Mark it as a no-show (nothing is counted as taught), or end it normally if the student was present on another device."}
             </DialogDescription>
           </DialogHeader>
