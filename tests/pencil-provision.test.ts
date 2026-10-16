@@ -547,10 +547,12 @@ describe("mintJoinUrl (live)", () => {
     expect(r.origin + r.pathname).toBe(SPACE_LINK);
     expect(r.searchParams.get("startCall")).toBe("true");
     expect(r.searchParams.get("broadcastEvents")).toBe("true");
+    expect(r.searchParams.has("skipCallHostCheck")).toBe(false);
 
     const board = await urls.mintJoinUrl("u-student", space, "board");
     const r2 = new URL(new URL(`https://x/${calls[1]!.path}`).searchParams.get("redirectUrl")!);
-    expect(Array.from(r2.searchParams.keys())).toEqual(["standalone"]);
+    expect(Array.from(r2.searchParams.keys()).sort()).toEqual(["mode", "standalone"]);
+    expect(r2.searchParams.get("mode")).toBe("whiteboardonly");
     expect(board.purpose).toBe("board");
   });
 

@@ -10,7 +10,7 @@ import { setRecordingOptOut, type RecordingOptOutResult } from "@/lib/actions/pe
  * Admin control for one student's recording policy (opt-out model). Shows the
  * current state as a badge and flips it through `setRecordingOptOut`, which
  * pushes the setting to every Pencil Space of the student with read-back.
- * Warnings (unconfirmed Space, lesson within 3 h) are shown inline — the
+ * Warnings (unconfirmed Space, a lesson whose call may be running now) are shown inline — the
  * action also raises an admin follow-up for each.
  */
 export function RecordingToggle({

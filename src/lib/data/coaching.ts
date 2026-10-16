@@ -323,7 +323,7 @@ export function analysisStatusLabel(status: AnalysisStatus): { title: string; de
     case "pending":
       return {
         title: "Analysis pending",
-        detail: "Coaching and the report draft arrive about 30–60 minutes after a recorded lesson ends.",
+        detail: "Coaching and the report draft usually arrive within about 30 minutes of a recorded lesson ending.",
         tone: "pending",
       };
     case "no_recording":

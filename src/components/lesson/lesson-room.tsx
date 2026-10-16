@@ -36,8 +36,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { endLesson, startSessionClock, type LessonOutcome } from "@/lib/actions/sessions";
+import type { LessonStatusResponse } from "@/app/api/lesson/[sessionId]/status/route";
+import { isDemoMode } from "@/lib/env";
 import type { SessionStatus } from "@/lib/types";
 import { cn } from "@/lib/utils";
+
+/** How often an open room checks whether the lesson was ended from another room. */
+const STATUS_POLL_MS = 15_000;
 
 // ============================================================================
 // The lesson room: header (Leave · course · status · peer · clock · recording ·
@@ -232,6 +237,36 @@ export function LessonRoom({
   }, []);
 
   const over = endedOutcome !== null;
+
+  // Close this room when the lesson is ended from another one (the teacher's
+  // End, an admin's). Pencil keeps the call — and, once always-on recording is
+  // on, its recording — running for whoever is still in the Space, and End
+  // does not touch Pencil (endOngoingSession ends only the analytics session;
+  // Pencil support, 2026-10-16). Unmounting the Space is what makes this
+  // viewer leave; Pencil closes the session six minutes after the last one.
+  useEffect(() => {
+    if (over || isDemoMode) return;
+    let inFlight = false;
+    const id = window.setInterval(async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const res = await fetch(`/api/lesson/${sessionId}/status`, { cache: "no-store" });
+        if (!res.ok) return;
+        const s = (await res.json()) as LessonStatusResponse;
+        if (s.status === "completed" || s.status === "no_show" || s.status === "cancelled") {
+          setEndedOutcome(s.status);
+          setEndedAtMs(s.actual_end ? Date.parse(s.actual_end) : Date.now());
+        }
+      } catch {
+        // Offline for a moment — the next tick tries again.
+      } finally {
+        inFlight = false;
+      }
+    }, STATUS_POLL_MS);
+    return () => window.clearInterval(id);
+  }, [over, sessionId]);
+
   const liveStatus: SessionStatus = endedOutcome ?? (startedAtMs ? "in_progress" : status);
   const recordingShown = recordingLive ?? recordingOn;
 
@@ -574,6 +609,11 @@ function LessonEndedCard({ outcome, hostView, backHref }: { outcome: EndedOutcom
                     ? "The classroom is closed for this lesson. Materials stay available on the side."
                     : "The classroom is closed for this lesson. Your report will arrive once the teacher publishes it."}
             </p>
+            {!cancelled && (
+              <p className="mt-2 text-xs text-muted-foreground">
+                If the Space is still open in another tab, close that tab to leave the call.
+              </p>
+            )}
           </div>
           <Button asChild variant="outline">
             <Link href={backHref}>
@@ -638,7 +678,7 @@ function EndLessonButton({
             <DialogTitle>{studentSeen ? "End this lesson?" : "The student hasn't joined"}</DialogTitle>
             <DialogDescription>
               {studentSeen
-                ? "This closes the Pencil session for this lesson and marks it completed. The room is unmounted for everyone."
+                ? "This marks the lesson completed and closes the classroom: for you now, and for the student within a few seconds."
                 : "Mark it as a no-show (nothing is counted as taught), or end it normally if the student was present on another device."}
             </DialogDescription>
           </DialogHeader>

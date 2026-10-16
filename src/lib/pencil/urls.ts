@@ -44,18 +44,23 @@ export type SpaceUrlParams = Record<string, string | number | boolean | null | u
 /**
  * Space URL params per purpose (api-notes "Space URL params"). They go on the
  * SPACE URL that becomes `redirectUrl`, not on the token URL.
- *  - lesson   (teacher AND student): the call auto-starts when the host does,
- *             participants too (skipCallHostCheck), standalone chrome, embed
- *             events for our clock, gallery view. skipDeviceSetup stays OFF so
- *             the child confirms mic/camera.
- *  - board    second device for writing (iPad): standalone only — no startCall,
- *             the person taps "Not Now" on the call prompt and keeps the speaker off.
- *  - homework Phase 3 deep link: standalone only (no call).
+ *  - lesson   (teacher AND student): startCall, standalone chrome, embed events
+ *             for our clock, gallery view. The teacher (a host) starts the call
+ *             on arrival. NO skipCallHostCheck: with it a participant can start
+ *             a call alone, and always-on recording records and bills that call
+ *             (Pencil support, 2026-10-16), so a student who arrives first waits
+ *             on the board for the teacher. skipDeviceSetup stays OFF so the
+ *             child confirms mic/camera.
+ *  - board    second device for writing (iPad): mode=whiteboardonly hides the
+ *             call controls and join prompts; the device is not a call
+ *             participant and never starts or stops a recording.
+ *  - homework Phase 3 deep link: whiteboard-only too, so neither the student
+ *             nor a reviewing teacher can start a (recorded) call by accident.
  */
 export const JOIN_PARAMS: Readonly<Record<JoinPurpose, SpaceUrlParams>> = {
-  lesson: { startCall: true, skipCallHostCheck: true, standalone: true, broadcastEvents: true, gv: true },
-  board: { standalone: true },
-  homework: { standalone: true },
+  lesson: { startCall: true, standalone: true, broadcastEvents: true, gv: true },
+  board: { standalone: true, mode: "whiteboardonly" },
+  homework: { standalone: true, mode: "whiteboardonly" },
 };
 
 /**

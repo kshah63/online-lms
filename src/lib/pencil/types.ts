@@ -132,14 +132,6 @@ export type PencilApiSpaceList = z.infer<typeof PencilApiSpaceListSchema>;
 export const PencilAuthorizeResponseSchema = z.object({ url: z.string().url() }).passthrough();
 export type PencilAuthorizeResponse = z.infer<typeof PencilAuthorizeResponseSchema>;
 
-export const PencilEndOngoingSessionSchema = z
-  .object({
-    endedSessionId: z.string(),
-    newSessionId: z.string().nullish(),
-  })
-  .passthrough();
-export type PencilEndOngoingSession = z.infer<typeof PencilEndOngoingSessionSchema>;
-
 /** `GET /webhooks` returns `{}` when nothing is configured. */
 export const PencilWebhookConfigSchema = z
   .object({ url: z.string().optional(), secret: z.string().optional() })
@@ -162,6 +154,13 @@ export const PencilErrorBodySchema = z
 // ---------------------------------------------------------------------------
 // Webhook payloads (consumed from Phase 2; declared now so the ledger table
 // and the route agree on a shape). `_type` discriminates.
+//
+// Delivery (Pencil support, 2026-10-16): anything but a 2xx within 15 s is
+// retried with exponential backoff (30 s growing to 10 min) for up to 10
+// attempts — about an hour in all — and ORDER IS NOT GUARANTEED. So the route
+// answers 2xx for every payload it stored or chose to ignore (an unknown
+// `_type` included; a 4xx only buys ten pointless redeliveries), and no job
+// may assume one event arrives before another.
 // ---------------------------------------------------------------------------
 
 export const SpaceUserEventSchema = z
@@ -170,7 +169,11 @@ export const SpaceUserEventSchema = z
     spaceId: z.string(),
     sessionId: z.string(),
     timestamp: z.union([z.string(), z.number()]),
-    eventType: z.string(), // joinSpace | leaveSpace | hideTab | unhideTab
+    // Spec: joinSpace | leaveSpace | hideTab | unhideTab. Pencil support
+    // (2026-10-16) names the tab events USER_ENTERED_BACKGROUND /
+    // USER_ENTERED_FOREGROUND, so the join/leave strings are confirmed only by
+    // the first staging deliveries — match them case-insensitively.
+    eventType: z.string(),
     userId: z.string(),
     roomId: z.string().nullish(),
     userTabId: z.string().nullish(),
@@ -183,7 +186,7 @@ export const SpaceSessionEventSchema = z
     spaceId: z.string(),
     sessionId: z.string(),
     timestamp: z.union([z.string(), z.number()]),
-    eventType: z.string(), // SESSION_ENDED
+    eventType: z.string(), // SESSION_ENDED (analytics ready, about 6 min after the last person leaves)
   })
   .passthrough();
 
@@ -193,10 +196,14 @@ export const SpaceRecordingEventSchema = z
     spaceId: z.string(),
     recordingId: z.string(),
     timestamp: z.union([z.string(), z.number()]),
-    eventType: z.string(), // RECORDING_AVAILABLE | <transcript-ready, string unknown>
+    eventType: z.string(), // RECORDING_AVAILABLE | TRANSCRIPT_AVAILABLE (Pencil support, 2026-10-16)
   })
   .passthrough();
 
+// COACHING_AVAILABLE (an AI Coach report completed WITH insights; any other
+// outcome is only visible as `coaching.status` on GET /analytics/sessions/{id}/reports)
+// is Pencil's recommended coach trigger, but its `_type` and fields are not
+// documented yet — the Phase 2 route keys it on eventType and ledgers it raw.
 export const PencilWebhookPayloadSchema = z.discriminatedUnion("_type", [
   SpaceUserEventSchema,
   SpaceSessionEventSchema,
@@ -209,10 +216,10 @@ export type PencilWebhookPayload = z.infer<typeof PencilWebhookPayloadSchema>;
 // ---------------------------------------------------------------------------
 
 /**
- * What a minted authorize URL is for — decides the Space URL params:
- *  - lesson   : startCall + skipCallHostCheck + standalone + broadcastEvents + gv
- *  - board    : standalone only (second device "use this device for writing")
- *  - homework : standalone only (Phase 3 deep link)
+ * What a minted authorize URL is for — decides the Space URL params (urls.ts):
+ *  - lesson   : startCall + standalone + broadcastEvents + gv (no skipCallHostCheck)
+ *  - board    : standalone + mode=whiteboardonly (second device "use this device for writing")
+ *  - homework : standalone + mode=whiteboardonly (Phase 3 deep link)
  */
 export type JoinPurpose = "lesson" | "board" | "homework";
 

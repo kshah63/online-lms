@@ -64,7 +64,7 @@ export default async function AdminCoachingPage() {
         <EmptyState
           icon={<Sparkles className="h-5 w-5" />}
           title="No coaching data yet"
-          description="Coaching lands about 30–60 minutes after a recorded lesson ends."
+          description="Coaching usually lands within about 30 minutes of a recorded lesson ending."
         />
       ) : (
         <div className="grid gap-4 lg:grid-cols-2">

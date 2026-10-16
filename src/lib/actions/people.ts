@@ -21,6 +21,10 @@ import type { PencilSpace } from "@/lib/types";
 // recording is switched on at the start of Phase 2 — but the join hard stop
 // (`recordingPolicyBlocksJoin`) already applies, so an unconfirmed Space blocks
 // the student's next join until a later join re-applies and confirms.
+//
+// Timing (Pencil support, 2026-10-16): the Space setting takes effect from the
+// NEXT call and does not stop a recording that is already running. So the only
+// lesson at risk is one whose call may be running right now.
 // ============================================================================
 
 export interface RecordingOptOutResult {
@@ -32,8 +36,11 @@ export interface RecordingOptOutResult {
   warnings: string[];
 }
 
-/** Pencil propagates settings to Spaces with recent calls in up to 3 h (helpdesk). */
-const PROPAGATION_WINDOW_HOURS = 3;
+/**
+ * A lesson's call may be running now when its slot is within these bounds:
+ * teachers open the room early, and lessons overrun.
+ */
+const CALL_MAY_BE_RUNNING = { leadMinutes: 15, overrunMinutes: 30 };
 
 /** Reasons carry this prefix so the same follow-up is never raised twice while open. */
 const FOLLOWUP_PREFIX = "[Recording policy]";
@@ -47,8 +54,9 @@ interface UpcomingLesson {
 /**
  * Admin only. Set or clear a student's recording opt-out, push the policy to
  * every Space the student has (read-back confirmed), warn + raise an admin
- * follow-up when a Space could not be confirmed or a lesson starts within the
- * propagation window, and audit 'student.recording_opt_out'.
+ * follow-up when a Space could not be confirmed or a lesson's call may be
+ * running now (it keeps recording until it ends), and audit
+ * 'student.recording_opt_out'.
  */
 export async function setRecordingOptOut(
   studentId: string,
@@ -127,18 +135,18 @@ export async function setRecordingOptOut(
     }
   }
 
-  // 3. Lessons inside the propagation window.
+  // 3. A lesson whose call may be running now: the setting reaches only the next call.
   const now = DateTime.utc();
-  const { data: soonRows } = await admin
+  const { data: liveRows } = await admin
     .from("sessions")
     .select("id, scheduled_start, course:courses(name)")
     .eq("student_id", studentId)
     .in("status", ["scheduled", "confirmed", "in_progress"])
-    .gte("scheduled_end", now.toISO())
-    .lte("scheduled_start", now.plus({ hours: PROPAGATION_WINDOW_HOURS }).toISO())
+    .gte("scheduled_end", now.minus({ minutes: CALL_MAY_BE_RUNNING.overrunMinutes }).toISO())
+    .lte("scheduled_start", now.plus({ minutes: CALL_MAY_BE_RUNNING.leadMinutes }).toISO())
     .order("scheduled_start")
     .limit(5);
-  const soon = ((soonRows ?? []) as unknown as UpcomingLesson[]);
+  const live = ((liveRows ?? []) as unknown as UpcomingLesson[]);
 
   if (unconfirmed.length > 0) {
     const what = optOut ? "'do not record'" : "'record again'";
@@ -153,16 +161,16 @@ export async function setRecordingOptOut(
     });
   }
 
-  if (optOut && soon.length > 0) {
-    const next = soon[0]!;
-    const course = next.course?.name ?? "a lesson";
+  if (optOut && live.length > 0) {
+    const current = live[0]!;
+    const course = current.course?.name ?? "a lesson";
     warnings.push(
-      `${firstName} has ${course} starting ${DateTime.fromISO(next.scheduled_start, { zone: "utc" }).toRelative()} — Pencil can take up to ${PROPAGATION_WINDOW_HOURS} h to apply the change to a Space with recent calls. Check the Space before the lesson or tell the teacher not to record.`,
+      `${firstName} has ${course} now (scheduled ${DateTime.fromISO(current.scheduled_start, { zone: "utc" }).toRelative()}). The change applies from the next call: a call that is already running keeps recording until it ends. Ask the teacher to end the call in the Space and start a new one, and delete the recording once it appears.`,
     );
     await raiseAdminFollowup(admin, {
       studentId,
-      sessionId: next.id,
-      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording with ${course} inside the ${PROPAGATION_WINDOW_HOURS} h propagation window. Verify the lesson is not recorded (Space setting / recording chip) and delete any recording that was made.`,
+      sessionId: current.id,
+      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording while ${course} may have been in a call. Pencil applies the setting from the next call only, so delete any recording of this lesson once it appears.`,
     });
   }
 
@@ -171,7 +179,7 @@ export async function setRecordingOptOut(
     spaces: spaces.length,
     confirmed: confirmed.length,
     unconfirmed: unconfirmed.length,
-    lessons_within_window: soon.length,
+    lessons_in_progress: live.length,
   });
 
   revalidatePath("/admin/people");

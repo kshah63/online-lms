@@ -280,9 +280,10 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
     expect(calls).toHaveLength(1);
     const redirect = new URL(new URL(`https://pencil.test/public/api/${calls[0]!.path}`).searchParams.get("redirectUrl")!);
     expect(redirect.origin + redirect.pathname).toBe(SPACE_LINK);
-    for (const key of ["startCall", "skipCallHostCheck", "standalone", "broadcastEvents", "gv"]) {
+    for (const key of ["startCall", "standalone", "broadcastEvents", "gv"]) {
       expect(redirect.searchParams.get(key)).toBe("true");
     }
+    expect(redirect.searchParams.has("skipCallHostCheck")).toBe(false);
 
     // The Space actually used is bound to the lesson.
     expect(db.tables.sessions[0]!.space_id).toBe("space-row-1");
@@ -296,7 +297,7 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
     expect(recorded(audit, observability)).not.toContain(TOKEN);
   });
 
-  it("students mint their own url; 'board' (second device) is standalone-only and audited as such", async () => {
+  it("students mint their own url; 'board' (second device) is whiteboard-only and audited as such", async () => {
     seedWarmPair(db);
     const { calls } = pencilServer({
       "GET users/u-student/authorize": () => json({ url: TOKEN_URL }),
@@ -309,7 +310,8 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
 
     expect(authorizeOk(calls)).toHaveLength(1);
     const redirect = new URL(new URL(`https://pencil.test/public/api/${calls[0]!.path}`).searchParams.get("redirectUrl")!);
-    expect(Array.from(redirect.searchParams.keys())).toEqual(["standalone"]);
+    expect(Array.from(redirect.searchParams.keys()).sort()).toEqual(["mode", "standalone"]);
+    expect(redirect.searchParams.get("mode")).toBe("whiteboardonly");
 
     const details = vi.mocked(audit.logAudit).mock.calls[0]![3];
     expect(details).toEqual({ spaceId: SPACE_ID, purpose: "board", mode: "redirect" });
@@ -343,6 +345,9 @@ describe("POST /api/lesson/[id]/space — Pencil live", () => {
     expect(calls[0]!.body).toMatchObject({ name: "Aarav", userRole: "Student", externalId: STUDENT });
     expect(calls[1]!.body).toMatchObject({ name: "Maya Chen", userRole: "Teacher", externalId: TEACHER });
     expect(calls[3]!.body).toMatchObject({ visibility: "private", notifyInvitees: false, externalId: `${COURSE}:${STUDENT}` });
+    // No `owner`: the API account stays the Space's (permanent) owner, so every
+    // teacher is an ordinary host that a reassignment can remove (plan decision p).
+    expect(calls[3]!.body).not.toHaveProperty("owner");
 
     const row = db.tables.pencil_spaces[0]!;
     expect(row).toMatchObject({ status: "active", pencil_space_id: SPACE_ID, link: SPACE_LINK, host_profile_ids: [TEACHER], participant_profile_ids: [STUDENT] });

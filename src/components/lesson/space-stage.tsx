@@ -542,8 +542,8 @@ export function SpaceStage({
             <div className="rounded-lg bg-muted/60 p-3 text-xs text-muted-foreground">
               <div className="mb-1 font-medium text-foreground">Using this as a second device for writing?</div>
               <ol className="list-decimal space-y-0.5 pl-4">
-                <li>Don&rsquo;t join the call on this device — tap <span className="font-medium">Not Now</span> on the call prompt.</li>
-                <li>Keep this device&rsquo;s speaker off, or you&rsquo;ll hear an echo.</li>
+                <li>&ldquo;Use this device for writing&rdquo; opens the board only — no call, camera or sound here.</li>
+                <li>Stay in the call on your other device.</li>
                 <li>Never open the Space twice on one device.</li>
               </ol>
             </div>

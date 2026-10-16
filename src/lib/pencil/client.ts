@@ -8,7 +8,6 @@ import {
   PencilApiUserSchema,
   PencilAuthorizeResponseSchema,
   PencilEmptySchema,
-  PencilEndOngoingSessionSchema,
   PencilErrorBodySchema,
   PencilWebhookConfigSchema,
   type CreateApiUserBody,
@@ -94,7 +93,7 @@ export interface PencilFetchOptions {
 
 /** Background jobs: generous timeout, two retries. */
 export const JOB_FETCH: PencilFetchOptions = { timeoutMs: 15_000, retries: 2 };
-/** The join path (authorize, endOngoingSession): fast fail, no retry — the UI offers the fallback. */
+/** The join path (authorize): fast fail, no retry — the UI offers the fallback. */
 export const JOIN_FETCH: PencilFetchOptions = { timeoutMs: 5_000, retries: 0 };
 
 function sleep(ms: number) {
@@ -280,14 +279,11 @@ export function updateSpaceSettings(spaceId: string, settings: SpaceSettingsPatc
   );
 }
 
-/**
- * `POST /spaces/{spaceId}/endOngoingSession` → `{endedSessionId, newSessionId}`.
- * 5 s, no retry: called best-effort from "End lesson" so one Pencil session ==
- * one of our lessons and SESSION_ENDED fires promptly.
- */
-export function endOngoingSession(spaceId: string, opts: PencilFetchOptions = JOIN_FETCH) {
-  return pencilFetch(`spaces/${seg(spaceId)}/endOngoingSession`, PencilEndOngoingSessionSchema, { method: "POST" }, opts);
-}
+// `POST /spaces/{spaceId}/endOngoingSession` is deliberately not wrapped: it
+// ends only the analytics session — not the call, not the recording — and at
+// once opens a new session for anyone still in the Space. Pencil closes a
+// session itself six minutes after the last person leaves (Pencil support,
+// 2026-10-16), so "End lesson" unmounts every room instead of calling it.
 
 // ---------------------------------------------------------------------------
 // Webhooks (one config per institution per environment; consumed in Phase 2)

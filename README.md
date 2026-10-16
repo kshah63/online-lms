@@ -117,16 +117,21 @@ retry) and returns `{url}`. The client sets `iframe.src` on desktop or opens a n
 mobile/unsupported browsers. **Authorize URLs are credentials**: valid 3600 s, minted per click, never
 persisted, logged or audited (the audit row `pencil.join` carries `{spaceId, purpose, mode}` only). The
 lesson clock (`actual_start`) starts only when the **student** is present (`participant_join` with the
-student's Pencil id), never on the teacher alone. "End lesson" marks the session `completed`
-(one credit) or **"Mark as no-show"** (never billed), then best-effort ends the Pencil session so one
-Pencil session equals one lesson.
+student's Pencil id), never on the teacher alone. The teacher starts the call; a student who arrives
+first waits on the board, because lesson links leave out `skipCallHostCheck` (with it a participant
+can start a call alone, which always-on recording would record and bill). "End lesson" marks the
+session `completed` (one credit) or **"Mark as no-show"** (never billed) and makes no Pencil call:
+Pencil's `endOngoingSession` ends only the analytics session, not the call or the recording. Instead
+every open room polls `GET /api/lesson/[id]/status` every 15 s and unmounts its Space once the
+lesson is over, so everyone leaves the call; Pencil closes its session six minutes after the last
+person leaves. A Space open in a separate tab (Redirect mode) stays open until that tab is closed.
 
 **Second device for writing (iPad + laptop).** On a coarse-pointer device the lesson page offers
-**"Join the call here"** and **"Use this device for writing"** (opens the Space with `standalone=true`
-only, in a new tab). Each tap re-mints its own URL. Three rules: tap **"Not Now"** on the call prompt
-on the writing device, keep its **speaker off** (echo), and never open the Space twice on one device.
-Pencil bills one account on two devices once and keys analytics by user, so nothing in our data model
-changes.
+**"Join the call here"** and **"Use this device for writing"** (opens the Space with
+`standalone=true&mode=whiteboardonly`, in a new tab: no call controls and no join prompt on that
+device). Each tap re-mints its own URL. The one rule left is never to open the Space twice on one
+device. Pencil counts call participants by who joins the call, bills and records attendance per user,
+and a whiteboard-only device never starts or stops a recording, so nothing in our data model changes.
 
 ### Recording policy (opt-out) and teacher AI evaluation
 
@@ -146,9 +151,10 @@ changes.
   applied — contact admin") and the policy is re-applied on the next join. Every join re-checks: a
   cached flag that disagrees with the policy (either direction) is re-applied, and an opted-out
   student's join reads the Space settings back once, so a setting flipped in Pencil's own UI is caught
-  before anyone enters. Pencil can take up to 3 h to
-  propagate settings to a Space with recent calls, so opting out with a lesson inside that window shows
-  the admin a warning and raises an admin follow-up. Every change is audited (`student.recording_opt_out`).
+  before anyone enters. The setting takes effect from the **next call** and does not stop a recording
+  that is already running (Pencil support, 2026-10-16), so opting out while one of the student's
+  lessons may be in a call shows the admin a warning and raises an admin follow-up: end and restart
+  that call, and delete its recording once it appears. Every change is audited (`student.recording_opt_out`).
 - **Teacher AI evaluation is mandatory.** Every teacher's recorded lessons are analyzed (Pencil's
   transcript + our Claude coaching, arriving with Phase 2); nothing is gated on a consent row. The
   policy is stated on the request-access form and in the teacher onboarding copy: *"Lessons are recorded
@@ -188,13 +194,19 @@ From the integration plan (decision k):
 
 - Plan tier: API access (Usage-based / Enterprise); AI Coach needs Advanced+, AI Summaries Expert+.
 - Settings → Permissions → Recording = **Always-on** — **switched on at the start of Phase 2, not
-  before**; "Record participant video" **OFF**; local recording prevented; recordings admin/host-only.
-- Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails OFF for API users.
+  before**, by an institution admin (the plan must include always-on cloud recording);
+  "Record participant video" **OFF**; local recording prevented; recordings admin/host-only.
+- Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails OFF for API users;
+  In Session → distraction notifications: owner decision (in Redirect mode, a student opening
+  Materials in our tab raises one).
+- "Grant admins access to all Spaces" **ON** (Pencil's default) — the API account manages every Space
+  through it.
 - Standalone branding for the embedded Space.
 - Webhook URL + secret per environment (staging → preview URL, prod → `https://<app>/api/webhooks/pencil`)
   — consumed from Phase 2.
-- A generic admin account that owns the API key (view-once; revoking logs that admin out); subscribe to
-  Pencil's status page.
+- A generic admin account that owns the API key (view-once; revoking or regenerating it signs that
+  account out everywhere). Spaces are created without `owner`, so this account owns every Space and
+  teachers stay removable hosts. Subscribe to Pencil's status page.
 - Signed DPA / processor agreement covering recordings and transcripts of minors, confirmation of data
   region, and Pencil's own retention of derived artefacts after a recording is deleted.
 - `SUPABASE_SERVICE_ROLE_KEY` set in **every** environment that runs Pencil: provisioning, join URLs,
@@ -209,7 +221,7 @@ From the integration plan (decision k):
 |---|---|---|
 | `PENCIL_SPACES_API_KEY` | for a real classroom | Institution API key. Unset → mock Space panel, no Pencil calls. |
 | `PENCIL_API_BASE_URL` | no | Default `https://apis.pencilapp.com/public/api/`; staging `https://staging-apis.pencilapp.com/public/api/`. |
-| `PENCIL_WEBHOOK_SECRET` | Phase 2 | Bearer secret Pencil sends with webhook deliveries; the webhook route fails closed while empty. |
+| `PENCIL_WEBHOOK_SECRET` | Phase 2 | Bearer secret Pencil sends with webhook deliveries; the webhook route fails closed (503) while empty. Pencil redelivers a non-2xx up to 10 times over about an hour, then drops it, so set the secret before registering the URL. |
 | `NEXT_PUBLIC_PENCIL_APP_ORIGIN` | no | Origin of the Space UI for the postMessage allowlist (production + staging are always accepted). |
 | `LESSON_FALLBACK_URL` | recommended | Master Zoom link (see runbook). |
 | `LESSON_FALLBACK_MODE` | no | `on` forces every lesson onto the fallback link. |

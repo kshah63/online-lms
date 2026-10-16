@@ -42,7 +42,6 @@ const COURSE = "10000000-0000-0000-0000-000000000001";
 const SESSION = "20000000-0000-0000-0000-000000000099";
 const OTHER_SESSION = "20000000-0000-0000-0000-000000000098";
 const SPACE_ID = "aaaaaaaaaaaaaaaaaaaaaaaa";
-const PENCIL_SESSION = "ffffffffffffffffffffffff";
 
 function profile(id: string, role: Profile["role"], display_name: string): Profile {
   return {
@@ -139,27 +138,27 @@ describe("endLesson / assignTeacher — Pencil live", () => {
 
   // ----- endLesson -----------------------------------------------------------
 
-  it("completed: writes the outcome once, ends the Pencil session once and records the hint", async () => {
-    const { calls } = pencilServer({
-      [`POST spaces/${SPACE_ID}/endOngoingSession`]: () => json({ endedSessionId: PENCIL_SESSION, newSessionId: null }),
-    });
+  it("completed: writes the outcome once and makes no Pencil call", async () => {
+    const { calls } = pencilServer({});
     const res = await actions.endLesson(SESSION, "completed");
     expect(res).toMatchObject({ ok: true, outcome: "completed" });
-    expect(db.tables.sessions[0]).toMatchObject({ status: "completed", analysis_status: "none", pencil_session_id: PENCIL_SESSION });
+    expect(db.tables.sessions[0]).toMatchObject({ status: "completed", analysis_status: "none", pencil_session_id: null });
     expect(db.tables.sessions[0]!.actual_end).toBe(res.actual_end);
 
-    expect(calls).toHaveLength(1);
-    expect(calls[0]).toMatchObject({ method: "POST", path: `spaces/${SPACE_ID}/endOngoingSession` });
-    expect(db.tables.pencil_sessions).toEqual([
-      expect.objectContaining({ pencil_session_id: PENCIL_SESSION, pencil_space_id: SPACE_ID, space_id: "space-row-1", hint_session_id: SESSION, state: "ended" }),
-    ]);
+    // Pencil support, 2026-10-16: endOngoingSession ends only the analytics
+    // session — not the call, not the recording — and immediately opens a new
+    // one for anyone still in the Space. Pencil closes the session itself six
+    // minutes after the last person leaves, so End leaves Pencil alone and the
+    // rooms close themselves (lesson-room polls /api/lesson/[id]/status).
+    expect(calls).toHaveLength(0);
+    expect(db.tables.pencil_sessions).toHaveLength(0);
     expect(audited()).toEqual(["lesson.end"]);
 
-    // A second End (other tab) changes nothing and calls nobody.
+    // A second End (other tab) changes nothing.
     state.session = sessionView({ status: "completed" });
     const again = await actions.endLesson(SESSION, "completed");
     expect(again).toMatchObject({ ok: false, message: "This lesson was already ended." });
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(0);
     expect(audited()).toEqual(["lesson.end"]);
   });
 
@@ -191,21 +190,17 @@ describe("endLesson / assignTeacher — Pencil live", () => {
     expect(db.tables.sessions[0]!.status).toBe("in_progress");
   });
 
-  it("a 4xx from endOngoingSession (no ongoing session) is swallowed: the outcome stands, nothing sent to Sentry", async () => {
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
-    const { calls } = pencilServer({
-      [`POST spaces/${SPACE_ID}/endOngoingSession`]: () => json({ err: "no ongoing session", error_code: "NOT_FOUND" }, 404),
-    });
+  it("no_show: the same single write, no Pencil call, nothing sent to Sentry", async () => {
+    const { calls } = pencilServer({});
     state.session = sessionView({ status: "confirmed", actual_start: null });
     seed(db, { status: "confirmed" });
     const res = await actions.endLesson(SESSION, "no_show");
     expect(res).toMatchObject({ ok: true, outcome: "no_show" });
     expect(db.tables.sessions[0]!.status).toBe("no_show");
-    expect(calls).toHaveLength(1); // one attempt, no retry
+    expect(calls).toHaveLength(0);
     expect(db.tables.pencil_sessions).toHaveLength(0);
     expect(vi.mocked(observability.captureError)).not.toHaveBeenCalled();
     expect(audited()).toEqual(["lesson.no_show"]);
-    warn.mockRestore();
   });
 
   it("Zoom fallback: marks analysis_status='no_recording' and skips Pencil entirely", async () => {

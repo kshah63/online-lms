@@ -44,7 +44,7 @@ export default async function TeacherCoachingPage() {
           title="No coaching yet"
           description={
             recordingActive()
-              ? "Every lesson is recorded and analyzed; strengths-first coaching appears here about 30–60 minutes after a lesson ends."
+              ? "Every lesson is recorded and analyzed; strengths-first coaching usually appears here within about 30 minutes of a lesson ending."
               : "Strengths-first coaching appears here once your lessons are analyzed."
           }
         />

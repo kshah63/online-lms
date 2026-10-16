@@ -10,7 +10,7 @@ import { getCurrentProfile } from "@/lib/data/auth";
 import { getSessionById } from "@/lib/data/sessions";
 import { logAudit } from "@/lib/audit";
 import { captureError } from "@/lib/observability";
-import { endOngoingSession, PencilError, pencilLive } from "@/lib/pencil/client";
+import { pencilLive } from "@/lib/pencil/client";
 import { canEndLesson } from "@/lib/pencil/authz";
 import { getSpaceForPair, removeHosts, syncHosts } from "@/lib/pencil/provision";
 import { lessonFallbackForced } from "@/lib/pencil/urls";
@@ -114,15 +114,21 @@ const LIVE_STATUSES: SessionStatus[] = ["scheduled", "confirmed", "in_progress"]
  * admin. Writes `status=outcome, actual_end=now()` only while the lesson is
  * still live (`status in scheduled|confirmed|in_progress` — a no-show or a
  * completed lesson can never be ended twice, re-audited or flipped into a
- * credit-consuming 'completed') and aborts when no row comes back, THEN —
- * best-effort, one attempt, 5 s — `POST /spaces/{id}/endOngoingSession` so one
- * Pencil session == one lesson, recording the `endedSessionId` as a hint in
- * pencil_sessions and sessions.pencil_session_id. Audits lesson.end | lesson.no_show.
+ * credit-consuming 'completed') and aborts when no row comes back. Audits
+ * lesson.end | lesson.no_show.
+ *
+ * Pencil is not called. `POST /spaces/{id}/endOngoingSession` ends only the
+ * analytics session — not the call, not the recording — and opens a new one
+ * at once for anyone still in the Space (Pencil support, 2026-10-16). What
+ * ends the call is everyone leaving: this room unmounts its Space now, every
+ * other open room sees the new status through /api/lesson/[id]/status and
+ * unmounts too, and Pencil closes the session six minutes after the last
+ * person leaves. The Phase 2 pipeline correlates that session from webhooks
+ * and the time window (plan decision b), not from a hint written here.
  *
  * `opts.usedFallback` (the room ran on the Zoom link) or LESSON_FALLBACK_MODE
  * marks `analysis_status='no_recording'` so the post-session pipeline doesn't
- * wait, and skips the Pencil call entirely (decision n: End in fallback writes
- * status and actual_end only — Pencil may be the thing that is down).
+ * wait (decision n: End in fallback writes status and actual_end only).
  */
 export async function endLesson(
   sessionId: string,
@@ -166,10 +172,6 @@ export async function endLesson(
   const { data: updated, error } = await update.select("id");
   if (error) return { ok: false, message: error.message };
   if (!updated || updated.length === 0) return { ok: false, message: "This lesson was already ended." };
-
-  // Best-effort Pencil end — never blocks the outcome we just wrote, and is
-  // skipped when the lesson ran on the fallback link.
-  if (!noRecording) await endPencilSession(sessionId, session.student_id, session.course_id, now);
 
   await logAudit(profile, outcome === "completed" ? "lesson.end" : "lesson.no_show", { type: "session", id: sessionId }, {
     outcome,
@@ -300,50 +302,6 @@ function revalidateLesson(sessionId: string) {
   revalidatePath("/home");
   revalidatePath("/admin");
   revalidatePath("/admin/sessions");
-}
-
-/**
- * `POST /spaces/{spaceId}/endOngoingSession` once (JOIN_FETCH: 5 s, no retry)
- * and record the ended Pencil session as a hint for the Phase 2 pipeline.
- * Any failure is logged and swallowed — the lesson is already ended in our DB.
- */
-async function endPencilSession(sessionId: string, studentId: string, courseId: string, endedAt: string): Promise<void> {
-  if (!pencilLive) return;
-  const admin = createSupabaseAdminClient();
-  if (!admin) return;
-  try {
-    const space = await getSpaceForPair(admin, studentId, courseId);
-    if (!space || space.status === "mock" || !space.pencil_space_id) return;
-
-    const { endedSessionId } = await endOngoingSession(space.pencil_space_id);
-
-    const { error: upsertError } = await admin.from("pencil_sessions").upsert(
-      {
-        pencil_session_id: endedSessionId,
-        pencil_space_id: space.pencil_space_id,
-        space_id: space.id,
-        hint_session_id: sessionId,
-        state: "ended",
-        ended_at: endedAt,
-      },
-      { onConflict: "pencil_session_id" },
-    );
-    if (upsertError) throw upsertError;
-
-    const { error: linkError } = await admin
-      .from("sessions")
-      .update({ pencil_session_id: endedSessionId })
-      .eq("id", sessionId);
-    if (linkError) throw linkError;
-  } catch (err) {
-    // A 4xx here usually means "no ongoing session" (no-show, or the call ended
-    // >5 min ago) — expected, so keep it out of Sentry.
-    if (err instanceof PencilError && err.status >= 400 && err.status < 500) {
-      console.warn(`endOngoingSession for ${sessionId}: ${err.message}`);
-      return;
-    }
-    captureError(err, { where: "endLesson endOngoingSession", session_id: sessionId });
-  }
 }
 
 /**

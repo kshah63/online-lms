@@ -66,22 +66,27 @@ describe("buildSpaceUrl", () => {
 });
 
 describe("spaceUrlFor / JOIN_PARAMS", () => {
-  it("lesson links auto-start the call for host and participant with embed events", () => {
+  it("lesson links start the call with the host and carry embed events", () => {
     const url = new URL(spaceUrlFor(space(), "lesson"));
-    for (const key of ["startCall", "skipCallHostCheck", "standalone", "broadcastEvents", "gv"]) {
+    for (const key of ["startCall", "standalone", "broadcastEvents", "gv"]) {
       expect(url.searchParams.get(key)).toBe("true");
     }
+    // Pencil support, 2026-10-16: startCall + skipCallHostCheck lets a PARTICIPANT
+    // start a call alone, and always-on recording records and bills that call. A
+    // student who arrives first waits on the board for the teacher's call instead.
+    expect(url.searchParams.has("skipCallHostCheck")).toBe(false);
     // The child confirms mic/camera: never skip device setup.
     expect(url.searchParams.has("skipDeviceSetup")).toBe(false);
   });
 
-  it("board (second device) and homework links are standalone only — no call", () => {
+  it("board (second device) and homework links are whiteboard-only — no call controls, no join prompt", () => {
     for (const purpose of ["board", "homework"] as const) {
       const url = new URL(spaceUrlFor(space(), purpose));
       expect(url.searchParams.get("standalone")).toBe("true");
+      expect(url.searchParams.get("mode")).toBe("whiteboardonly");
       expect(url.searchParams.has("startCall")).toBe(false);
       expect(url.searchParams.has("skipCallHostCheck")).toBe(false);
-      expect(Array.from(url.searchParams.keys())).toEqual(["standalone"]);
+      expect(Array.from(url.searchParams.keys()).sort()).toEqual(["mode", "standalone"]);
     }
     expect(Object.keys(JOIN_PARAMS).sort()).toEqual(["board", "homework", "lesson"]);
   });
