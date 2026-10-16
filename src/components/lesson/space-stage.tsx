@@ -545,6 +545,7 @@ export function SpaceStage({
                 <li>&ldquo;Use this device for writing&rdquo; opens the board only — no call, camera or sound here.</li>
                 <li>Stay in the call on your other device.</li>
                 <li>Never open the Space twice on one device.</li>
+                <li>Close this tab when the lesson ends — the Space stays open on this device until you do.</li>
               </ol>
             </div>
 

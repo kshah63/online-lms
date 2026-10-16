@@ -129,15 +129,16 @@ person leaves. A Space open in a separate tab (Redirect mode) stays open until t
 **Second device for writing (iPad + laptop).** On a coarse-pointer device the lesson page offers
 **"Join the call here"** and **"Use this device for writing"** (opens the Space with
 `standalone=true&mode=whiteboardonly`, in a new tab: no call controls and no join prompt on that
-device). Each tap re-mints its own URL. The one rule left is never to open the Space twice on one
-device. Pencil counts call participants by who joins the call, bills and records attendance per user,
+device). Each tap re-mints its own URL. Two rules are left: never open the Space twice on one device,
+and close the writing tab when the lesson ends (our End cannot close it). Pencil counts call participants by who joins the call, bills and records attendance per user,
 and a whiteboard-only device never starts or stops a recording, so nothing in our data model changes.
 
 ### Recording policy (opt-out) and teacher AI evaluation
 
 - **Lessons are recorded (audio + whiteboard; "Record participant video" OFF) unless the family asks us
   not to — from Phase 2.** Institution-level **always-on** recording is switched on at the start of
-  Phase 2, together with `PENCIL_RECORDING_ENABLED=on`. Until that flag is on **nothing is recorded and
+  Phase 2 by our own institution admin (the plan must include it), outside lesson hours and at least
+  3 h before the next lesson, together with `PENCIL_RECORDING_ENABLED=on`. Until that flag is on **nothing is recorded and
   no screen says so**: session cards, the lesson header, the student notice and the parent status
   card show "Recorded (audio + board)" only when the flag is on (the lesson header also reacts to a
   live `recording_status_change`, e.g. a host-started recording); an opted-out student always shows
@@ -152,9 +153,10 @@ and a whiteboard-only device never starts or stops a recording, so nothing in ou
   cached flag that disagrees with the policy (either direction) is re-applied, and an opted-out
   student's join reads the Space settings back once, so a setting flipped in Pencil's own UI is caught
   before anyone enters. The setting takes effect from the **next call** and does not stop a recording
-  that is already running (Pencil support, 2026-10-16), so opting out while one of the student's
-  lessons may be in a call shows the admin a warning and raises an admin follow-up: end and restart
-  that call, and delete its recording once it appears. Every change is audited (`student.recording_opt_out`).
+  that is already running (Pencil support, 2026-10-16). So once recording is switched on, opting out
+  while one of the student's lessons may be in a call shows the admin a warning and raises an admin
+  follow-up: the teacher ends that call and starts a new one, and the pipeline deletes its recording
+  when Pencil delivers it. Every change is audited (`student.recording_opt_out`).
 - **Teacher AI evaluation is mandatory.** Every teacher's recorded lessons are analyzed (Pencil's
   transcript + our Claude coaching, arriving with Phase 2); nothing is gated on a consent row. The
   policy is stated on the request-access form and in the teacher onboarding copy: *"Lessons are recorded
@@ -185,8 +187,10 @@ Resolution order: `sessions.fallback_join_url` → `LESSON_FALLBACK_URL` → "No
    link (admin SQL/console) so the two lessons don't share a room.
 4. **Never unset `PENCIL_SPACES_API_KEY` as the outage path** — the post-session pipeline (Phase 2) must
    keep processing lessons that did run in Pencil.
-5. Non-transient errors (401 `NOT_AUTHORIZED`, 400) are configuration bugs: check the key, base URL and
-   that the Space still exists; they are reported to Sentry without the URL or key.
+5. Non-transient errors (401 `NOT_AUTHORIZED`, 400) are configuration bugs: check the key (regenerating
+   or revoking it in Pencil kills the old key and signs the generic account out everywhere — update
+   `PENCIL_SPACES_API_KEY` everywhere and redeploy), the base URL, that "Grant admins access to all
+   Spaces" is still ON, and that the Space still exists; they are reported to Sentry without the URL or key.
 
 ### Pencil-side prerequisites (owner, before go-live)
 
@@ -196,24 +200,30 @@ From the integration plan (decision k):
 - Settings → Permissions → Recording = **Always-on** — **switched on at the start of Phase 2, not
   before**, by an institution admin (the plan must include always-on cloud recording);
   "Record participant video" **OFF**; local recording prevented; recordings admin/host-only.
-- Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails OFF for API users;
-  In Session → distraction notifications: owner decision (in Redirect mode, a student opening
-  Materials in our tab raises one).
-- "Grant admins access to all Spaces" **ON** (Pencil's default) — the API account manages every Space
-  through it.
+- Settings → AI Assist: Coaching Insights ON, Session Summaries ON, Post-Session Emails **OFF** (or
+  present hosts only — the generic API account is an invited host of every Space and is not an "API
+  user", so "off for API users" would still mail it every summary); In Session → distraction
+  notifications: owner decision (they fire whenever a student opens Materials: switching to our tab
+  in Redirect mode, or a file opening in a new tab in the desktop room).
+- "Grant admins access to all Spaces" **ON** (Pencil's default): it lets the API account manage Spaces
+  it is not a member of; the Spaces we create have it as a host anyway.
 - Standalone branding for the embedded Space.
 - Webhook URL + secret per environment (staging → preview URL, prod → `https://<app>/api/webhooks/pencil`)
   — consumed from Phase 2.
 - A generic admin account that owns the API key (view-once; revoking or regenerating it signs that
-  account out everywhere). Spaces are created without `owner`, so this account owns every Space and
-  teachers stay removable hosts. Subscribe to Pencil's status page.
+  account out everywhere and stops the old key). Spaces are created without `owner`, so this account owns
+  every Space and shows as a host in each one: give it a family-facing name (e.g. "MathVision"). Any
+  teacher, including one who leaves, stays a removable host. Subscribe to Pencil's status page.
 - Signed DPA / processor agreement covering recordings and transcripts of minors, confirmation of data
   region, and Pencil's own retention of derived artefacts after a recording is deleted.
 - `SUPABASE_SERVICE_ROLE_KEY` set in **every** environment that runs Pencil: provisioning, join URLs,
   webhooks and jobs all run through the service role and are no-ops without it.
 - The parent page must be served over **HTTPS** for the iframe (local dev: a trusted cert, e.g. `mkcert`
-  + `next dev --experimental-https`); Safari and Chrome with third-party cookies blocked fall back to
-  Redirect mode.
+  + `next dev --experimental-https`). Pencil sets no `frame-ancestors`/`X-Frame-Options` and asks for a
+  fresh token on every page load, because storage partitioning can stop a login carrying into the
+  iframe (support 2026-10-16); the room mints one on every mount. Whether Safari (ITP) and Chrome with
+  third-party cookies blocked then work inside the iframe is still to be tested; if the Space sends no
+  `ready` within 15 s the room offers "Open in a new tab".
 
 ### Environment variables (Pencil)
 
@@ -295,15 +305,20 @@ Pencil Space, parent status view, recording opt-out toggle, Zoom fallback, secon
 this tree implements. Still to come:
 
 - **Phase 2 — recording + post-session pipeline.** Institution always-on recording switched on;
+  retention and opt-out deletion jobs (a recording is deleted only after our transcript copy exists,
+  because Pencil's transcript endpoint stops answering after a delete);
   Pencil webhooks (`/api/webhooks/pencil`) as hints, a job queue drained by cron, transcript + Pencil
   AI Coach report + our Claude coaching stored per lesson, AI-pre-filled report drafts, AI follow-ups,
   teacher notifications. Tables `pencil_sessions`, `pencil_webhook_events`, `pencil_jobs` already exist
   from `0017` so this phase is additive.
 - **Phase 3 — homework in the Space + mobile.** The tldraw homework canvas is replaced by a board in the
-  student's Space (deep link, `standalone=true`), mobile join via a bearer "space link" route, and the
+  student's Space (`standalone=true&mode=whiteboardonly`; Pencil has no board deep link, so the Space
+  opens on the last-viewed board and the item names the board to switch to; a participant cannot start
+  a call, so homework time is never recorded, and time alone is not billed), mobile join via a bearer
+  "space link" route, and the
   `tldraw` dependency is removed.
 - **Phase 4 — recommended.** Pencil Events mirroring (session timer, attendance), recording playback for
-  staff, retention jobs.
+  staff.
 
 Also still stubbed: **Billing/Stripe** (credit balances exist and decrement on completion; checkout is
 the remaining piece) and timed WhatsApp reminders beyond the existing cron.

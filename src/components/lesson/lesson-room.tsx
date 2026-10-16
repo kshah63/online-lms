@@ -163,12 +163,20 @@ export function LessonRoom({
           const id = typeof detail?.id === "string" ? detail.id : null;
           if (hostView) {
             if (id !== null && studentIdRef.current !== null && id === studentIdRef.current) markStudentPresent();
-          } else {
-            markStudentPresent(); // someone else joined the student's room → both present
+          } else if (id === null || id !== studentIdRef.current) {
+            // Someone else joined the student's room → both present. The
+            // student's own "use this device for writing" iPad has the same
+            // Pencil id and does not count.
+            markStudentPresent();
           }
           break;
         }
         case "participantupdate": {
+          // Whether `count` counts users or devices is unconfirmed, and a
+          // teacher or student may open a second, whiteboard-only device. A
+          // host trusts only participant_join with the student's id; the count
+          // is the fallback while that id is unknown.
+          if (hostView && studentIdRef.current !== null) break;
           const raw = detail?.count;
           const count = typeof raw === "number" ? raw : Number(raw);
           if (Number.isFinite(count) && count >= 2) markStudentPresent();
@@ -322,13 +330,13 @@ export function LessonRoom({
       {!hostView && recordingShown && !over && (
         <div className="flex shrink-0 items-center gap-2 border-b bg-primary/5 px-4 py-1.5 text-xs text-muted-foreground">
           <Disc className="h-3.5 w-3.5 text-destructive" />
-          This lesson is recorded (audio + board).
+          This lesson is recorded once the call starts (audio + board).
         </div>
       )}
       {hostView && optedOut && recordingLive === true && !over && (
         <div className="flex shrink-0 items-center gap-2 bg-destructive px-4 py-2 text-sm font-medium text-destructive-foreground">
           <AlertTriangle className="h-4 w-4 shrink-0" />
-          Recording is ON but this student is opted out — stop the recording in the Space now.
+          Recording is ON but this student is opted out — stop the recording, or end the call for everyone and start a new one.
         </div>
       )}
       {secondTab && (
@@ -604,14 +612,15 @@ function LessonEndedCard({ outcome, hostView, backHref }: { outcome: EndedOutcom
               {cancelled
                 ? "The classroom is closed for this lesson."
                 : noShow
-                  ? "The student never joined. The classroom is closed and no lesson was recorded."
+                  ? "The student never joined. The classroom is closed and nothing is counted as taught."
                   : hostView
                     ? "The classroom is closed for this lesson. Materials stay available on the side."
                     : "The classroom is closed for this lesson. Your report will arrive once the teacher publishes it."}
             </p>
             {!cancelled && (
               <p className="mt-2 text-xs text-muted-foreground">
-                If the Space is still open in another tab, close that tab to leave the call.
+                If the Space is still open in another tab or on another device (a writing iPad too), close it there:
+                the classroom has no Leave button.
               </p>
             )}
           </div>

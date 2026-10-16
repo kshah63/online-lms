@@ -59,7 +59,8 @@ export default async function AdminPeoplePage() {
                   ? "Lessons are recorded (audio + board) by default."
                   : "Recording is not switched on yet (Phase 2) — no lesson is recorded today. Opt-outs set now already hold when it starts."}{" "}
                 Opting a student out pushes &ldquo;do not record&rdquo; to every Pencil Space they have and is
-                confirmed by read-back; no transcript, summary or coaching exists for their lessons.
+                confirmed by read-back. It applies from their next call: a call already running keeps recording
+                until it ends. Their later lessons get no transcript, summary or coaching.
               </CardDescription>
             </CardHeader>
             <CardContent className="divide-y">

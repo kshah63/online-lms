@@ -189,9 +189,10 @@ const ASSIGNABLE_STATUSES: SessionStatus[] = ["scheduled", "confirmed"];
  * Refused once the lesson has started or is over (cancel and rebook instead:
  * the pipeline derives who taught from Pencil's attendees). After the update
  * the (student, course) Space seats follow the assignment: the new teacher is
- * added as a host, and the previous teacher is REMOVED when they have no other
- * non-cancelled lesson and no open homework for that pair (so a reassigned
- * teacher cannot keep opening the child's Space from Pencil's own UI). The
+ * added as a host, and the previous teacher is REMOVED only when they have no
+ * other non-cancelled lesson (completed ones count) and no open homework for
+ * that pair — a teacher who never taught the pair cannot keep opening the
+ * child's Space from Pencil's own UI; one who has taught it keeps the seat. The
  * Pencil part never fails the action; a problem comes back as a warning.
  */
 export interface AssignTeacherResult extends ActionResult {

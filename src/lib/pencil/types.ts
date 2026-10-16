@@ -171,8 +171,9 @@ export const SpaceUserEventSchema = z
     timestamp: z.union([z.string(), z.number()]),
     // Spec: joinSpace | leaveSpace | hideTab | unhideTab. Pencil support
     // (2026-10-16) names the tab events USER_ENTERED_BACKGROUND /
-    // USER_ENTERED_FOREGROUND, so the join/leave strings are confirmed only by
-    // the first staging deliveries — match them case-insensitively.
+    // USER_ENTERED_FOREGROUND — a different naming scheme, not just a different
+    // case — so the join/leave strings are confirmed only by the first staging
+    // deliveries. Map known strings explicitly; ledger anything else `ignored`.
     eventType: z.string(),
     userId: z.string(),
     roomId: z.string().nullish(),

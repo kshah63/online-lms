@@ -4,8 +4,9 @@ import { FakeDb, type Row } from "./helpers/fake-db";
 import { json, pencilServer } from "./helpers/pencil-server";
 
 // endLesson (decision b/n) and assignTeacher (decision g) are server actions:
-// the outcome write must be single-shot and teacher-scoped, the Pencil end is
-// best effort and skipped on the fallback link, and a reassignment moves the
+// the outcome write must be single-shot and teacher-scoped and makes no Pencil
+// call (endOngoingSession ends only the analytics session — Pencil support,
+// 2026-10-16), and a reassignment moves the
 // Space's host seats (add the new teacher, remove the previous one only when
 // they have nothing left with this pair). Pencil is faked at fetch; both the
 // cookie client and the service-role client are the in-memory FakeDb (RLS and

@@ -7,6 +7,7 @@ import { FakeDb, type Row } from "./helpers/fake-db";
 // not stop a recording that is already running. So the admin is warned (and a
 // follow-up raised) for a lesson whose call may be running now — and no longer
 // for one that merely starts later today, which the old "up to 3 h" rule did.
+// Before recording is switched on (Phase 1) there is nothing to warn about.
 // Spaces here are mock rows, so the policy confirms without network.
 
 const state = vi.hoisted(() => ({ db: null as unknown, actor: null as unknown }));
@@ -55,6 +56,7 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
   beforeAll(async () => {
     vi.resetModules();
     vi.stubEnv("PENCIL_SPACES_API_KEY", "");
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "on");
     actions = await import("@/lib/actions/people");
     audit = await import("@/lib/audit");
   });
@@ -63,6 +65,7 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     db = new FakeDb();
     state.db = db;
     state.actor = admin;
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "on");
     vi.mocked(audit.logAudit).mockClear();
   });
 
@@ -102,6 +105,16 @@ describe("setRecordingOptOut — the setting reaches the next call only", () => 
     const res = await actions.setRecordingOptOut(STUDENT, true);
     expect(res.warnings).toEqual([]);
     expect(db.tables.followups).toEqual([]);
+  });
+
+  it("Phase 1 (recording not switched on): a lesson on now is not warned about", async () => {
+    vi.stubEnv("PENCIL_RECORDING_ENABLED", "");
+    seed(db, [lesson("s-now", -20)]);
+    const res = await actions.setRecordingOptOut(STUDENT, true);
+    expect(res.ok).toBe(true);
+    expect(res.warnings).toEqual([]);
+    expect(db.tables.followups).toEqual([]);
+    expect(vi.mocked(audit.logAudit).mock.calls[0]![3]).toMatchObject({ lessons_in_progress: 1 });
   });
 
   it("resuming recording never warns about a lesson on now", async () => {

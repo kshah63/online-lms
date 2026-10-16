@@ -10,6 +10,7 @@ import { captureError } from "@/lib/observability";
 import { raiseAdminFollowup } from "@/lib/followups";
 import { PencilError } from "@/lib/pencil/client";
 import { applyRecordingPolicy } from "@/lib/pencil/provision";
+import { recordingActive } from "@/lib/pencil/urls";
 import type { PencilSpace } from "@/lib/types";
 
 // ============================================================================
@@ -23,8 +24,9 @@ import type { PencilSpace } from "@/lib/types";
 // the student's next join until a later join re-applies and confirms.
 //
 // Timing (Pencil support, 2026-10-16): the Space setting takes effect from the
-// NEXT call and does not stop a recording that is already running. So the only
-// lesson at risk is one whose call may be running right now.
+// NEXT call and does not stop a recording that is already running. So once
+// recording is switched on, the only lesson at risk is one whose call may be
+// running right now; before that (Phase 1) nothing is recorded to warn about.
 // ============================================================================
 
 export interface RecordingOptOutResult {
@@ -161,7 +163,7 @@ export async function setRecordingOptOut(
     });
   }
 
-  if (optOut && live.length > 0) {
+  if (optOut && recordingActive() && live.length > 0) {
     const current = live[0]!;
     const course = current.course?.name ?? "a lesson";
     warnings.push(
@@ -170,7 +172,7 @@ export async function setRecordingOptOut(
     await raiseAdminFollowup(admin, {
       studentId,
       sessionId: current.id,
-      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording while ${course} may have been in a call. Pencil applies the setting from the next call only, so delete any recording of this lesson once it appears.`,
+      reason: `${FOLLOWUP_PREFIX} ${firstName} was opted out of recording while ${course} may have been in a call. Pencil applies the setting from the next call only, so that call is recorded until the teacher ends it and starts a new one. Check the recording is deleted when Pencil delivers it, and tell the family.`,
     });
   }
 

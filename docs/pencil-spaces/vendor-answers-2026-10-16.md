@@ -59,7 +59,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > More info: https://helpdesk.pencilspaces.com/en/articles/12641384-how-to-enable-always-on-cloud-recording
 
-**For us:** an opt-out reaches the next call. The only lesson at risk is one whose call is running now, whose recording must be deleted when it lands. The per-Space "up to 3 h" window and the pre-lesson `apply_space_settings` re-PATCH are dropped. The helpdesk's 3 h figure is about switching the institution mode on, not about this setting. We switch always-on on ourselves at the start of Phase 2.
+**For us:** an opt-out reaches the next call. The only lesson at risk is one whose call is running now, whose recording must be deleted when it lands. The per-Space "up to 3 h" window and the pre-lesson `apply_space_settings` re-PATCH are dropped. We read the helpdesk's 3 h figure as being about switching the institution mode on, not this setting; Pencil did not comment, so it is a follow-up question. We switch always-on on ourselves at the start of Phase 2.
 
 ## 7. Deleting a recording
 
@@ -67,7 +67,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > I'm checking with our team on exactly what gets deleted alongside it (the transcript, summary, AI Coach and safeguarding items) and what we retain afterwards, and will get back to you on this one.
 
-**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops answering. So the transcript is copied into our DB before any retention delete, and a transcript job that finds the recording deleted ends as `no_recording` instead of retrying. Pencil-side retention stays a go-live prerequisite under (k).
+**For us:** pending. After a delete, `GET /transcriptions/{recordingId}` stops answering. So the transcript is copied into our DB before any retention delete. We record every delete we make in our own ledger, and a transcript job for a recording in it ends as `no_recording` at once instead of retrying (support did not say what the endpoint answers after a delete). Because a delete is final for us, opting a student out schedules the deletion of their past recordings 24 h later, so a mistaken toggle can be undone. Pencil-side retention stays a go-live prerequisite under (k).
 
 ## 8. Live nudges, idle and tab-switch alerts
 
@@ -78,7 +78,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 > - **Tab switching:** `SPACE_USER` webhooks with eventType `USER_ENTERED_BACKGROUND` and `USER_ENTERED_FOREGROUND`
 > - **Session analytics:** a per-user `spaceDurationInBackground` (visible to admins/hosts)
 
-**For us:** decision (j) stands. The tab events are named `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`; the spec printed `hideTab` / `unhideTab`. In Redirect mode the Space is in its own tab and Materials is in ours, so a student opening Materials raises a distraction alert to the teacher and counts as background time. The owner decides whether to keep the alerts on (plan, open questions).
+**For us:** decision (j) is rewritten: no live coaching from Pencil, and distraction alerts become an owner decision. The tab events are named `USER_ENTERED_BACKGROUND` / `USER_ENTERED_FOREGROUND`; the spec printed `hideTab` / `unhideTab`. Opening Materials raises a distraction alert to the teacher and counts as background time in both layouts. In Redirect mode the Space is in its own tab and Materials in ours. In the desktop room every Materials file opens in a new tab, which hides the Space. Homework activity therefore counts only the time the Space was in view (`spaceDuration − spaceDurationInBackground`). The owner decides whether to keep the alerts on (plan, open questions).
 
 ## 9. Second device (iPad)
 
@@ -88,7 +88,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > Tip: add `mode=whiteboardonly` to the iPad's Space URL to hide the call controls and join prompts on that device.
 
-**For us:** the "Use this device for writing" link is `standalone=true&mode=whiteboardonly`. The "tap Not Now, keep the speaker off" rules are gone. Homework links use the same mode.
+**For us:** the "Use this device for writing" link is `standalone=true&mode=whiteboardonly`. The "tap Not Now, keep the speaker off" rules are gone. Homework links use the same mode. Our End cannot close that device's tab, and the six-minute close in (4) means an open writing tab keeps the lesson's session going, so the student is asked to close it when the lesson ends.
 
 ## 10. Boards API
 
@@ -104,7 +104,7 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 >
 > Keep "Grant admins access to all Spaces" switched on (the default) so the API account can manage Spaces it isn't a member of. The key is tied to that account's login, so revoking or regenerating it signs the account out everywhere.
 
-**For us:** we keep not passing `owner` (plan decision p). Our notes record a Space owner as permanent. A tutor-owner could not be removed when the student moves to another teacher, which decision (g) requires. A generic owner account would show in the Space just as the API account does now. With no `owner`, the API account is the owner and a host, which can never be removed, so every teacher stays an ordinary, removable host. "Grant admins access to all Spaces" stays on regardless. Whether an owner can be changed is a follow-up question.
+**For us:** we keep not passing `owner` (plan decision p). Our notes record a Space owner as permanent. A tutor-owner could then never be taken out of the child's Space: not when a teacher who never taught the pair is reassigned away, which decision (g) does, and not when a teacher leaves the school. A generic owner account would show in the Space just as the API account does now. With no `owner`, the API account is the owner and a host, which can never be removed, so every teacher stays an ordinary, removable host. "Grant admins access to all Spaces" stays on regardless. Whether an owner can be changed is a follow-up question.
 
 ## 12. Iframe embedding
 
@@ -125,4 +125,8 @@ One answer is still pending: what else `DELETE` removes with a recording (7). Fo
 4. **Owner:** if we pass `owner`, can it later be changed, or the owner removed with `updateUsers`, when a student moves to a different tutor?
 5. **Call start without `skipCallHostCheck`:** with `startCall=true` alone, does a participant who arrives first join the call automatically once the host starts it, or see a join prompt?
 6. **Reports `summary` block:** is it the same text as `GET /transcriptions/{recordingId}`'s `summary.description`? What does `snippets` contain?
-7. **Deletion (your pending item):** what is removed with a recording, and what is retained, and for how long?
+7. **Deletion (your pending item):** what is removed with a recording, and what is retained, and for how long? If we delete a recording minutes after `RECORDING_AVAILABLE`, does Pencil still produce its transcript, summary, AI Coach and safeguarding items, and send their webhooks? What do `GET /transcriptions/{recordingId}` and the reports endpoint answer afterwards?
+8. **Sessions:** what makes a participant "inactive" for the six-minute close? Do a backgrounded tab or a `mode=whiteboardonly` device keep a session open? Is `sessionEndTime` the last leave, or the close six minutes later?
+9. **Second devices:** does the embed's `participantupdate.count` count users, call participants or devices? Does `participant_join` fire for a user's whiteboard-only device? Does such a device play call audio?
+10. **Recording settings:** does `disableAlwaysOnRecording=true` also stop a host starting a cloud recording by hand, in Always-on and in Host mode? Does the helpdesk's "up to 3 h" apply to this setting, or only to switching the institution mode?
+11. **Reports and boards:** for a session with several calls, does `coaching.sources[]` list every recording? Can a participant add and rename a board on a whiteboard-only link?

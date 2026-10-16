@@ -31,7 +31,7 @@ export function RecordingToggle({
     const next = !optedOut;
     const confirmed = window.confirm(
       next
-        ? `Stop recording ${firstName}'s lessons?\n\nNo transcript, AI summary or coaching will exist for their lessons, and the setting is pushed to every Pencil Space they have.`
+        ? `Stop recording ${firstName}'s lessons from their next call?\n\nA call already in progress keeps recording until it ends. Later lessons get no transcript, AI summary or coaching. The setting is pushed to every Pencil Space they have.`
         : `Record ${firstName}'s lessons again (audio + board)?\n\nThe family should know before the next lesson.`,
     );
     if (!confirmed) return;
